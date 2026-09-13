@@ -68,7 +68,7 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '850px', margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', color: '#333' }}>
-      <header style={{ borderBottom: '2px solid #eaeaea', pb: '10px', marginBottom: '20px' }}>
+      <header style={{ borderBottom: '2px solid #eaeaea', paddingBottom: '10px', marginBottom: '20px' }}>
         <h2>🎮 Studio CrewAI — Assistant de Développement</h2>
       </header>
 
