@@ -1,0 +1,46 @@
+design_gameplay_expansion:
+  description: >
+    Consulter les types et la logique existants dans 'src/types.ts' ou 'src/gameplay.ts' (via FileReadTool) 
+    et concevoir la spécification complète d'un système d'événements aléatoires pendant le service (pannes, critiques gastronomiques).
+    Définir les types TypeScript nécessaires et le modèle mathématique d'impact sur le GameState.
+  expected_output: >
+    Un document de spécification Markdown complet incluant les interfaces TypeScript,
+    la liste des événements avec leurs probabilités, et la logique de résolution.
+  agent: game_designer
+  output_file: docs/specs_gameplay.md
+
+implement_gameplay_feature:
+  description: >
+    Ta mission est d'implémenter ou de mettre à jour la fonctionnalité décrite dans 'docs/specs_gameplay.md'.
+
+    AVANT TOUTE MODIFICATION OU ÉCRITURE DE FICHIER, TU DOIS SUIVRE STRICTEMENT CETTE PROCÉDURE :
+
+    1. LECTURE & ANALYSE : Pour chaque fichier cible identifié dans les spécifications (ex: 'src/types.ts', 'src/gameplay.ts', 'src/App.tsx') :
+       - Utilise `FileReadTool` avec le chemin exact du fichier pour lire le code existant.
+       - Analyse si la fonctionnalité ou les types demandés y sont déjà présents.
+    2. DÉCISION & ÉCRITURE :
+       - Si le fichier existe et contient déjà la logique valide : NE LE RÉÉCRIS PAS inutilement.
+       - Si le fichier existe mais doit être complété : Conserve le code fonctionnel existant et intègre uniquement les nouveaux ajouts/correctifs via `FileWriterTool`.
+       - Si le fichier n'existe pas : Crée-le à l'aide de `FileWriterTool`.
+
+  expected_output: >
+    Un journal d'implémentation au format Markdown résumant :
+    - La liste des fichiers traités (avec leur statut : Inchangé / Mis à jour / Créé).
+    - Un récapitulatif des modifications apportées au code TypeScript/React.
+  agent: lead_developer
+  context:
+    - design_gameplay_expansion
+
+generate_qa_tests:
+  description: >
+    Lire le journal d'implémentation et les fichiers modifiés dans 'src/' avec `FileReadTool`.
+    Rédiger les suites de tests unitaires Vitest dans 'tests/unit/eventSystem.test.ts' 
+    et le scénario E2E Playwright dans 'tests/e2e/eventSystem.spec.ts' via `FileWriterTool`.
+    Produire un rapport d'anomalies structuré.
+  expected_output: >
+    Un rapport de test QA au format Markdown détaillant la couverture de code,
+    les cas de test créés et le statut de validation (PASS/FAIL).
+  agent: qa_engineer
+  context:
+    - implement_gameplay_feature
+  output_file: tests/reports/qa_report.md

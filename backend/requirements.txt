@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+crewai
+crewai-tools
+litellm
+python-dotenv
+pydantic

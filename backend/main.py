@@ -1,0 +1,64 @@
+import os
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+
+from crewquestion import AppDevelopmentCrew, AnalysisReport
+
+app = FastAPI(title="CrewAI App Development API")
+
+# Configuration CORS pour autoriser l'application React Vite
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En production, vous pourrez préciser l'URL de votre Vercel
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+crew_instance = AppDevelopmentCrew()
+
+class UserRequestInput(BaseModel):
+    user_request: str
+
+class WorkflowExecutionInput(BaseModel):
+    user_request: str
+    target_workflow: str
+    clarifications: Optional[str] = ""
+
+@app.get("/")
+def read_root():
+    return {"status": "API CrewAI opérationnelle"}
+
+@app.post("/api/qualify", response_model=AnalysisReport)
+async def qualify_request(data: UserRequestInput):
+    """Étape 1 : Qualification du besoin par le qualification_agent"""
+    try:
+        report = crew_instance.analyze_user_request(data.user_request)
+        crew_instance.save_analysis_report(report, data.user_request)
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/execute")
+async def execute_workflow(data: WorkflowExecutionInput):
+    """Étape 2 : Lancement dynamique des agents"""
+    final_prompt = (
+        f"Demande initiale : {data.user_request}\n"
+        f"Type d'exécution : {data.target_workflow}\n"
+        f"Précisions apportées : {data.clarifications if data.clarifications else 'Aucune.'}"
+    )
+    
+    try:
+        result = crew_instance.run_dynamic_crew(
+            inputs={'user_request': final_prompt},
+            request_type=data.target_workflow
+        )
+        return {
+            "status": "success",
+            "workflow": data.target_workflow,
+            "result": str(result.raw) if hasattr(result, 'raw') else str(result)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

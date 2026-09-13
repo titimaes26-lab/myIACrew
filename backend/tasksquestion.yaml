@@ -1,0 +1,50 @@
+qualification_task:
+  description: >
+    Analyse la demande utilisateur suivante :
+    ---
+    {user_request}
+    ---
+    
+    Consignes strictes :
+    1. Détermine la catégorie exacte parmi : ANALYSE_ONLY, BUGFIX, FEATURE, DESIGN_AND_DEV.
+    2. Ne tente jamais d'exécuter des vérifications de fichiers sur le disque.
+    3. Si la demande concerne un dysfonctionnement (ex: écran blanc, erreur de démarrage), choisis BUGFIX.
+  expected_output: >
+    Un rapport structuré contenant la catégorie choisie (ANALYSE_ONLY, BUGFIX, FEATURE ou DESIGN_AND_DEV) 
+    et une justification courte.
+  agent: qualification_agent
+
+game_design_task:
+  description: >
+    Sur la base de la demande ({user_request}), définis les spécifications fonctionnelles, 
+    les règles du jeu, les entités nécessaires et le flux utilisateur.
+  expected_output: >
+    Un document de Game Design clair détaillant les mécaniques de jeu et les composants d'interface requis.
+  agent: game_designer_agent
+
+architecture_task:
+  description: >
+    Reçois le document de Game Design et définis la structure des fichiers du projet React/Vite.
+    Spécifie la hiérarchie des composants, les props et la gestion d'état.
+  expected_output: >
+    L'arborescence complète du projet et l'interface TypeScript des principaux composants.
+  agent: architect_agent
+
+development_task:
+  description: >
+    Génère le code source complet ou apporte les corrections nécessaires sur les fichiers existants.
+    Si la tâche est un BUGFIX d'écran blanc :
+    1. Utilise l'outil `read_a_files_content` pour vérifier le point d'entrée (`index.html`).
+    2. Vérifie la présence du point de montage React (`src/main.tsx`).
+    3. Fournis le code complet corrigé pour rétablir l'application.
+  expected_output: >
+    Le code source complet des fichiers créés ou modifiés (ex: `index.html`, `src/main.tsx`, `src/App.tsx`).
+  agent: developer_agent
+
+qa_task:
+  description: >
+    Revois le code produit par le Développeur.
+    Vérifie qu'il n'y a pas d'erreurs de syntaxe, d'importations manquantes ou d'incohérences de montage React.
+  expected_output: >
+    Un rapport de validation QA confirmant que le code est prêt pour la production ou une liste de correctifs mineurs.
+  agent: qa_agent
