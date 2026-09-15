@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import asyncio
 import json
 import re
 import functools
@@ -42,15 +43,15 @@ class ExecutionMetrics:
 
 metrics = ExecutionMetrics()
 
-def retry_on_rate_limit(max_retries: int = 5, base_delay: float = 10.0):
+def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             retries = 0
             while True:
                 metrics.record_call()
                 try:
-                    return func(*args, **kwargs)
+                    return await func(*args, **kwargs)
                 except Exception as e:
                     err_msg = str(e).lower()
                     if "429" in err_msg or "resource_exhausted" in err_msg or "rate limit" in err_msg or "quota" in err_msg:
@@ -60,7 +61,7 @@ def retry_on_rate_limit(max_retries: int = 5, base_delay: float = 10.0):
                         match = re.search(r'retry after (\d+(\.\d+)?)', err_msg)
                         wait_time = float(match.group(1)) + 2.0 if match else base_delay * (2 ** (retries - 1))
                         metrics.record_rate_limit(wait_time)
-                        time.sleep(wait_time)
+                        await asyncio.sleep(wait_time)
                     else:
                         raise e
         return wrapper
@@ -90,7 +91,7 @@ class AnalysisReport(BaseModel):
     )
     questions: List[str] = Field(default_factory=list, description="Liste de 2 à 4 questions si la demande est floue.")
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-1.5-flash")
 gemini_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.7, request_timeout=120)
 file_write_tool = FileWriterTool()
 
@@ -140,17 +141,19 @@ class AppDevelopmentCrew():
     def qa_task(self) -> Task:
         return Task(config=self.tasks_config['qa_task'], agent=self.qa_agent(), output_file='tests/reports/qa_report.md')
 
-    @retry_on_rate_limit(max_retries=5, base_delay=12.0)
-    def analyze_user_request(self, user_prompt: str) -> AnalysisReport:
+    @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
+    async def analyze_user_request(self, user_prompt: str) -> AnalysisReport:
         qualif_agent = self.qualification_agent()
         task_prompt = f"""
-        Tu es le Specialist en Qualification / Senior Product Owner.
+        Tu es le Spécialiste en Qualification / Senior Product Owner.
         Voici la demande : "{user_prompt}"
         Remplis le rapport JSON structuré : summary, is_clear, request_type, questions.
         """
         analysis_task = Task(description=task_prompt, expected_output="Schéma JSON AnalysisReport.", agent=qualif_agent, output_pydantic=AnalysisReport)
         analysis_crew = Crew(agents=[qualif_agent], tasks=[analysis_task], process=Process.sequential, verbose=False)
-        result = analysis_crew.kickoff()
+        
+        # Exécution asynchrone pour éviter l'erreur d'event loop
+        result = await analysis_crew.kickoff_async()
         quota_mgr.last_execution_time = time.time()
 
         if hasattr(result, 'pydantic') and result.pydantic is not None:
@@ -179,8 +182,8 @@ class AppDevelopmentCrew():
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-    @retry_on_rate_limit(max_retries=5, base_delay=15.0)
-    def run_dynamic_crew(self, inputs: dict, request_type: str):
+    @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
+    async def run_dynamic_crew(self, inputs: dict, request_type: str):
         if request_type == "ANALYSE_ONLY":
             selected_tasks = [self.game_design_task(), self.architecture_task()]
         elif request_type == "BUGFIX":
@@ -200,6 +203,6 @@ class AppDevelopmentCrew():
             output_log_file='crew_execution.log',
             verbose=True
         )
-        result = dynamic_crew.kickoff(inputs=inputs)
+        result = await dynamic_crew.kickoff_async(inputs=inputs)
         quota_mgr.last_execution_time = time.time()
         return result
