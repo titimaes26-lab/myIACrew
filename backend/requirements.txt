@@ -5,3 +5,4 @@ crewai-tools
 litellm
 python-dotenv
 pydantic
+tiktoken>=0.7.0
