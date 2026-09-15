@@ -9,11 +9,18 @@ from crewquestion import AppDevelopmentCrew, AnalysisReport
 app = FastAPI(title="CrewAI App Development API")
 
 # Configuration CORS pour autoriser l'application React Vite
+# Configuration des origines autorisées
+origins = [
+    "http://localhost:5173",  # Mode développement local (Vite)
+    "https://votre-app.vercel.app",  # Remplacez par votre domaine exact sur Vercel
+    "*",  # Vous pouvez utiliser "*" temporairement pour valider le fonctionnement
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En production, vous pourrez préciser l'URL de votre Vercel
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"],  # Autorise POST, GET, OPTIONS, etc.
     allow_headers=["*"],
 )
 
