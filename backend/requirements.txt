@@ -1,8 +1,9 @@
 fastapi
 uvicorn
 crewai
-crewai-tools
 litellm
 python-dotenv
 pydantic
 tiktoken>=0.7.0
+crewai-tools[google-genai]
+google-genai
