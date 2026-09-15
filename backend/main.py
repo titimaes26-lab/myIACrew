@@ -5,9 +5,52 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+from database import create_db_and_tables, get_session, ExecutionHistory
 
 from crewquestion import AppDevelopmentCrew, AnalysisReport
 
+# Création automatique des tables au démarrage de l'API
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
+@app.post("/api/execute")
+async def execute_workflow(
+    data: WorkflowExecutionInput, 
+    session: Session = Depends(get_session)
+):
+    final_prompt = (
+        f"Demande initiale : {data.user_request}\n"
+        f"Type d'exécution : {data.target_workflow}\n"
+        f"Précisions apportées : {data.clarifications if data.clarifications else 'Aucune.'}"
+    )
+    
+    try:
+        result = await crew_instance.run_dynamic_crew(
+            inputs={'user_request': final_prompt},
+            request_type=data.target_workflow
+        )
+        raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
+
+        # Enregistrement en base de données
+        db_entry = ExecutionHistory(
+            user_request=data.user_request,
+            workflow=data.target_workflow,
+            clarifications=data.clarifications,
+            result=raw_result
+        )
+        session.add(db_entry)
+        session.commit()
+        session.refresh(db_entry)
+
+        return {
+            "status": "success",
+            "id": db_entry.id,
+            "workflow": data.target_workflow,
+            "result": raw_result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 app = FastAPI(title="CrewAI App Development API")
 
 # Configuration CORS pour autoriser l'application React Vite
