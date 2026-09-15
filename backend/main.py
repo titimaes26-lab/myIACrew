@@ -11,11 +11,10 @@ from crewquestion import AppDevelopmentCrew, AnalysisReport
 app = FastAPI(title="CrewAI App Development API")
 
 # Configuration CORS pour autoriser l'application React Vite
-# Configuration des origines autorisées
 origins = [
     "http://localhost:5173",  # Mode développement local (Vite)
     "https://votre-app.vercel.app",  # Remplacez par votre domaine exact sur Vercel
-    "*",  # Vous pouvez utiliser "*" temporairement pour valider le fonctionnement
+    "*",  # Permet de valider rapidement le fonctionnement
 ]
 
 app.add_middleware(
@@ -44,7 +43,8 @@ def read_root():
 async def qualify_request(data: UserRequestInput):
     """Étape 1 : Qualification du besoin par le qualification_agent"""
     try:
-        report = crew_instance.analyze_user_request(data.user_request)
+        # Ajout du 'await' pour exécuter la coroutine asynchrone
+        report = await crew_instance.analyze_user_request(data.user_request)
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:
@@ -62,7 +62,8 @@ async def execute_workflow(data: WorkflowExecutionInput):
     )
     
     try:
-        result = crew_instance.run_dynamic_crew(
+        # Ajout du 'await' pour exécuter la coroutine asynchrone
+        result = await crew_instance.run_dynamic_crew(
             inputs={'user_request': final_prompt},
             request_type=data.target_workflow
         )
@@ -72,4 +73,6 @@ async def execute_workflow(data: WorkflowExecutionInput):
             "result": str(result.raw) if hasattr(result, 'raw') else str(result)
         }
     except Exception as e:
+        print("--- ERREUR CREWAI EXECUTION DETECTEE ---")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
