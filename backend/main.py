@@ -1,4 +1,6 @@
+import traceback
 import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -46,6 +48,8 @@ async def qualify_request(data: UserRequestInput):
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:
+        print("--- ERREUR CREWAI DETECTEE ---")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/execute")
