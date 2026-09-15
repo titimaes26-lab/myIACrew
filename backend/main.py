@@ -43,7 +43,7 @@ def read_root():
 async def qualify_request(data: UserRequestInput):
     """Étape 1 : Qualification du besoin par le qualification_agent"""
     try:
-        # Ajout du 'await' pour exécuter la coroutine asynchrone
+        # --- CORRECTION ICI : Ajout de await ---
         report = await crew_instance.analyze_user_request(data.user_request)
         crew_instance.save_analysis_report(report, data.user_request)
         return report
@@ -62,7 +62,7 @@ async def execute_workflow(data: WorkflowExecutionInput):
     )
     
     try:
-        # Ajout du 'await' pour exécuter la coroutine asynchrone
+        # --- CORRECTION ICI : Ajout de await ---
         result = await crew_instance.run_dynamic_crew(
             inputs={'user_request': final_prompt},
             request_type=data.target_workflow
