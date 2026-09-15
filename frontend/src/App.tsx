@@ -16,6 +16,7 @@ export default function App() {
   const [selectedWorkflow, setSelectedWorkflow] = useState<string>('');
   const [clarifications, setClarifications] = useState('');
   const [executionResult, setExecutionResult] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -25,19 +26,27 @@ export default function App() {
     if (!prompt.trim()) return;
 
     setLoadingQualif(true);
+    setErrorMessage(null);
     setExecutionResult(null);
+    
     try {
       const res = await fetch(`${API_URL}/api/qualify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_request: prompt }),
       });
-      if (!res.ok) throw new Error('Erreur réseau');
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Erreur serveur (${res.status})`);
+      }
+
       const data: QualificationReport = await res.json();
       setReport(data);
       setSelectedWorkflow(data.request_type);
-    } catch (err) {
-      alert("❌ Impossible de contacter le serveur d'analyse.");
+    } catch (err: any) {
+      console.error('Erreur qualification:', err);
+      setErrorMessage(err.message || "Impossible de contacter le serveur d'analyse.");
     } finally {
       setLoadingQualif(false);
     }
@@ -46,6 +55,9 @@ export default function App() {
   // Étape 2 : Appel API Exécution
   const handleExecute = async () => {
     setLoadingExec(true);
+    setErrorMessage(null);
+    setExecutionResult(null);
+
     try {
       const res = await fetch(`${API_URL}/api/execute`, {
         method: 'POST',
@@ -56,11 +68,17 @@ export default function App() {
           clarifications: clarifications,
         }),
       });
-      if (!res.ok) throw new Error('Erreur durant l\'exécution');
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Erreur durant l'exécution (${res.status})`);
+      }
+
       const data = await res.json();
       setExecutionResult(data.result);
-    } catch (err) {
-      alert("❌ Erreur lors de l'exécution du workflow.");
+    } catch (err: any) {
+      console.error('Erreur execution:', err);
+      setErrorMessage(err.message || "Erreur lors de l'exécution du workflow.");
     } finally {
       setLoadingExec(false);
     }
@@ -72,21 +90,37 @@ export default function App() {
         <h2>🎮 Studio CrewAI — Assistant de Développement</h2>
       </header>
 
+      {/* Affichage des erreurs en haut du formulaire */}
+      {errorMessage && (
+        <div style={{ padding: '12px 16px', backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', color: '#991b1b', marginBottom: '20px', fontWeight: '500' }}>
+          ❌ {errorMessage}
+        </div>
+      )}
+
       {/* Saisie de la demande */}
       <form onSubmit={handleQualify} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
         <label htmlFor="prompt"><b>Décrivez votre besoin ou bug :</b></label>
         <textarea
           id="prompt"
           rows={4}
-          style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '1px solid #ccc', fontSize: '15px' }}
+          disabled={loadingQualif || loadingExec}
+          style={{ width: '100%', padding: '12px', borderRadius: '6px', border: '1px solid #ccc', fontSize: '15px', boxSizing: 'border-box' }}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="Ex: Mon application affiche un écran blanc lors de l'ouverture du composant Dashboard..."
         />
         <button 
           type="submit" 
-          disabled={loadingQualif || !prompt.trim()} 
-          style={{ padding: '12px', backgroundColor: '#0070f3', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
+          disabled={loadingQualif || loadingExec || !prompt.trim()} 
+          style={{ 
+            padding: '12px', 
+            backgroundColor: loadingQualif ? '#93c5fd' : '#0070f3', 
+            color: '#fff', 
+            border: 'none', 
+            borderRadius: '6px', 
+            cursor: loadingQualif ? 'not-allowed' : 'pointer', 
+            fontWeight: 'bold' 
+          }}
         >
           {loadingQualif ? '🔍 Analyse et qualification en cours...' : '1. Examiner la demande'}
         </button>
@@ -103,12 +137,13 @@ export default function App() {
           {report.questions && report.questions.length > 0 && (
             <div style={{ marginTop: '15px', backgroundColor: '#fff', padding: '15px', borderRadius: '6px', border: '1px solid #e1e4e8' }}>
               <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>❓ Précisions recommandées par l'agent :</p>
-              <ul>
-                {report.questions.map((q, i) => <li key={i}>{q}</li>)}
+              <ul style={{ paddingLeft: '20px' }}>
+                {report.questions.map((q, i) => <li key={i} style={{ marginBottom: '4px' }}>{q}</li>)}
               </ul>
               <textarea
                 rows={3}
-                style={{ width: '96%', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
+                disabled={loadingExec}
+                style={{ width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid #ccc', boxSizing: 'border-box' }}
                 placeholder="Saisissez vos réponses ici pour affiner le travail des agents..."
                 value={clarifications}
                 onChange={(e) => setClarifications(e.target.value)}
@@ -122,6 +157,7 @@ export default function App() {
             <select
               id="workflow"
               value={selectedWorkflow}
+              disabled={loadingExec}
               onChange={(e) => setSelectedWorkflow(e.target.value)}
               style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
             >
@@ -133,11 +169,23 @@ export default function App() {
           </div>
 
           <button
+            type="button"
             onClick={handleExecute}
-            disabled={loadingExec}
-            style={{ marginTop: '20px', width: '100%', padding: '14px', backgroundColor: '#10b981', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}
+            disabled={loadingExec || loadingQualif}
+            style={{ 
+              marginTop: '20px', 
+              width: '100%', 
+              padding: '14px', 
+              backgroundColor: loadingExec ? '#6ee7b7' : '#10b981', 
+              color: '#fff', 
+              border: 'none', 
+              borderRadius: '6px', 
+              cursor: loadingExec ? 'not-allowed' : 'pointer', 
+              fontWeight: 'bold', 
+              fontSize: '16px' 
+            }}
           >
-            {loadingExec ? '⚙️ Les agents travaillent sur votre projet...' : `2. Lancer le Workflow ${selectedWorkflow}`}
+            {loadingExec ? '⚙️ Les agents travaillent sur votre projet (veuillez patienter)...' : `2. Lancer le Workflow ${selectedWorkflow}`}
           </button>
         </div>
       )}
