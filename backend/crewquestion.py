@@ -91,7 +91,7 @@ class AnalysisReport(BaseModel):
     )
     questions: List[str] = Field(default_factory=list, description="Liste de 2 à 4 questions si la demande est floue.")
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-1.5-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
 gemini_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.7, request_timeout=120)
 file_write_tool = FileWriterTool()
 
