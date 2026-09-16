@@ -17,6 +17,9 @@ export default function App() {
   const [clarifications, setClarifications] = useState('');
   const [executionResult, setExecutionResult] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [repoOwner, setRepoOwner] = useState('');
+  const [repoName, setRepoName] = useState('');
+  const [baseBranch, setBaseBranch] = useState('main');
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -66,6 +69,9 @@ export default function App() {
           user_request: prompt,
           target_workflow: selectedWorkflow,
           clarifications: clarifications,
+          repo_owner: repoOwner.trim() || undefined,
+          repo_name: repoName.trim() || undefined,
+          base_branch: baseBranch.trim() || 'main',
         }),
       });
 
@@ -150,6 +156,40 @@ export default function App() {
               />
             </div>
           )}
+
+          {/* Repository GitHub cible */}
+          <div style={{ marginTop: '20px', backgroundColor: '#fff', padding: '15px', borderRadius: '6px', border: '1px solid #e1e4e8' }}>
+            <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>🔗 Repository GitHub cible (optionnel) :</p>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                placeholder="owner (ex: titimaes26-lab)"
+                disabled={loadingExec}
+                value={repoOwner}
+                onChange={(e) => setRepoOwner(e.target.value)}
+                style={{ flex: '1 1 180px', padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
+              />
+              <input
+                type="text"
+                placeholder="repo (ex: myIACrew)"
+                disabled={loadingExec}
+                value={repoName}
+                onChange={(e) => setRepoName(e.target.value)}
+                style={{ flex: '1 1 180px', padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
+              />
+              <input
+                type="text"
+                placeholder="branche de base"
+                disabled={loadingExec}
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+                style={{ flex: '1 1 140px', padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
+              />
+            </div>
+            <p style={{ margin: '8px 0 0 0', fontSize: '13px', color: '#666' }}>
+              Si renseigné, les agents liront le code depuis ce repository et proposeront leurs changements via une Pull Request.
+            </p>
+          </div>
 
           {/* Workflow recommandé & Sélection */}
           <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>

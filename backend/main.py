@@ -1,5 +1,6 @@
 import traceback
 import os
+import uuid
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +37,9 @@ class WorkflowExecutionInput(BaseModel):
     user_request: str
     target_workflow: str
     clarifications: Optional[str] = ""
+    repo_owner: Optional[str] = None
+    repo_name: Optional[str] = None
+    base_branch: Optional[str] = "main"
 
 # 4. ENDPOINTS API
 @app.get("/")
@@ -65,10 +69,26 @@ async def execute_workflow(
         f"Type d'exécution : {data.target_workflow}\n"
         f"Précisions apportées : {data.clarifications if data.clarifications else 'Aucune.'}"
     )
-    
+
+    has_repo_target = bool(data.repo_owner and data.repo_name)
+    work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}" if has_repo_target else ""
+
     try:
         result = await crew_instance.run_dynamic_crew(
-            inputs={'user_request': final_prompt},
+            inputs={
+                'user_request': final_prompt,
+                'repo_owner': data.repo_owner or '',
+                'repo_name': data.repo_name or '',
+                'base_branch': data.base_branch or 'main',
+                'work_branch': work_branch,
+                'repo_instructions': (
+                    f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
+                    f"Branche de base : {data.base_branch or 'main'}\n"
+                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
+                    if has_repo_target
+                    else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
+                ),
+            },
             request_type=data.target_workflow
         )
         raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)

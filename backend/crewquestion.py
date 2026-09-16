@@ -25,6 +25,13 @@ from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai_tools import FileWriterTool
 from tools import read_a_files_content
+from github_tools import (
+    github_read_file,
+    github_list_directory,
+    github_create_branch,
+    github_write_file,
+    github_open_pull_request,
+)
 
 # --- MÉTRIQUES & PAUSES ---
 class ExecutionMetrics:
@@ -107,19 +114,39 @@ class AppDevelopmentCrew():
 
     @agent
     def game_designer_agent(self) -> Agent:
-        return Agent(config=self.agents_config['game_designer_agent'], tools=[read_a_files_content, file_write_tool], llm=gemini_llm, max_iter=3, verbose=True)
+        return Agent(
+            config=self.agents_config['game_designer_agent'],
+            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
+            llm=gemini_llm, max_iter=3, verbose=True,
+        )
 
     @agent
     def architect_agent(self) -> Agent:
-        return Agent(config=self.agents_config['architect_agent'], tools=[read_a_files_content, file_write_tool], llm=gemini_llm, max_iter=3, verbose=True)
+        return Agent(
+            config=self.agents_config['architect_agent'],
+            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
+            llm=gemini_llm, max_iter=3, verbose=True,
+        )
 
     @agent
     def developer_agent(self) -> Agent:
-        return Agent(config=self.agents_config['developer_agent'], tools=[read_a_files_content, file_write_tool], llm=gemini_llm, max_iter=3, verbose=True)
+        return Agent(
+            config=self.agents_config['developer_agent'],
+            tools=[
+                read_a_files_content, file_write_tool,
+                github_read_file, github_list_directory,
+                github_create_branch, github_write_file, github_open_pull_request,
+            ],
+            llm=gemini_llm, max_iter=3, verbose=True,
+        )
 
     @agent
     def qa_agent(self) -> Agent:
-        return Agent(config=self.agents_config['qa_agent'], tools=[read_a_files_content, file_write_tool], llm=gemini_llm, max_iter=3, verbose=True)
+        return Agent(
+            config=self.agents_config['qa_agent'],
+            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
+            llm=gemini_llm, max_iter=3, verbose=True,
+        )
 
     @task
     def qualification_task(self) -> Task:

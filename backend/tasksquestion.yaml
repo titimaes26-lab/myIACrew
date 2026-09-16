@@ -16,8 +16,14 @@ qualification_task:
 
 game_design_task:
   description: >
-    Sur la base de la demande ({user_request}), définis les spécifications fonctionnelles, 
+    Sur la base de la demande ({user_request}), définis les spécifications fonctionnelles,
     les règles du jeu, les entités nécessaires et le flux utilisateur.
+
+    Contexte repository :
+    {repo_instructions}
+    Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
+    (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour t'appuyer sur le code existant
+    avant de rédiger les specs.
   expected_output: >
     Un document de Game Design clair détaillant les mécaniques de jeu et les composants d'interface requis.
   agent: game_designer_agent
@@ -26,6 +32,11 @@ architecture_task:
   description: >
     Reçois le document de Game Design et définis la structure des fichiers du projet React/Vite.
     Spécifie la hiérarchie des composants, les props et la gestion d'état.
+
+    Contexte repository :
+    {repo_instructions}
+    Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
+    (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour analyser l'arborescence réelle du projet.
   expected_output: >
     L'arborescence complète du projet et l'interface TypeScript des principaux composants.
   agent: architect_agent
@@ -37,14 +48,32 @@ development_task:
     1. Utilise l'outil `read_a_files_content` pour vérifier le point d'entrée (`index.html`).
     2. Vérifie la présence du point de montage React (`src/main.tsx`).
     3. Fournis le code complet corrigé pour rétablir l'application.
+
+    Contexte repository :
+    {repo_instructions}
+    Si un repository GitHub cible est fourni (owner={repo_owner}, repo={repo_name}), applique STRICTEMENT
+    cette procédure au lieu d'écrire sur le disque local :
+    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch}.
+    2. Pour chaque fichier à créer ou modifier, lis-le d'abord avec `github_read_file`
+       (branch={base_branch}) puis écris la nouvelle version avec `github_write_file`
+       (branch={work_branch}, un commit_message clair).
+    3. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
+       (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant les changements.
+    Ne modifie jamais directement la branche {base_branch}.
   expected_output: >
-    Le code source complet des fichiers créés ou modifiés (ex: `index.html`, `src/main.tsx`, `src/App.tsx`).
+    Le code source complet des fichiers créés ou modifiés, et si un repository cible était fourni,
+    l'URL de la Pull Request créée.
   agent: developer_agent
 
 qa_task:
   description: >
     Revois le code produit par le Développeur.
     Vérifie qu'il n'y a pas d'erreurs de syntaxe, d'importations manquantes ou d'incohérences de montage React.
+
+    Contexte repository :
+    {repo_instructions}
+    Si un repository GitHub cible est fourni, relis les fichiers modifiés directement sur la branche
+    de travail ({work_branch}) avec `github_read_file` (owner={repo_owner}, repo={repo_name}) plutôt que sur disque.
   expected_output: >
     Un rapport de validation QA confirmant que le code est prêt pour la production ou une liste de correctifs mineurs.
   agent: qa_agent
