@@ -15,6 +15,7 @@ const STATUS_LABEL: Record<ChatTurn['status'], string> = {
   running: '🔄 En cours...',
   success: '✅ Terminé',
   failed: '❌ Échec',
+  cancelled: '🚫 Annulé',
 };
 
 export default function ChatMessage({ turn }: { turn: ChatTurn }) {
@@ -66,6 +67,10 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
           <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
             {turn.result}
           </pre>
+        )}
+
+        {turn.result && turn.status === 'cancelled' && (
+          <p style={{ margin: 0, fontSize: '13px', color: '#666', fontStyle: 'italic' }}>{turn.result}</p>
         )}
 
         {turn.result && turn.status === 'success' && (

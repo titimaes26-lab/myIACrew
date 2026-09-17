@@ -29,18 +29,20 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
 
 export function apiClient(apiUrl: string, accessToken: string) {
   return {
-    qualify: (user_request: string) =>
+    qualify: (user_request: string, signal?: AbortSignal) =>
       fetch(`${apiUrl}/api/qualify`, {
         method: 'POST',
         headers: authHeaders(accessToken),
         body: JSON.stringify({ user_request }),
+        signal,
       }).then((res) => parseJsonOrThrow<QualificationReport>(res)),
 
-    execute: (payload: Record<string, unknown>) =>
+    execute: (payload: Record<string, unknown>, signal?: AbortSignal) =>
       fetch(`${apiUrl}/api/execute`, {
         method: 'POST',
         headers: authHeaders(accessToken),
         body: JSON.stringify(payload),
+        signal,
       }).then((res) => parseJsonOrThrow<ExecuteResponse>(res)),
 
     listHistory: () =>

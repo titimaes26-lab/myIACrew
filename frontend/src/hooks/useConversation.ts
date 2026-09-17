@@ -1,6 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { apiClient, ApiError } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, RepoTarget } from '../types';
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
+}
 
 function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
   return {
@@ -20,12 +24,21 @@ export function useConversation(accessToken: string, apiUrl: string) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: string } | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const api = apiClient(apiUrl, accessToken);
+
+  const cancelSending = () => {
+    abortControllerRef.current?.abort();
+  };
 
   // Chaque ouverture de l'interface démarre sur un fil vide ; une conversation passée peut
   // être reprise explicitement depuis le panneau Historique via loadConversation.
   const startNewConversation = () => {
+    // Sans ça, une requête encore en vol pourrait se résoudre après coup et rattacher
+    // ce nouveau fil (vide) au conversationId de l'ancienne requête via son propre
+    // setConversationId(data.conversation_id) dans sendMessage.
+    cancelSending();
     setConversationId(null);
     setTurns([]);
     setPendingClarification(null);
@@ -53,6 +66,9 @@ export function useConversation(accessToken: string, apiUrl: string) {
       base_branch: repoTarget.branch || undefined,
     };
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setSending(true);
     setError(null);
 
@@ -64,7 +80,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
           user_request: pendingClarification.originalRequest,
           target_workflow: pendingClarification.workflow,
           clarifications: text,
-        });
+        }, controller.signal);
         setConversationId(data.conversation_id);
         setPendingClarification(null);
         setTurns((t) => t.map((turn) => (turn.id === tempId
@@ -74,7 +90,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       }
 
       setTurns((t) => [...t, { id: tempId, userMessage: text, status: 'running', createdAt: new Date().toISOString() }]);
-      const report = await api.qualify(text);
+      const report = await api.qualify(text, controller.signal);
 
       if (!report.is_clear) {
         setPendingClarification({ originalRequest: text, workflow: report.request_type });
@@ -90,12 +106,26 @@ export function useConversation(accessToken: string, apiUrl: string) {
         ...executePayload,
         user_request: text,
         target_workflow: report.request_type,
-      });
+      }, controller.signal);
       setConversationId(data.conversation_id);
       setTurns((t) => t.map((turn) => (turn.id === tempId
         ? { ...turn, id: data.id, status: 'success', result: data.result, updatedAt: new Date().toISOString() }
         : turn)));
     } catch (err: unknown) {
+      if (isAbortError(err)) {
+        // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
+        // réponse de clarification à la demande d'origine (désormais abandonnée).
+        setPendingClarification(null);
+        setTurns((t) => t.map((turn) => (turn.id === tempId
+          ? {
+              ...turn,
+              status: 'cancelled',
+              result: "Annulé côté interface. L'exécution peut continuer côté serveur si elle était déjà lancée : le résultat, s'il arrive, apparaîtra dans l'historique.",
+              updatedAt: new Date().toISOString(),
+            }
+          : turn)));
+        return;
+      }
       if (err instanceof ApiError && err.conversationId) setConversationId(err.conversationId);
       const message = err instanceof Error ? err.message : 'Une erreur est survenue.';
       setTurns((t) => t.map((turn) => (turn.id === tempId
@@ -103,9 +133,10 @@ export function useConversation(accessToken: string, apiUrl: string) {
         : turn)));
       setError(message);
     } finally {
+      abortControllerRef.current = null;
       setSending(false);
     }
   };
 
-  return { turns, sending, error, conversationId, pendingClarification, sendMessage, startNewConversation, loadConversation };
+  return { turns, sending, error, conversationId, pendingClarification, sendMessage, cancelSending, startNewConversation, loadConversation };
 }

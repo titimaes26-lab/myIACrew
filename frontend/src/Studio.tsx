@@ -8,7 +8,7 @@ import HistoryPanel from './components/HistoryPanel';
 export default function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: string }) {
   const [showHistory, setShowHistory] = useState(false);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-  const { turns, sending, error, sendMessage, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
+  const { turns, sending, error, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
 
   const handleResumeConversation = (conversationId: number) => {
     loadConversation(conversationId);
@@ -16,7 +16,11 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   };
 
   return (
-    <div style={{ maxWidth: '850px', margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', color: '#333' }}>
+    // #root (index.css) est display:flex ; ce div en est le seul enfant, donc un flex
+    // item. Sans width:100%/minWidth:0, son min-width par défaut ("auto") vaut le
+    // max-content de son contenu (en-tête, bulle de message longue…), l'empêchant de
+    // rétrécir sous cette largeur et forçant la page entière à déborder sur mobile.
+    <div style={{ maxWidth: '850px', width: '100%', minWidth: 0, margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', boxSizing: 'border-box', color: '#333' }}>
       <StudioHeader
         userEmail={userEmail}
         historyOpen={showHistory}
@@ -46,7 +50,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
       <ChatThread turns={turns} />
 
       <div style={{ marginTop: '20px' }}>
-        <ChatInput disabled={sending} apiUrl={API_URL} accessToken={accessToken} onSend={sendMessage} />
+        <ChatInput disabled={sending} onCancel={cancelSending} apiUrl={API_URL} accessToken={accessToken} onSend={sendMessage} />
       </div>
     </div>
   );
