@@ -15,6 +15,9 @@ function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
     result: entry.result,
     createdAt: entry.created_at,
     updatedAt: entry.status !== 'running' ? entry.updated_at : undefined,
+    apiCallsCount: entry.api_calls_count,
+    rateLimitHits: entry.rate_limit_hits,
+    totalWaitTimeSeconds: entry.total_wait_time_seconds,
   };
 }
 
@@ -84,7 +87,16 @@ export function useConversation(accessToken: string, apiUrl: string) {
         setConversationId(data.conversation_id);
         setPendingClarification(null);
         setTurns((t) => t.map((turn) => (turn.id === tempId
-          ? { ...turn, id: data.id, status: 'success', result: data.result, updatedAt: new Date().toISOString() }
+          ? {
+              ...turn,
+              id: data.id,
+              status: 'success',
+              result: data.result,
+              updatedAt: new Date().toISOString(),
+              apiCallsCount: data.api_calls_count,
+              rateLimitHits: data.rate_limit_hits,
+              totalWaitTimeSeconds: data.total_wait_time_seconds,
+            }
           : turn)));
         return;
       }
@@ -109,7 +121,16 @@ export function useConversation(accessToken: string, apiUrl: string) {
       }, controller.signal);
       setConversationId(data.conversation_id);
       setTurns((t) => t.map((turn) => (turn.id === tempId
-        ? { ...turn, id: data.id, status: 'success', result: data.result, updatedAt: new Date().toISOString() }
+        ? {
+            ...turn,
+            id: data.id,
+            status: 'success',
+            result: data.result,
+            updatedAt: new Date().toISOString(),
+            apiCallsCount: data.api_calls_count,
+            rateLimitHits: data.rate_limit_hits,
+            totalWaitTimeSeconds: data.total_wait_time_seconds,
+          }
         : turn)));
     } catch (err: unknown) {
       if (isAbortError(err)) {

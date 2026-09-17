@@ -6,6 +6,8 @@ import json
 import re
 import functools
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import List, Literal, Callable, Any
 from dotenv import load_dotenv
@@ -25,12 +27,13 @@ os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai_tools import FileWriterTool
-from tools import read_a_files_content
+from tools import read_a_files_content, check_syntax
 from github_tools import (
     github_read_file,
     github_list_directory,
     github_create_branch,
     github_write_file,
+    github_edit_file,
     github_open_pull_request,
 )
 
@@ -49,7 +52,28 @@ class ExecutionMetrics:
         self.rate_limit_hits += 1
         self.total_wait_time += wait_seconds
 
-metrics = ExecutionMetrics()
+    def record_wait(self, wait_seconds: float):
+        self.total_wait_time += wait_seconds
+
+# Métriques de l'exécution actuellement suivie (voir track_execution_metrics), pour
+# renvoyer à l'utilisateur le coût/la performance de SA requête plutôt qu'un compteur
+# global cumulé depuis le démarrage du serveur et partagé entre tous les utilisateurs.
+# contextvars (et non un simple global) car correctement isolé entre requêtes concurrentes,
+# et propagé automatiquement dans un thread lancé via asyncio.to_thread (utilisé par
+# kickoff_async). Attention : loop.run_in_executor() nu ne copie PAS ce contexte tout
+# seul (cf. _generate_summary, qui doit le faire explicitement via copy_context().run(...)
+# pour son pool dédié) — ne pas supposer que la propagation est automatique partout.
+_current_metrics: ContextVar["ExecutionMetrics | None"] = ContextVar("current_metrics", default=None)
+
+@contextmanager
+def track_execution_metrics():
+    """Active un ExecutionMetrics dédié le temps du bloc, à lire une fois celui-ci terminé."""
+    m = ExecutionMetrics()
+    token = _current_metrics.set(m)
+    try:
+        yield m
+    finally:
+        _current_metrics.reset(token)
 
 def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -57,7 +81,9 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             retries = 0
             while True:
-                metrics.record_call()
+                m = _current_metrics.get()
+                if m is not None:
+                    m.record_call()
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
@@ -72,7 +98,8 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
                             raise e
                         match = re.search(r'retry after (\d+(\.\d+)?)', err_msg)
                         wait_time = float(match.group(1)) + 2.0 if match else base_delay * (2 ** (retries - 1))
-                        metrics.record_rate_limit(wait_time)
+                        if m is not None:
+                            m.record_rate_limit(wait_time)
                         await asyncio.sleep(wait_time)
                     else:
                         raise e
@@ -83,12 +110,14 @@ class QuotaManager:
     def __init__(self):
         self.last_execution_time = 0.0
         self.min_interval_seconds = 5.0
-    
+
     def adaptive_pause(self, task_output=None):
         elapsed = time.time() - self.last_execution_time
         if elapsed < self.min_interval_seconds:
             wait_time = self.min_interval_seconds - elapsed
-            metrics.total_wait_time += wait_time
+            m = _current_metrics.get()
+            if m is not None:
+                m.record_wait(wait_time)
             time.sleep(wait_time)
         self.last_execution_time = time.time()
 
@@ -233,13 +262,75 @@ async def _generate_summary(user_request: str, result) -> str | None:
 
     try:
         loop = asyncio.get_running_loop()
+        # loop.run_in_executor() ne copie PAS automatiquement le contexte courant dans le
+        # thread (contrairement à asyncio.to_thread, qui le fait mais impose son propre
+        # executor par défaut) : sans ce copy_context().run(...) explicite, l'appel à
+        # quota_mgr.adaptive_pause() dans _call() perdrait de vue le _current_metrics de
+        # CETTE requête (il verrait la valeur par défaut, None), et le temps d'attente
+        # de cet appel ne serait jamais comptabilisé dans les métriques renvoyées.
+        ctx = copy_context()
         text = await asyncio.wait_for(
-            loop.run_in_executor(_summary_executor, _call), timeout=SUMMARY_WALL_CLOCK_TIMEOUT
+            loop.run_in_executor(_summary_executor, ctx.run, _call), timeout=SUMMARY_WALL_CLOCK_TIMEOUT
         )
         return text.strip() or None
     except Exception as e:
         print(f"Génération du résumé ignorée : {type(e).__name__}: {e}")
         return None
+
+MAX_PRIOR_TURN_SUMMARY_CHARS = 800
+MAX_PRIOR_TURN_RESULT_CHARS = 500
+
+def _extract_prior_turn_summary(result_text: str) -> str:
+    """Réduit le résultat d'un tour précédent à un texte court utilisable comme contexte.
+
+    Réutilise le "## Résumé" déjà généré pour ce tour (via SUMMARY_SENTINEL) quand il
+    existe : c'est déjà une synthèse pensée pour être lue, pas le rapport complet de
+    chaque agent. À défaut (résumé absent, ex: génération échouée), on retombe sur un
+    simple tronquage du résultat brut plutôt que de ne rien montrer.
+    """
+    if not result_text:
+        return ""
+
+    idx = result_text.rfind(SUMMARY_SENTINEL)
+    if idx != -1:
+        tail = result_text[idx + len(SUMMARY_SENTINEL):].strip()
+        heading_match = re.match(r"^##\s+.+?\s*\n+(.*)", tail, re.DOTALL)
+        summary_text = heading_match.group(1) if heading_match else tail
+        return summary_text.strip()[:MAX_PRIOR_TURN_SUMMARY_CHARS]
+
+    return result_text.strip()[:MAX_PRIOR_TURN_RESULT_CHARS]
+
+MAX_PRIOR_TURNS_IN_CONTEXT = 10
+
+def build_conversation_context(prior_entries) -> str:
+    """Rappel textuel des tours précédents de cette conversation, donné en entrée aux
+    tâches (voir tasksquestion.yaml, placeholder {conversation_context}).
+
+    Chaque appel à run_dynamic_crew part d'un crew neuf, sans aucune connaissance de ce
+    qui a été demandé/livré aux tours précédents du même fil de discussion : sans ce
+    rappel, un message de suivi ("ajoute aussi Y") ne peut pas être compris comme une
+    continuation de ce qui précède. Ne garde que les MAX_PRIOR_TURNS_IN_CONTEXT derniers
+    tours (les plus pertinents pour un message de suivi) : sans cette borne, une longue
+    conversation ferait grossir sans limite le texte injecté dans chaque tâche, à
+    l'inverse du soin apporté ailleurs dans ce fichier à borner la taille des prompts
+    (MAX_SUMMARY_INPUT_CHARS, troncature par tâche).
+    """
+    if not prior_entries:
+        return "Aucun échange précédent dans cette conversation."
+
+    recent_entries = prior_entries[-MAX_PRIOR_TURNS_IN_CONTEXT:]
+    status_labels = {"success": "réussi", "failed": "échoué", "running": "en cours (probablement interrompu)"}
+    lines = []
+    if len(prior_entries) > len(recent_entries):
+        lines.append(f"[{len(prior_entries) - len(recent_entries)} tour(s) plus ancien(s) omis pour rester concis]")
+    for entry in recent_entries:
+        status_label = status_labels.get(entry.status, entry.status)
+        lines.append(f'- Demande : "{entry.user_request.strip()[:200]}" ({entry.workflow}, {status_label})')
+        if entry.status == "success" and entry.result:
+            summary = _extract_prior_turn_summary(entry.result)
+            if summary:
+                lines.append(f"  Résultat : {summary}")
+    return "\n".join(lines)
 
 # --- CREW BASE ---
 @CrewBase
@@ -272,19 +363,24 @@ class AppDevelopmentCrew():
         return Agent(
             config=self.agents_config['developer_agent'],
             tools=[
-                read_a_files_content, file_write_tool,
+                read_a_files_content, file_write_tool, check_syntax,
                 github_read_file, github_list_directory,
-                github_create_branch, github_write_file, github_open_pull_request,
+                github_create_branch, github_write_file, github_edit_file, github_open_pull_request,
             ],
-            llm=gemini_llm, max_iter=3, verbose=True,
+            # 5 et non 3 : le flux GitHub complet (create_branch, write/edit_file,
+            # check_syntax, open_pull_request) dépasse déjà 3 appels d'outils pour un
+            # seul fichier ; max_iter=3 coupait la tâche avant l'ouverture de la PR.
+            llm=gemini_llm, max_iter=5, verbose=True,
         )
 
     @agent
     def qa_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['qa_agent'],
-            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=3, verbose=True,
+            tools=[read_a_files_content, file_write_tool, check_syntax, github_read_file, github_list_directory],
+            # Idem developer_agent : lire un fichier PUIS le vérifier avec check_syntax
+            # est déjà 2 appels par fichier modifié, avant même le rapport final.
+            llm=gemini_llm, max_iter=5, verbose=True,
         )
 
     @task

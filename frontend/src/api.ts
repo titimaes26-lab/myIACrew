@@ -6,6 +6,9 @@ interface ExecuteResponse {
   conversation_id: number;
   workflow: string;
   result: string;
+  api_calls_count?: number | null;
+  rate_limit_hits?: number | null;
+  total_wait_time_seconds?: number | null;
 }
 
 export class ApiError extends Error {
