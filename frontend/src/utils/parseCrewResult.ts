@@ -8,12 +8,16 @@ export interface CrewResultSection {
 // suivi d'un titre quelconque écrit par un agent dans son propre texte (ex: "##
 // Recommandations" en conclusion d'un rapport) ne matche aucun de ces rôles et reste
 // donc rattaché au contenu de la section en cours, sans le fragmenter à tort.
+// Garder cette liste synchronisée avec les champs `role:` de backend/agentsquestion.yaml.
+// "Agent" couvre le fallback `agent_name = getattr(task_output, "agent", None) or "Agent"`
+// de _format_crew_result (backend/crewquestion.py) si task_output.agent est un jour absent.
 const KNOWN_AGENT_ROLES = [
   'Senior Product Owner / Specialist en Qualification',
   'Lead Product / Game Designer',
   'Architecte Logiciel React / TypeScript',
   'Développeur Fullstack React / TypeScript',
   'QA Engineer / Automated Tester',
+  'Agent',
 ];
 
 const BOUNDARY = /\n\n---\n\n(?=##\s+(.+))/g;
