@@ -1,3 +1,6 @@
+# Les champs `role:` ci-dessous sont dupliqués tels quels dans KNOWN_AGENT_ROLES
+# (frontend/src/utils/parseCrewResult.ts) pour découper le résultat combiné par agent
+# dans l'UI. Toute modification d'un `role:` doit être répercutée dans ce fichier frontend.
 qualification_agent:
   role: >
     Senior Product Owner / Specialist en Qualification

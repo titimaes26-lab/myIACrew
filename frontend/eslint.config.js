@@ -18,5 +18,10 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      // Permet de destructurer et jeter une prop (ex: `node` injecté par react-markdown)
+      // sans déclencher d'erreur, tant qu'on utilise le reste via `...rest`.
+      '@typescript-eslint/no-unused-vars': ['error', { ignoreRestSiblings: true }],
+    },
   },
 ])
