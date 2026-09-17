@@ -47,6 +47,10 @@ export function apiClient(apiUrl: string, accessToken: string) {
       fetch(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
 
+    getConversationMessages: (conversationId: number) =>
+      fetch(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
+        .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
+
     listRepoTargets: () =>
       fetch(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<RepoTargetSuggestion[]>(res)),

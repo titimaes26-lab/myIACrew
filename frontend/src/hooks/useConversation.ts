@@ -1,6 +1,17 @@
 import { useState } from 'react';
 import { apiClient, ApiError } from '../api';
-import type { ChatTurn, RepoTarget } from '../types';
+import type { ChatTurn, ExecutionHistoryEntry, RepoTarget } from '../types';
+
+function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
+  return {
+    id: entry.id,
+    userMessage: entry.user_request,
+    status: entry.status,
+    workflow: entry.workflow,
+    result: entry.result,
+    createdAt: entry.created_at,
+  };
+}
 
 export function useConversation(accessToken: string, apiUrl: string) {
   const [conversationId, setConversationId] = useState<number | null>(null);
@@ -11,13 +22,25 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
   const api = apiClient(apiUrl, accessToken);
 
-  // Chaque ouverture de l'interface démarre sur un fil vide (voir startNewConversation) ;
-  // les conversations passées restent consultables via le panneau Historique.
+  // Chaque ouverture de l'interface démarre sur un fil vide ; une conversation passée peut
+  // être reprise explicitement depuis le panneau Historique via loadConversation.
   const startNewConversation = () => {
     setConversationId(null);
     setTurns([]);
     setPendingClarification(null);
     setError(null);
+  };
+
+  const loadConversation = async (id: number) => {
+    setError(null);
+    try {
+      const messages = await api.getConversationMessages(id);
+      setConversationId(id);
+      setTurns(messages.map(historyEntryToTurn));
+      setPendingClarification(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Impossible de charger cette conversation.');
+    }
   };
 
   const sendMessage = async (text: string, repoTarget: RepoTarget) => {
@@ -77,5 +100,5 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  return { turns, sending, error, conversationId, pendingClarification, sendMessage, startNewConversation };
+  return { turns, sending, error, conversationId, pendingClarification, sendMessage, startNewConversation, loadConversation };
 }
