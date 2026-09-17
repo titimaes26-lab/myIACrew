@@ -20,6 +20,17 @@ const KNOWN_AGENT_ROLES = [
   'Agent',
 ];
 
+// Doit rester identique à SUMMARY_SENTINEL (backend/crewquestion.py). Contrairement aux
+// frontières entre agents, le résumé de synthèse n'utilise pas un titre "## <rôle>" (un
+// simple "## Résumé" pourrait apparaître naturellement dans le rapport d'un agent, ex:
+// sa propre sous-section de conclusion) mais ce marqueur, qu'aucun agent n'a normalement
+// de raison de produire lui-même. On exige en plus qu'il soit immédiatement suivi d'un
+// titre "## " (comme le backend le construit toujours) : des agents ayant accès en
+// lecture au code source (read_a_files_content/github_read_file, y compris sur ce
+// dépôt) pourraient un jour citer littéralement la ligne Python `SUMMARY_SENTINEL =
+// "<!--crew-summary-->"`, qui ne serait elle jamais suivie de "## Résumé".
+const SUMMARY_BOUNDARY = /<!--crew-summary-->\n\n(?=##\s+(.+))/g;
+
 const BOUNDARY = /\n\n---\n\n(?=##\s+(.+))/g;
 const AGENT_HEADING = /^##\s+(.+?)\s*\n([\s\S]*)$/;
 
@@ -28,7 +39,15 @@ function isKnownAgentHeading(headingText: string): boolean {
   return KNOWN_AGENT_ROLES.some((role) => role.toLowerCase() === normalized);
 }
 
-export function parseCrewResult(raw: string): CrewResultSection[] {
+function toSection(chunk: string): CrewResultSection {
+  const match = chunk.match(AGENT_HEADING);
+  if (match) {
+    return { agentName: match[1].trim(), content: match[2].trim() };
+  }
+  return { agentName: null, content: chunk };
+}
+
+function parseAgentSections(raw: string): CrewResultSection[] {
   const splitPoints: number[] = [];
   for (const match of raw.matchAll(BOUNDARY)) {
     if (isKnownAgentHeading(match[1]) && match.index !== undefined) {
@@ -44,14 +63,27 @@ export function parseCrewResult(raw: string): CrewResultSection[] {
   }
   chunks.push(raw.slice(cursor));
 
-  const trimmedChunks = chunks.map((chunk) => chunk.trim()).filter(Boolean);
-  if (trimmedChunks.length === 0) return [];
+  return chunks.map((chunk) => chunk.trim()).filter(Boolean).map(toSection);
+}
 
-  return trimmedChunks.map((chunk) => {
-    const match = chunk.match(AGENT_HEADING);
-    if (match) {
-      return { agentName: match[1].trim(), content: match[2].trim() };
-    }
-    return { agentName: null, content: chunk };
-  });
+export function parseCrewResult(raw: string): CrewResultSection[] {
+  // Le dernier match, pas le premier : le backend n'ajoute ce marqueur qu'une seule
+  // fois, à la toute fin. S'il apparaissait par coïncidence plus tôt (voir plus haut),
+  // s'arrêter au premier couperait au mauvais endroit et perdrait le contenu réel qui suit.
+  let lastMatch: RegExpExecArray | null = null;
+  for (const match of raw.matchAll(SUMMARY_BOUNDARY)) {
+    lastMatch = match;
+  }
+
+  if (!lastMatch || lastMatch.index === undefined) {
+    return parseAgentSections(raw);
+  }
+
+  const summaryStart = lastMatch.index + lastMatch[0].length;
+  const sections = parseAgentSections(raw.slice(0, lastMatch.index));
+  const summaryChunk = raw.slice(summaryStart).trim();
+  if (summaryChunk) {
+    sections.push(toSection(summaryChunk));
+  }
+  return sections;
 }
