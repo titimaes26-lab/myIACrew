@@ -6,7 +6,8 @@ from sqlalchemy import text
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 # Récupération de l'URL depuis les variables d'environnement
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dev.db")
+_RAW_DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = _RAW_DATABASE_URL or "sqlite:///./dev.db"
 
 # Ajustement pour PostgreSQL sur Render/Supabase si besoin
 if DATABASE_URL.startswith("postgres://"):
@@ -59,6 +60,15 @@ def _run_lightweight_migrations():
             print(f"MIGRATION IGNORÉE : {statement!r} -> {type(e).__name__}: {e}")
 
 def create_db_and_tables():
+    if _RAW_DATABASE_URL is None:
+        print(
+            "ATTENTION : DATABASE_URL n'est pas définie — le backend utilise une base "
+            "SQLite locale et éphémère (sqlite:///./dev.db), PAS Supabase. Toutes les "
+            "données seront perdues au prochain redémarrage/redéploiement. Configure "
+            "DATABASE_URL avec la chaîne de connexion Postgres de Supabase."
+        )
+    else:
+        print(f"Connexion à la base de données : {engine.url.render_as_string(hide_password=True)}")
     SQLModel.metadata.create_all(engine)
     _run_lightweight_migrations()
 
