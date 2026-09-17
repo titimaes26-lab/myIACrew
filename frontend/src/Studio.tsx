@@ -5,11 +5,13 @@ import StudioHeader from './components/StudioHeader';
 import QualificationForm from './components/QualificationForm';
 import QualificationReportPanel from './components/QualificationReportPanel';
 import ExecutionResultPanel from './components/ExecutionResultPanel';
+import HistoryPanel from './components/HistoryPanel';
 
 export default function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: string }) {
   const [prompt, setPrompt] = useState('');
   const [loadingQualif, setLoadingQualif] = useState(false);
   const [loadingExec, setLoadingExec] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const [report, setReport] = useState<QualificationReport | null>(null);
   const [selectedWorkflow, setSelectedWorkflow] = useState<string>('');
@@ -94,7 +96,13 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
 
   return (
     <div style={{ maxWidth: '850px', margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', color: '#333' }}>
-      <StudioHeader userEmail={userEmail} />
+      <StudioHeader
+        userEmail={userEmail}
+        historyOpen={showHistory}
+        onToggleHistory={() => setShowHistory((open) => !open)}
+      />
+
+      {showHistory && <HistoryPanel apiUrl={API_URL} accessToken={accessToken} />}
 
       {errorMessage && (
         <div style={{ padding: '12px 16px', backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', color: '#991b1b', marginBottom: '20px', fontWeight: '500' }}>
