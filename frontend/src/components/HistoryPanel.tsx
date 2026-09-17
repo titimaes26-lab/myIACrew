@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiClient } from '../api';
 import type { ExecutionHistoryEntry } from '../types';
+import { toServerDate } from '../utils/serverDate';
 
 interface HistoryPanelProps {
   apiUrl: string;
@@ -73,7 +74,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
           >
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: '13px', color: '#666' }}>
-                {new Date(entry.created_at).toLocaleString('fr-FR')} · {entry.workflow} · {STATUS_LABEL[entry.status]}
+                {toServerDate(entry.created_at).toLocaleString('fr-FR')} · {entry.workflow} · {STATUS_LABEL[entry.status]}
                 {entry.repo_owner && entry.repo_name && ` · ${entry.repo_owner}/${entry.repo_name}`}
               </div>
               <div style={{ fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

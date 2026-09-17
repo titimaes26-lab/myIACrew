@@ -279,10 +279,16 @@ class AppDevelopmentCrew():
         except Exception as e:
             # Identifie la tâche qui était en cours au moment de l'échec (celle juste
             # après la dernière complétée avec succès) pour que le frontend puisse
-            # afficher "échec pendant X" plutôt qu'une erreur générique.
-            failed_task = selected_tasks[completed_count] if completed_count < len(selected_tasks) else None
-            agent_role = failed_task.agent.role if failed_task else "étape finale"
-            raise CrewStepError(completed_count + 1, len(selected_tasks), agent_role, e) from e
+            # afficher "échec pendant X" plutôt qu'une erreur générique. Si toutes les
+            # tâches ont déjà déclenché leur callback (échec après coup, ex: pendant
+            # l'agrégation du résultat par crewai), on ne dépasse pas total_steps.
+            if completed_count < len(selected_tasks):
+                step_index = completed_count + 1
+                agent_role = selected_tasks[completed_count].agent.role
+            else:
+                step_index = len(selected_tasks)
+                agent_role = "finalisation du résultat"
+            raise CrewStepError(step_index, len(selected_tasks), agent_role, e) from e
 
         quota_mgr.last_execution_time = time.time()
         return _format_crew_result(result)

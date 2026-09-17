@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { WORKFLOW_STEPS, DEFAULT_STEPS } from '../constants/workflowSteps';
 import { formatSeconds } from '../utils/formatDuration';
+import { toServerDate } from '../utils/serverDate';
 
 const STEP_ADVANCE_MS = 9000;
 const TICK_MS = 1000;
 
 function elapsedSecondsSince(since: string): number {
-  return (Date.now() - new Date(since).getTime()) / 1000;
+  return (Date.now() - toServerDate(since).getTime()) / 1000;
 }
 
 interface StepIndicatorProps {
