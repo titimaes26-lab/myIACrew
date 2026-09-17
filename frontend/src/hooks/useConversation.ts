@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { apiClient, ApiError } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, RepoTarget } from '../types';
 
@@ -22,33 +22,25 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
   const api = apiClient(apiUrl, accessToken);
 
-  // Reprend la conversation la plus récemment active au chargement
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const conversations = await api.listConversations(1);
-        if (cancelled || conversations.length === 0) return;
-        const latest = conversations[0];
-        const messages = await api.getConversationMessages(latest.id);
-        if (cancelled) return;
-        setConversationId(latest.id);
-        setTurns(messages.map(historyEntryToTurn));
-      } catch (err: unknown) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Impossible de charger la conversation.');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // Chaque ouverture de l'interface démarre sur un fil vide ; une conversation passée peut
+  // être reprise explicitement depuis le panneau Historique via loadConversation.
   const startNewConversation = () => {
     setConversationId(null);
     setTurns([]);
     setPendingClarification(null);
     setError(null);
+  };
+
+  const loadConversation = async (id: number) => {
+    setError(null);
+    try {
+      const messages = await api.getConversationMessages(id);
+      setConversationId(id);
+      setTurns(messages.map(historyEntryToTurn));
+      setPendingClarification(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Impossible de charger cette conversation.');
+    }
   };
 
   const sendMessage = async (text: string, repoTarget: RepoTarget) => {
@@ -108,5 +100,5 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  return { turns, sending, error, conversationId, pendingClarification, sendMessage, startNewConversation };
+  return { turns, sending, error, conversationId, pendingClarification, sendMessage, startNewConversation, loadConversation };
 }

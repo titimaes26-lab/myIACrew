@@ -1,4 +1,4 @@
-import type { Conversation, ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
+import type { ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
 
 interface ExecuteResponse {
   status: string;
@@ -43,16 +43,12 @@ export function apiClient(apiUrl: string, accessToken: string) {
         body: JSON.stringify(payload),
       }).then((res) => parseJsonOrThrow<ExecuteResponse>(res)),
 
-    listConversations: (limit = 20) =>
-      fetch(`${apiUrl}/api/conversations?limit=${limit}`, { headers: authHeaders(accessToken) })
-        .then((res) => parseJsonOrThrow<Conversation[]>(res)),
+    listHistory: () =>
+      fetch(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
+        .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
 
     getConversationMessages: (conversationId: number) =>
       fetch(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
-        .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
-
-    listHistory: () =>
-      fetch(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
 
     listRepoTargets: () =>

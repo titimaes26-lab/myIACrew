@@ -8,7 +8,12 @@ import HistoryPanel from './components/HistoryPanel';
 export default function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: string }) {
   const [showHistory, setShowHistory] = useState(false);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-  const { turns, sending, error, sendMessage, startNewConversation } = useConversation(accessToken, API_URL);
+  const { turns, sending, error, sendMessage, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
+
+  const handleResumeConversation = (conversationId: number) => {
+    loadConversation(conversationId);
+    setShowHistory(false);
+  };
 
   return (
     <div style={{ maxWidth: '850px', margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', color: '#333' }}>
@@ -28,7 +33,9 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
         </button>
       </div>
 
-      {showHistory && <HistoryPanel apiUrl={API_URL} accessToken={accessToken} />}
+      {showHistory && (
+        <HistoryPanel apiUrl={API_URL} accessToken={accessToken} onResumeConversation={handleResumeConversation} />
+      )}
 
       {error && (
         <div style={{ padding: '12px 16px', backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', color: '#991b1b', marginBottom: '20px', fontWeight: '500' }}>

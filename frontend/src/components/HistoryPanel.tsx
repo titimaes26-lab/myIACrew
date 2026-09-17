@@ -5,6 +5,7 @@ import type { ExecutionHistoryEntry } from '../types';
 interface HistoryPanelProps {
   apiUrl: string;
   accessToken: string;
+  onResumeConversation: (conversationId: number) => void;
 }
 
 const STATUS_LABEL: Record<ExecutionHistoryEntry['status'], string> = {
@@ -13,7 +14,7 @@ const STATUS_LABEL: Record<ExecutionHistoryEntry['status'], string> = {
   failed: '❌ Échec',
 };
 
-export default function HistoryPanel({ apiUrl, accessToken }: HistoryPanelProps) {
+export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation }: HistoryPanelProps) {
   const [entries, setEntries] = useState<ExecutionHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,14 +80,25 @@ export default function HistoryPanel({ apiUrl, accessToken }: HistoryPanelProps)
                 {entry.user_request}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => handleDelete(entry.id)}
-              disabled={deletingId === entry.id}
-              style={{ flexShrink: 0, padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: deletingId === entry.id ? 'not-allowed' : 'pointer', fontSize: '13px' }}
-            >
-              {deletingId === entry.id ? '...' : 'Supprimer'}
-            </button>
+            <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+              {entry.conversation_id !== null && (
+                <button
+                  type="button"
+                  onClick={() => onResumeConversation(entry.conversation_id!)}
+                  style={{ padding: '6px 10px', backgroundColor: '#e0f2fe', color: '#075985', border: '1px solid #7dd3fc', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}
+                >
+                  Reprendre
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => handleDelete(entry.id)}
+                disabled={deletingId === entry.id}
+                style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: deletingId === entry.id ? 'not-allowed' : 'pointer', fontSize: '13px' }}
+              >
+                {deletingId === entry.id ? '...' : 'Supprimer'}
+              </button>
+            </div>
           </li>
         ))}
       </ul>
