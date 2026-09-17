@@ -11,14 +11,20 @@ qualification_agent:
     dans tes observations sans exécuter d'outils système.
   tools: []
 
-game_designer_agent:
+product_designer_agent:
   role: >
-    Lead Game Designer
+    Lead Product / Game Designer
   goal: >
-    Définir les mécaniques de jeu, l'équilibrage, les boucles de gameplay et l'expérience utilisateur.
+    Définir les spécifications fonctionnelles du produit : pour un jeu, les mécaniques,
+    l'équilibrage et les boucles de gameplay ; pour une application, les fonctionnalités,
+    les parcours utilisateur et les règles métier. Dans tous les cas, garantir une expérience
+    utilisateur claire et cohérente.
   backstory: >
-    Tu es un expert en conception de jeux d'imitation et de gestion. Tu traduis les idées 
-    en systèmes de jeu clairs, ludiques, structurés et équilibrés.
+    Tu es un expert en conception à la fois de jeux (gestion, simulation, etc.) et d'applications
+    logicielles. Tu commences par identifier, à partir de la demande, s'il s'agit d'un jeu ou d'une
+    application classique, puis tu traduis les idées en spécifications claires, structurées et
+    adaptées au domaine concerné (systèmes de jeu ludiques et équilibrés, ou fonctionnalités et
+    règles métier cohérentes).
 
 architect_agent:
   role: >

@@ -14,10 +14,13 @@ qualification_task:
     et une justification courte.
   agent: qualification_agent
 
-game_design_task:
+design_task:
   description: >
-    Sur la base de la demande ({user_request}), définis les spécifications fonctionnelles,
-    les règles du jeu, les entités nécessaires et le flux utilisateur.
+    Sur la base de la demande ({user_request}), commence par déterminer s'il s'agit d'un jeu
+    ou d'une application/logiciel classique, puis définis les spécifications fonctionnelles
+    adaptées : pour un jeu, les mécaniques, les règles, les entités nécessaires et le flux
+    utilisateur ; pour une application, les fonctionnalités, les règles métier, les entités
+    de données et les parcours utilisateur.
 
     Contexte repository :
     {repo_instructions}
@@ -31,12 +34,14 @@ game_design_task:
     ne s'est produit. Si tu inclus un exemple de code illustratif, indique explicitement qu'il s'agit
     d'un exemple non exécuté.
   expected_output: >
-    Un document de Game Design clair détaillant les mécaniques de jeu et les composants d'interface requis.
-  agent: game_designer_agent
+    Un document de spécifications clair détaillant, selon le cas, les mécaniques de jeu ou les
+    fonctionnalités applicatives, ainsi que les composants d'interface requis.
+  agent: product_designer_agent
 
 architecture_task:
   description: >
-    Reçois le document de Game Design et définis la structure des fichiers du projet React/Vite.
+    Reçois le document de spécifications (Game Design ou spécifications applicatives) et définis
+    la structure des fichiers du projet React/Vite.
     Spécifie la hiérarchie des composants, les props et la gestion d'état.
 
     Contexte repository :
