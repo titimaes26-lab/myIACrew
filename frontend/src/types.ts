@@ -34,7 +34,9 @@ export interface RepoTargetSuggestion {
 export interface ChatTurn {
   id: number | string;
   userMessage: string;
-  status: 'clarifying' | 'running' | 'success' | 'failed';
+  // 'cancelled' est un état frontend uniquement : annuler n'interrompt que l'attente
+  // côté navigateur, pas forcément l'exécution côté serveur (voir useConversation.ts).
+  status: 'clarifying' | 'running' | 'success' | 'failed' | 'cancelled';
   workflow?: string;
   agentSummary?: string;
   questions?: string[];

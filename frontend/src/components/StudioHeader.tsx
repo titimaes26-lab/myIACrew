@@ -10,7 +10,7 @@ export default function StudioHeader({ userEmail, historyOpen, onToggleHistory }
   return (
     <header style={{ borderBottom: '2px solid #eaeaea', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
       <h2 style={{ margin: 0 }}>🎮 Studio CrewAI — Assistant de Développement</h2>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px', fontSize: '14px' }}>
         <span style={{ color: '#666' }}>{userEmail}</span>
         <button
           type="button"
