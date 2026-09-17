@@ -221,6 +221,33 @@ async def get_conversation_messages(
     )
     return session.exec(statement).all()
 
+@app.get("/api/repo-targets")
+async def list_repo_targets(
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Combinaisons owner/repo/branche déjà utilisées par l'utilisateur, les plus récentes en premier."""
+    statement = (
+        select(ExecutionHistory.repo_owner, ExecutionHistory.repo_name, ExecutionHistory.base_branch)
+        .where(ExecutionHistory.user_id == user.get("id"))
+        .where(ExecutionHistory.repo_owner.is_not(None))
+        .where(ExecutionHistory.repo_name.is_not(None))
+        .order_by(ExecutionHistory.created_at.desc())
+    )
+    rows = session.exec(statement).all()
+
+    seen = set()
+    targets = []
+    for repo_owner, repo_name, base_branch in rows:
+        key = (repo_owner, repo_name, base_branch)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append({"repo_owner": repo_owner, "repo_name": repo_name, "base_branch": base_branch})
+        if len(targets) >= 20:
+            break
+    return targets
+
 @app.get("/api/history", response_model=List[ExecutionHistory])
 async def get_history(
     limit: int = 20,

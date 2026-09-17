@@ -31,6 +31,12 @@ export interface RepoTarget {
   branch: string;
 }
 
+export interface RepoTargetSuggestion {
+  repo_owner: string;
+  repo_name: string;
+  base_branch: string | null;
+}
+
 export interface ChatTurn {
   id: number | string;
   userMessage: string;

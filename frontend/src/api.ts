@@ -1,4 +1,4 @@
-import type { Conversation, ExecutionHistoryEntry, QualificationReport } from './types';
+import type { Conversation, ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
 
 interface ExecuteResponse {
   status: string;
@@ -54,6 +54,10 @@ export function apiClient(apiUrl: string, accessToken: string) {
     listHistory: () =>
       fetch(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
+
+    listRepoTargets: () =>
+      fetch(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })
+        .then((res) => parseJsonOrThrow<RepoTargetSuggestion[]>(res)),
 
     deleteHistoryEntry: (id: number) =>
       fetch(`${apiUrl}/api/history/${id}`, { method: 'DELETE', headers: authHeaders(accessToken) })
