@@ -1,4 +1,8 @@
 import type { ChatTurn } from '../types';
+import MarkdownRenderer from './MarkdownRenderer';
+import StepIndicator from './StepIndicator';
+import { parseCrewResult } from '../utils/parseCrewResult';
+import { agentIcon } from '../constants/agentIcons';
 
 const STATUS_LABEL: Record<ChatTurn['status'], string> = {
   clarifying: '❓ Précisions nécessaires',
@@ -29,10 +33,27 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
           </ul>
         )}
 
+        {turn.status === 'running' && (
+          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} />
+        )}
+
         {turn.result && (
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
-            {turn.result}
-          </pre>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {parseCrewResult(turn.result).map((section, i) => (
+              <div
+                key={i}
+                style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
+              >
+                {section.agentName && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
+                    <span>{agentIcon(section.agentName)}</span>
+                    <span>{section.agentName}</span>
+                  </div>
+                )}
+                <MarkdownRenderer content={section.content} />
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>
