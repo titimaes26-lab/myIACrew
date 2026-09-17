@@ -1,4 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from './supabaseClient';
+import Login from './Login';
 
 interface QualificationReport {
   summary: string;
@@ -8,6 +11,34 @@ interface QualificationReport {
 }
 
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (authLoading) {
+    return <div style={{ textAlign: 'center', marginTop: '80px', fontFamily: 'system-ui, sans-serif' }}>Chargement...</div>;
+  }
+
+  if (!session) {
+    return <Login />;
+  }
+
+  return <Studio accessToken={session.access_token} userEmail={session.user.email ?? ''} />;
+}
+
+function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: string }) {
   const [prompt, setPrompt] = useState('');
   const [loadingQualif, setLoadingQualif] = useState(false);
   const [loadingExec, setLoadingExec] = useState(false);
@@ -35,7 +66,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_URL}/api/qualify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({ user_request: prompt }),
       });
 
@@ -64,7 +95,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_URL}/api/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({
           user_request: prompt,
           target_workflow: selectedWorkflow,
@@ -92,8 +123,18 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '850px', margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', color: '#333' }}>
-      <header style={{ borderBottom: '2px solid #eaeaea', paddingBottom: '10px', marginBottom: '20px' }}>
-        <h2>🎮 Studio CrewAI — Assistant de Développement</h2>
+      <header style={{ borderBottom: '2px solid #eaeaea', paddingBottom: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <h2 style={{ margin: 0 }}>🎮 Studio CrewAI — Assistant de Développement</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px' }}>
+          <span style={{ color: '#666' }}>{userEmail}</span>
+          <button
+            type="button"
+            onClick={() => supabase.auth.signOut()}
+            style={{ padding: '6px 12px', backgroundColor: '#f3f4f6', color: '#333', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer' }}
+          >
+            Déconnexion
+          </button>
+        </div>
       </header>
 
       {/* Affichage des erreurs en haut du formulaire */}

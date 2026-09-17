@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from crewquestion import AppDevelopmentCrew, AnalysisReport
 from database import create_db_and_tables, get_session, ExecutionHistory
+from auth import get_current_user
 
 # 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
 app = FastAPI(title="CrewAI App Development API")
@@ -47,7 +48,7 @@ def read_root():
     return {"status": "API CrewAI opérationnelle"}
 
 @app.post("/api/qualify", response_model=AnalysisReport)
-async def qualify_request(data: UserRequestInput):
+async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):
     """Étape 1 : Qualification du besoin"""
     try:
         report = await crew_instance.analyze_user_request(data.user_request)
@@ -61,7 +62,8 @@ async def qualify_request(data: UserRequestInput):
 @app.post("/api/execute")
 async def execute_workflow(
     data: WorkflowExecutionInput,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
 ):
     """Étape 2 : Lancement dynamique des agents & enregistrement BDD"""
     final_prompt = (
