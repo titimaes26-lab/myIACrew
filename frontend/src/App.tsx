@@ -10,6 +10,42 @@ interface QualificationReport {
   questions: string[];
 }
 
+// Séquence d'agents par workflow, alignée sur run_dynamic_crew (backend/crewquestion.py).
+// Le backend ne fait pas de streaming de progression : cette séquence sert à afficher une
+// estimation de l'étape en cours pendant l'attente de la réponse finale de /api/execute.
+const WORKFLOW_STEPS: Record<string, string[]> = {
+  ANALYSE_ONLY: ['Game Designer — Spécifications', 'Architecte — Structure technique'],
+  BUGFIX: ['Développeur — Implémentation', 'QA — Revue qualité'],
+  FEATURE: ['Architecte — Structure technique', 'Développeur — Implémentation', 'QA — Revue qualité'],
+  DESIGN_AND_DEV: ['Game Designer — Spécifications', 'Architecte — Structure technique', 'Développeur — Implémentation', 'QA — Revue qualité'],
+};
+
+const ESTIMATED_STEP_DURATION_MS = 25000;
+
+function AgentStepIndicator({ steps, currentIndex }: { steps: string[]; currentIndex: number }) {
+  if (steps.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: '20px', backgroundColor: '#fff', padding: '15px', borderRadius: '6px', border: '1px solid #e1e4e8' }}>
+      <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>⚙️ Progression estimée :</p>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {steps.map((step, i) => {
+          const isDone = i < currentIndex;
+          const isCurrent = i === currentIndex;
+          return (
+            <li key={step} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: isCurrent ? '#0070f3' : isDone ? '#059669' : '#9ca3af', transition: 'color 0.2s ease' }}>
+              <span aria-hidden style={{ display: 'inline-block', width: '18px', textAlign: 'center' }}>
+                {isDone ? '✅' : isCurrent ? '🔄' : '⚪'}
+              </span>
+              <span style={{ fontWeight: isCurrent ? 'bold' : 'normal' }}>{step}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -51,8 +87,23 @@ function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: st
   const [repoOwner, setRepoOwner] = useState('');
   const [repoName, setRepoName] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
+  const [currentStep, setCurrentStep] = useState(0);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const executionSteps = WORKFLOW_STEPS[selectedWorkflow] ?? [];
+
+  // Avance l'indicateur d'étape à un rythme estimé pendant l'exécution des agents.
+  // Reste bloqué sur la dernière étape tant que la réponse finale n'est pas arrivée.
+  useEffect(() => {
+    if (!loadingExec || executionSteps.length === 0) return;
+
+    const interval = setInterval(() => {
+      setCurrentStep((step) => Math.min(step + 1, executionSteps.length - 1));
+    }, ESTIMATED_STEP_DURATION_MS);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingExec]);
 
   // Étape 1 : Appel API Qualification
   const handleQualify = async (e: React.FormEvent) => {
@@ -89,6 +140,7 @@ function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: st
   // Étape 2 : Appel API Exécution
   const handleExecute = async () => {
     setLoadingExec(true);
+    setCurrentStep(0);
     setErrorMessage(null);
     setExecutionResult(null);
 
@@ -113,6 +165,7 @@ function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: st
 
       const data = await res.json();
       setExecutionResult(data.result);
+      setCurrentStep(executionSteps.length);
     } catch (err: any) {
       console.error('Erreur execution:', err);
       setErrorMessage(err.message || "Erreur lors de l'exécution du workflow.");
@@ -268,6 +321,8 @@ function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: st
           >
             {loadingExec ? '⚙️ Les agents travaillent sur votre projet (veuillez patienter)...' : `2. Lancer le Workflow ${selectedWorkflow}`}
           </button>
+
+          {loadingExec && <AgentStepIndicator steps={executionSteps} currentIndex={currentStep} />}
         </div>
       )}
 
