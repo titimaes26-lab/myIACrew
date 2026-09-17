@@ -60,10 +60,6 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  /* Sans ça, ce flex item (colonne unique) hérite d'un min-width:auto qui l'empêche
-     de rétrécir sous la largeur max-content de son contenu (ex: l'en-tête, une bulle
-     de message longue), et force toute la page à déborder horizontalement sur mobile. */
-  min-width: 0;
 }
 
 body {

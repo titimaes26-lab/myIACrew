@@ -35,6 +35,10 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // Chaque ouverture de l'interface démarre sur un fil vide ; une conversation passée peut
   // être reprise explicitement depuis le panneau Historique via loadConversation.
   const startNewConversation = () => {
+    // Sans ça, une requête encore en vol pourrait se résoudre après coup et rattacher
+    // ce nouveau fil (vide) au conversationId de l'ancienne requête via son propre
+    // setConversationId(data.conversation_id) dans sendMessage.
+    cancelSending();
     setConversationId(null);
     setTurns([]);
     setPendingClarification(null);

@@ -16,6 +16,10 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   };
 
   return (
+    // #root (index.css) est display:flex ; ce div en est le seul enfant, donc un flex
+    // item. Sans width:100%/minWidth:0, son min-width par défaut ("auto") vaut le
+    // max-content de son contenu (en-tête, bulle de message longue…), l'empêchant de
+    // rétrécir sous cette largeur et forçant la page entière à déborder sur mobile.
     <div style={{ maxWidth: '850px', width: '100%', minWidth: 0, margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', boxSizing: 'border-box', color: '#333' }}>
       <StudioHeader
         userEmail={userEmail}

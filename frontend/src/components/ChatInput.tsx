@@ -2,28 +2,10 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { apiClient } from '../api';
 import type { RepoTarget, RepoTargetSuggestion } from '../types';
 import RepoTargetFields from './RepoTargetFields';
+import { readChatDraft, writeChatDraft } from '../utils/chatDraft';
 
-const DRAFT_KEY = 'myiacrew:chat-draft';
 const MIN_TEXTAREA_HEIGHT = 52;
 const MAX_TEXTAREA_HEIGHT = 200;
-
-function readDraft(): string {
-  try {
-    return localStorage.getItem(DRAFT_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function writeDraft(value: string) {
-  try {
-    if (value) localStorage.setItem(DRAFT_KEY, value);
-    else localStorage.removeItem(DRAFT_KEY);
-  } catch {
-    // Stockage indisponible (navigation privée, quota, etc.) : le brouillon ne sera
-    // simplement pas conservé entre rechargements.
-  }
-}
 
 interface ChatInputProps {
   disabled: boolean;
@@ -34,7 +16,7 @@ interface ChatInputProps {
 }
 
 export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onSend }: ChatInputProps) {
-  const [text, setText] = useState(readDraft);
+  const [text, setText] = useState(readChatDraft);
   const [showRepoFields, setShowRepoFields] = useState(false);
   const [repoOwner, setRepoOwner] = useState('');
   const [repoName, setRepoName] = useState('');
@@ -43,7 +25,7 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    writeDraft(text);
+    writeChatDraft(text);
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
