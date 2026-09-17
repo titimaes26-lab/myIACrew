@@ -93,6 +93,25 @@ class QuotaManager:
 
 quota_mgr = QuotaManager()
 
+def _format_crew_result(result) -> str:
+    """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
+
+    result.raw ne reflète que la sortie de la dernière tâche du crew. Pour un workflow
+    à plusieurs tâches (ex: ANALYSE_ONLY = game_design_task puis architecture_task), le
+    contenu produit par les tâches précédentes serait sinon silencieusement perdu et
+    jamais renvoyé à l'utilisateur.
+    """
+    tasks_output = getattr(result, "tasks_output", None)
+    if not tasks_output or len(tasks_output) <= 1:
+        return str(result.raw) if hasattr(result, "raw") else str(result)
+
+    sections = []
+    for task_output in tasks_output:
+        agent_name = getattr(task_output, "agent", None) or "Agent"
+        raw = getattr(task_output, "raw", None) or str(task_output)
+        sections.append(f"## {agent_name}\n\n{raw}")
+    return "\n\n---\n\n".join(sections)
+
 # --- PYDANTIC MODEL & LLM ---
 class AnalysisReport(BaseModel):
     summary: str = Field(description="Résumé en 2-3 phrases de ce que l'agent a compris de la demande.")
@@ -236,4 +255,4 @@ class AppDevelopmentCrew():
         )
         result = await dynamic_crew.kickoff_async(inputs=inputs)
         quota_mgr.last_execution_time = time.time()
-        return result
+        return _format_crew_result(result)
