@@ -9,3 +9,4 @@ crewai-tools[google-genai]
 google-genai
 sqlmodel
 psycopg2-binary
+PyGithub
