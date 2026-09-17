@@ -37,7 +37,6 @@ export default function Login() {
         <input
           type="password"
           required
-          minLength={6}
           placeholder="Mot de passe"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
