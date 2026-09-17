@@ -1,5 +1,6 @@
 export function agentIcon(agentName: string): string {
   const name = agentName.toLowerCase();
+  if (name.includes('résumé')) return '📝';
   if (name.includes('qa') || name.includes('test')) return '🔍';
   if (name.includes('architect')) return '🏗️';
   if (name.includes('dév') || name.includes('dev')) return '💻';

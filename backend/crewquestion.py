@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import functools
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Literal, Callable, Any
 from dotenv import load_dotenv
@@ -106,6 +107,20 @@ class CrewStepError(Exception):
         self.agent_role = agent_role.strip()
         super().__init__(str(original))
 
+def _iter_task_sections(result):
+    """Génère (agent_name, raw) pour chaque tâche exécutée.
+
+    Logique de repli partagée entre _format_crew_result (affichage) et
+    _build_summary_input (résumé), pour que les deux ne puissent pas diverger
+    silencieusement en n'étant corrigés que d'un seul côté.
+    """
+    tasks_output = getattr(result, "tasks_output", None) or []
+    for task_output in tasks_output:
+        agent_name = (getattr(task_output, "agent", None) or "Agent").strip()
+        raw = getattr(task_output, "raw", None)
+        raw = raw if raw is not None else str(task_output)
+        yield agent_name, raw
+
 def _format_crew_result(result) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
@@ -118,11 +133,7 @@ def _format_crew_result(result) -> str:
     if not tasks_output or len(tasks_output) <= 1:
         return str(result.raw) if hasattr(result, "raw") else str(result)
 
-    sections = []
-    for task_output in tasks_output:
-        agent_name = getattr(task_output, "agent", None) or "Agent"
-        raw = getattr(task_output, "raw", None) or str(task_output)
-        sections.append(f"## {agent_name}\n\n{raw}")
+    sections = [f"## {agent_name}\n\n{raw}" for agent_name, raw in _iter_task_sections(result)]
     return "\n\n---\n\n".join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
@@ -137,6 +148,98 @@ class AnalysisReport(BaseModel):
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
 gemini_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.7, request_timeout=120)
 file_write_tool = FileWriterTool()
+
+# Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
+# du reste sans ambiguïté (voir parseCrewResult.ts). Un simple titre "## Résumé" pourrait
+# apparaître naturellement dans le rapport d'un agent (ex: sa propre sous-section de
+# conclusion) ; ce commentaire HTML, lui, n'a aucune raison d'être produit par un agent.
+SUMMARY_SENTINEL = "<!--crew-summary-->"
+
+# Borne la taille du texte envoyé au modèle pour la synthèse : le résultat combiné peut
+# contenir du code source complet (workflows FEATURE/DESIGN_AND_DEV), et ce résumé n'est
+# qu'un ajout de confort qui ne justifie pas de peser significativement sur le quota
+# Gemini déjà sous tension (cf. adaptive_pause/retry_on_rate_limit_async ci-dessus).
+MAX_SUMMARY_INPUT_CHARS = 6000
+
+# Timeout dédié, plus court que celui des agents (120s) : un résumé qui traîne ne doit
+# pas ajouter jusqu'à 2 minutes à une réponse dont le vrai travail est déjà terminé.
+summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, request_timeout=20)
+
+MAX_SUMMARY_REQUEST_CHARS = 1500
+
+# Pool dédié et volontairement petit : asyncio.wait_for peut abandonner l'attente d'un
+# appel bloqué (ex: litellm qui enchaîne ses propres tentatives internes bien au-delà de
+# SUMMARY_WALL_CLOCK_TIMEOUT) sans pouvoir arrêter le thread sous-jacent. En isolant ces
+# threads orphelins potentiels dans un pool à part, une panne prolongée de Gemini ne peut
+# jamais épuiser le pool par défaut dont dépend le reste de l'application. Ce pool dédié
+# peut lui-même se retrouver saturé le temps que litellm abandonne ses propres tentatives
+# (borné par LITELLM_NUM_RETRIES/le backoff, pas indéfini) : dans ce cas les résumés sont
+# simplement absents pendant cette fenêtre, sans jamais affecter le résultat des agents.
+_summary_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="crew-summary")
+
+def _build_summary_input(result) -> str:
+    """Texte borné donné en entrée au résumé, avec un budget de troncature réparti
+    à parts égales entre les tâches plutôt qu'une simple troncature globale : sur un
+    workflow à plusieurs tâches (ex: FEATURE), une troncature globale ne garderait que
+    le début (architecture) et perdrait entièrement le code produit et l'avis QA, qui
+    sont pourtant l'essentiel de ce qui a été livré.
+    """
+    sections = list(_iter_task_sections(result))
+    if not sections:
+        raw = getattr(result, "raw", None)
+        text = raw if raw is not None else str(result)
+        return text[:MAX_SUMMARY_INPUT_CHARS]
+
+    per_task_budget = max(MAX_SUMMARY_INPUT_CHARS // len(sections), 500)
+    parts = []
+    for agent_name, raw in sections:
+        truncated = raw[:per_task_budget]
+        if len(raw) > per_task_budget:
+            truncated += " [...tronqué...]"
+        parts.append(f"## {agent_name}\n{truncated}")
+    return "\n\n".join(parts)
+
+def _build_summary_prompt(user_request: str, summary_input: str) -> str:
+    # user_request vient du texte libre saisi par l'utilisateur (aucune limite de
+    # longueur côté frontend) : le borner évite qu'une saisie très longue fasse, à elle
+    # seule, dépasser le budget de taille que ce résumé est censé respecter.
+    truncated_request = user_request[:MAX_SUMMARY_REQUEST_CHARS]
+    return (
+        "Voici le résultat produit par une équipe d'agents IA pour répondre à la "
+        f"demande suivante :\n\n{truncated_request}\n\n"
+        f"Résultat complet :\n---\n{summary_input}\n---\n\n"
+        "Rédige, en français, un résumé de 3 à 5 phrases clair et concret de ce qui a "
+        "été livré (décisions clés, ce qui a été produit). N'invente rien qui ne soit "
+        "pas déjà présent dans le résultat ci-dessus."
+    )
+
+# Borne le temps d'attente total (au-delà du request_timeout de summary_llm lui-même),
+# car LITELLM_NUM_RETRIES=7 (défini plus haut, process-wide) s'applique aussi à cet
+# appel : sans ce filet, une erreur transitoire pourrait déclencher jusqu'à 7 tentatives
+# internes avant que summary_llm.call() ne lève enfin, contredisant l'objectif même
+# d'un résumé qui ne doit jamais faire attendre longtemps une réponse déjà acquise.
+SUMMARY_WALL_CLOCK_TIMEOUT = 25
+
+async def _generate_summary(user_request: str, result) -> str | None:
+    """Résumé de synthèse ajouté en fin de résultat combiné.
+
+    Best-effort : un échec ici (quota, timeout...) ne doit jamais faire échouer
+    l'exécution, dont le résultat des agents est déjà acquis à ce stade. Volontairement
+    sans retry applicatif : ce n'est qu'un ajout de confort, pas la livraison principale.
+    """
+    def _call() -> str:
+        quota_mgr.adaptive_pause()
+        return summary_llm.call(_build_summary_prompt(user_request, _build_summary_input(result)))
+
+    try:
+        loop = asyncio.get_running_loop()
+        text = await asyncio.wait_for(
+            loop.run_in_executor(_summary_executor, _call), timeout=SUMMARY_WALL_CLOCK_TIMEOUT
+        )
+        return text.strip() or None
+    except Exception as e:
+        print(f"Génération du résumé ignorée : {type(e).__name__}: {e}")
+        return None
 
 # --- CREW BASE ---
 @CrewBase
@@ -290,5 +393,17 @@ class AppDevelopmentCrew():
                 agent_role = "finalisation du résultat"
             raise CrewStepError(step_index, len(selected_tasks), agent_role, e) from e
 
+        formatted = _format_crew_result(result)
+
+        # last_execution_time n'est délibérément pas remis à jour avant cet appel :
+        # on_task_complete() (task_callback ci-dessus) l'a déjà fait à la fin de la
+        # dernière tâche. Le remettre à `time.time()` ici ferait toujours mesurer un
+        # écart quasi nul à adaptive_pause() dans _generate_summary, forçant une pause
+        # maximale (5s) systématique au lieu d'une pause proportionnée au temps déjà
+        # écoulé depuis le dernier appel Gemini réel.
+        summary = await _generate_summary(inputs.get('user_request', ''), result)
+        if summary:
+            formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary}"
+
         quota_mgr.last_execution_time = time.time()
-        return _format_crew_result(result)
+        return formatted
