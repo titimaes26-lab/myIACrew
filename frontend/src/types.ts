@@ -12,7 +12,32 @@ export interface ExecutionHistoryEntry {
   clarifications: string | null;
   result: string | null;
   status: 'running' | 'success' | 'failed';
+  conversation_id: number | null;
   repo_owner: string | null;
   repo_name: string | null;
   created_at: string;
+}
+
+export interface Conversation {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RepoTarget {
+  owner: string;
+  name: string;
+  branch: string;
+}
+
+export interface ChatTurn {
+  id: number | string;
+  userMessage: string;
+  status: 'clarifying' | 'running' | 'success' | 'failed';
+  workflow?: string;
+  agentSummary?: string;
+  questions?: string[];
+  result?: string | null;
+  createdAt: string;
 }

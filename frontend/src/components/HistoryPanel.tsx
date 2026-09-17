@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { apiClient } from '../api';
 import type { ExecutionHistoryEntry } from '../types';
 
 interface HistoryPanelProps {
@@ -20,15 +21,10 @@ export default function HistoryPanel({ apiUrl, accessToken }: HistoryPanelProps)
 
   useEffect(() => {
     let cancelled = false;
+    const api = apiClient(apiUrl, accessToken);
 
-    fetch(`${apiUrl}/api/history`, {
-      headers: { 'Authorization': `Bearer ${accessToken}` },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`Erreur serveur (${res.status})`);
-        return res.json();
-      })
-      .then((data: ExecutionHistoryEntry[]) => {
+    api.listHistory()
+      .then((data) => {
         if (!cancelled) setEntries(data);
       })
       .catch((err: unknown) => {
@@ -49,11 +45,7 @@ export default function HistoryPanel({ apiUrl, accessToken }: HistoryPanelProps)
     setDeletingId(id);
     setError(null);
     try {
-      const res = await fetch(`${apiUrl}/api/history/${id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${accessToken}` },
-      });
-      if (!res.ok) throw new Error(`Erreur serveur (${res.status})`);
+      await apiClient(apiUrl, accessToken).deleteHistoryEntry(id);
       setEntries((current) => current.filter((entry) => entry.id !== id));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Suppression impossible.');
