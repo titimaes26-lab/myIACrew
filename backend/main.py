@@ -155,3 +155,18 @@ async def get_history(
         .limit(limit)
     )
     return session.exec(statement).all()
+
+@app.delete("/api/history/{execution_id}")
+async def delete_history_entry(
+    execution_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Supprime une exécution de l'historique de l'utilisateur courant."""
+    entry = session.get(ExecutionHistory, execution_id)
+    if not entry or entry.user_id != user.get("id"):
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+
+    session.delete(entry)
+    session.commit()
+    return {"status": "deleted", "id": execution_id}
