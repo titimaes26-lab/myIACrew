@@ -18,13 +18,6 @@ export interface ExecutionHistoryEntry {
   created_at: string;
 }
 
-export interface Conversation {
-  id: number;
-  title: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface RepoTarget {
   owner: string;
   name: string;

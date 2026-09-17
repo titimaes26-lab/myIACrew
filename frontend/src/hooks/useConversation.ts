@@ -1,17 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { apiClient, ApiError } from '../api';
-import type { ChatTurn, ExecutionHistoryEntry, RepoTarget } from '../types';
-
-function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
-  return {
-    id: entry.id,
-    userMessage: entry.user_request,
-    status: entry.status,
-    workflow: entry.workflow,
-    result: entry.result,
-    createdAt: entry.created_at,
-  };
-}
+import type { ChatTurn, RepoTarget } from '../types';
 
 export function useConversation(accessToken: string, apiUrl: string) {
   const [conversationId, setConversationId] = useState<number | null>(null);
@@ -22,28 +11,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
   const api = apiClient(apiUrl, accessToken);
 
-  // Reprend la conversation la plus récemment active au chargement
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const conversations = await api.listConversations(1);
-        if (cancelled || conversations.length === 0) return;
-        const latest = conversations[0];
-        const messages = await api.getConversationMessages(latest.id);
-        if (cancelled) return;
-        setConversationId(latest.id);
-        setTurns(messages.map(historyEntryToTurn));
-      } catch (err: unknown) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Impossible de charger la conversation.');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // Chaque ouverture de l'interface démarre sur un fil vide (voir startNewConversation) ;
+  // les conversations passées restent consultables via le panneau Historique.
   const startNewConversation = () => {
     setConversationId(null);
     setTurns([]);
