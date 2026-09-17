@@ -52,8 +52,11 @@ def _run_lightweight_migrations():
         try:
             with engine.begin() as conn:
                 conn.execute(text(statement))
-        except Exception:
-            pass  # colonne déjà présente, ou syntaxe non supportée (ex: SQLite en local)
+        except Exception as e:
+            # Attendu si la colonne existe déjà ou si le SGBD ne supporte pas la syntaxe
+            # (ex: ALTER COLUMN ... DROP NOT NULL sous SQLite). Toute autre cause (droits,
+            # erreur de connexion, etc.) doit rester visible dans les logs de démarrage.
+            print(f"MIGRATION IGNORÉE : {statement!r} -> {type(e).__name__}: {e}")
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
