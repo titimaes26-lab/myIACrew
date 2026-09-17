@@ -1,10 +1,4 @@
 import { supabase } from '../supabaseClient';
-import { clearChatDraft } from '../utils/chatDraft';
-
-const handleSignOut = () => {
-  clearChatDraft();
-  supabase.auth.signOut();
-};
 
 interface StudioHeaderProps {
   userEmail: string;
@@ -27,7 +21,7 @@ export default function StudioHeader({ userEmail, historyOpen, onToggleHistory }
         </button>
         <button
           type="button"
-          onClick={handleSignOut}
+          onClick={() => supabase.auth.signOut()}
           style={{ padding: '6px 12px', backgroundColor: '#f3f4f6', color: '#333', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer' }}
         >
           Déconnexion

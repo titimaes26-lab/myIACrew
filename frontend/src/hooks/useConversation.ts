@@ -113,6 +113,9 @@ export function useConversation(accessToken: string, apiUrl: string) {
         : turn)));
     } catch (err: unknown) {
       if (isAbortError(err)) {
+        // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
+        // réponse de clarification à la demande d'origine (désormais abandonnée).
+        setPendingClarification(null);
         setTurns((t) => t.map((turn) => (turn.id === tempId
           ? {
               ...turn,

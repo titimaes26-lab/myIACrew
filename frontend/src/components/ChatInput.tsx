@@ -108,7 +108,6 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
       <div style={{ display: 'flex', gap: '10px' }}>
         <textarea
           ref={textareaRef}
-          rows={2}
           disabled={disabled}
           value={text}
           onChange={(e) => setText(e.target.value)}

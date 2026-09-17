@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
+import { clearChatDraft } from './utils/chatDraft';
 import Login from './Login';
 import Studio from './Studio';
 
@@ -15,6 +16,10 @@ export default function App() {
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      // Couvre toute fin de session (bouton Déconnexion, expiration du token,
+      // déconnexion depuis un autre onglet) : sur un poste partagé, l'utilisateur
+      // suivant ne doit jamais hériter d'un brouillon non envoyé.
+      if (!newSession) clearChatDraft();
       setSession(newSession);
     });
 
