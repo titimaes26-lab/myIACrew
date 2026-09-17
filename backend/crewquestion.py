@@ -97,7 +97,7 @@ def _format_crew_result(result) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
     result.raw ne reflète que la sortie de la dernière tâche du crew. Pour un workflow
-    à plusieurs tâches (ex: ANALYSE_ONLY = game_design_task puis architecture_task), le
+    à plusieurs tâches (ex: ANALYSE_ONLY = design_task puis architecture_task), le
     contenu produit par les tâches précédentes serait sinon silencieusement perdu et
     jamais renvoyé à l'utilisateur.
     """
@@ -136,9 +136,9 @@ class AppDevelopmentCrew():
         return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=gemini_llm, max_iter=2, verbose=True)
 
     @agent
-    def game_designer_agent(self) -> Agent:
+    def product_designer_agent(self) -> Agent:
         return Agent(
-            config=self.agents_config['game_designer_agent'],
+            config=self.agents_config['product_designer_agent'],
             tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
             llm=gemini_llm, max_iter=3, verbose=True,
         )
@@ -176,8 +176,8 @@ class AppDevelopmentCrew():
         return Task(config=self.tasks_config['qualification_task'], agent=self.qualification_agent(), output_file='docs/qualification_report.md')
 
     @task
-    def game_design_task(self) -> Task:
-        return Task(config=self.tasks_config['game_design_task'], agent=self.game_designer_agent(), output_file='docs/specs_gameplay.md')
+    def design_task(self) -> Task:
+        return Task(config=self.tasks_config['design_task'], agent=self.product_designer_agent(), output_file='docs/specs_design.md')
 
     @task
     def architecture_task(self) -> Task:
@@ -235,13 +235,13 @@ class AppDevelopmentCrew():
     @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
     async def run_dynamic_crew(self, inputs: dict, request_type: str):
         if request_type == "ANALYSE_ONLY":
-            selected_tasks = [self.game_design_task(), self.architecture_task()]
+            selected_tasks = [self.design_task(), self.architecture_task()]
         elif request_type == "BUGFIX":
             selected_tasks = [self.development_task(), self.qa_task()]
         elif request_type == "FEATURE":
             selected_tasks = [self.architecture_task(), self.development_task(), self.qa_task()]
         else:
-            selected_tasks = [self.game_design_task(), self.architecture_task(), self.development_task(), self.qa_task()]
+            selected_tasks = [self.design_task(), self.architecture_task(), self.development_task(), self.qa_task()]
 
         selected_agents = list({task.agent for task in selected_tasks})
         dynamic_crew = Crew(

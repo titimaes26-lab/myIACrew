@@ -29,17 +29,17 @@
 
 | Type de demande | Tâches exécutées (séquentiel) |
 |---|---|
-| `ANALYSE_ONLY` | `game_design_task` → `architecture_task` |
+| `ANALYSE_ONLY` | `design_task` → `architecture_task` |
 | `BUGFIX` | `development_task` → `qa_task` |
 | `FEATURE` | `architecture_task` → `development_task` → `qa_task` |
-| `DESIGN_AND_DEV` (défaut) | `game_design_task` → `architecture_task` → `development_task` → `qa_task` |
+| `DESIGN_AND_DEV` (défaut) | `design_task` → `architecture_task` → `development_task` → `qa_task` |
 
 ### 2.3 Agents CrewAI
 
 | Agent | Rôle | Outils |
 |---|---|---|
 | `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) |
-| `game_designer_agent` | Spécifications fonctionnelles / game design | lecture disque local + lecture GitHub |
+| `product_designer_agent` | Spécifications fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub |
 | `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub |
 | `developer_agent` | Implémentation du code | lecture/écriture disque local + lecture/écriture GitHub + branche + Pull Request |
 | `qa_agent` | Revue qualité du code produit | lecture disque local + lecture GitHub |
