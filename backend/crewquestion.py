@@ -61,7 +61,11 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     err_msg = str(e).lower()
-                    if "429" in err_msg or "resource_exhausted" in err_msg or "rate limit" in err_msg or "quota" in err_msg:
+                    is_retryable = any(marker in err_msg for marker in (
+                        "429", "resource_exhausted", "rate limit", "quota",
+                        "503", "unavailable", "high demand", "overloaded",
+                    ))
+                    if is_retryable:
                         retries += 1
                         if retries > max_retries:
                             raise e
