@@ -112,6 +112,7 @@ code {
 
 .markdown-body {
   text-align: left;
+  overflow-wrap: anywhere;
 }
 .markdown-body p {
   margin: 0 0 8px;
@@ -139,6 +140,8 @@ code {
   padding-left: 20px;
 }
 .markdown-body table {
+  display: block;
+  overflow-x: auto;
   border-collapse: collapse;
   margin: 0 0 8px;
   font-size: 13px;

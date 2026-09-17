@@ -3,7 +3,11 @@ export interface CrewResultSection {
   content: string;
 }
 
-const SECTION_SEPARATOR = /\n\n---\n\n/;
+// Ne coupe que sur un séparateur suivi d'un nouveau titre d'agent : c'est l'unique
+// forme que _format_crew_result (backend) produit entre deux tâches. Un simple "---"
+// utilisé par un agent dans son propre texte (règle horizontale Markdown) ne matche pas,
+// faute du "## " qui doit obligatoirement le suivre.
+const SECTION_SEPARATOR = /\n\n---\n\n(?=##\s)/;
 const AGENT_HEADING = /^##\s+(.+?)\s*\n([\s\S]*)$/;
 
 export function parseCrewResult(raw: string): CrewResultSection[] {

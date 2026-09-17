@@ -1,8 +1,12 @@
+import { lazy, Suspense } from 'react';
 import type { ChatTurn } from '../types';
-import MarkdownRenderer from './MarkdownRenderer';
 import StepIndicator from './StepIndicator';
 import { parseCrewResult } from '../utils/parseCrewResult';
 import { agentIcon } from '../constants/agentIcons';
+
+// Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer
+// dans le bundle que si un résultat d'agent est effectivement affiché.
+const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
 const STATUS_LABEL: Record<ChatTurn['status'], string> = {
   clarifying: '❓ Précisions nécessaires',
@@ -37,23 +41,31 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
           <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} />
         )}
 
-        {turn.result && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {parseCrewResult(turn.result).map((section, i) => (
-              <div
-                key={i}
-                style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
-              >
-                {section.agentName && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
-                    <span>{agentIcon(section.agentName)}</span>
-                    <span>{section.agentName}</span>
-                  </div>
-                )}
-                <MarkdownRenderer content={section.content} />
-              </div>
-            ))}
-          </div>
+        {turn.result && turn.status === 'failed' && (
+          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
+            {turn.result}
+          </pre>
+        )}
+
+        {turn.result && turn.status === 'success' && (
+          <Suspense fallback={<p style={{ margin: 0, fontSize: '13px', color: '#666' }}>Chargement du résultat...</p>}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {parseCrewResult(turn.result).map((section, i) => (
+                <div
+                  key={i}
+                  style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
+                >
+                  {section.agentName && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
+                      <span>{agentIcon(section.agentName)}</span>
+                      <span>{section.agentName}</span>
+                    </div>
+                  )}
+                  <MarkdownRenderer content={section.content} />
+                </div>
+              ))}
+            </div>
+          </Suspense>
         )}
       </div>
     </div>
