@@ -39,7 +39,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
       <ChatThread turns={turns} />
 
       <div style={{ marginTop: '20px' }}>
-        <ChatInput disabled={sending} onSend={sendMessage} />
+        <ChatInput disabled={sending} apiUrl={API_URL} accessToken={accessToken} onSend={sendMessage} />
       </div>
     </div>
   );

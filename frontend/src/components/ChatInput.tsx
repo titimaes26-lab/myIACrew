@@ -1,18 +1,37 @@
-import { useState, type KeyboardEvent } from 'react';
-import type { RepoTarget } from '../types';
+import { useEffect, useState, type KeyboardEvent } from 'react';
+import { apiClient } from '../api';
+import type { RepoTarget, RepoTargetSuggestion } from '../types';
 import RepoTargetFields from './RepoTargetFields';
 
 interface ChatInputProps {
   disabled: boolean;
+  apiUrl: string;
+  accessToken: string;
   onSend: (text: string, repoTarget: RepoTarget) => void;
 }
 
-export default function ChatInput({ disabled, onSend }: ChatInputProps) {
+export default function ChatInput({ disabled, apiUrl, accessToken, onSend }: ChatInputProps) {
   const [text, setText] = useState('');
   const [showRepoFields, setShowRepoFields] = useState(false);
   const [repoOwner, setRepoOwner] = useState('');
   const [repoName, setRepoName] = useState('');
   const [baseBranch, setBaseBranch] = useState('main');
+  const [repoSuggestions, setRepoSuggestions] = useState<RepoTargetSuggestion[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient(apiUrl, accessToken)
+      .listRepoTargets()
+      .then((data) => {
+        if (!cancelled) setRepoSuggestions(data);
+      })
+      .catch(() => {
+        // Suggestions optionnelles : un échec de chargement ne doit pas bloquer la saisie.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiUrl, accessToken]);
 
   const submit = () => {
     if (!text.trim() || disabled) return;
@@ -27,6 +46,12 @@ export default function ChatInput({ disabled, onSend }: ChatInputProps) {
     }
   };
 
+  const applySuggestion = (suggestion: RepoTargetSuggestion) => {
+    setRepoOwner(suggestion.repo_owner);
+    setRepoName(suggestion.repo_name);
+    setBaseBranch(suggestion.base_branch || 'main');
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
       <button
@@ -38,15 +63,32 @@ export default function ChatInput({ disabled, onSend }: ChatInputProps) {
       </button>
 
       {showRepoFields && (
-        <RepoTargetFields
-          repoOwner={repoOwner}
-          repoName={repoName}
-          baseBranch={baseBranch}
-          onRepoOwnerChange={setRepoOwner}
-          onRepoNameChange={setRepoName}
-          onBaseBranchChange={setBaseBranch}
-          disabled={disabled}
-        />
+        <>
+          {repoSuggestions.length > 0 && (
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {repoSuggestions.map((s) => (
+                <button
+                  key={`${s.repo_owner}/${s.repo_name}@${s.base_branch}`}
+                  type="button"
+                  onClick={() => applySuggestion(s)}
+                  disabled={disabled}
+                  style={{ fontSize: '12px', padding: '4px 10px', borderRadius: '999px', border: '1px solid #ccc', backgroundColor: '#f3f4f6', color: '#333', cursor: disabled ? 'not-allowed' : 'pointer' }}
+                >
+                  {s.repo_owner}/{s.repo_name}{s.base_branch ? `@${s.base_branch}` : ''}
+                </button>
+              ))}
+            </div>
+          )}
+          <RepoTargetFields
+            repoOwner={repoOwner}
+            repoName={repoName}
+            baseBranch={baseBranch}
+            onRepoOwnerChange={setRepoOwner}
+            onRepoNameChange={setRepoName}
+            onBaseBranchChange={setBaseBranch}
+            disabled={disabled}
+          />
+        </>
       )}
 
       <div style={{ display: 'flex', gap: '10px' }}>
