@@ -24,6 +24,12 @@ game_design_task:
     Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
     (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour t'appuyer sur le code existant
     avant de rédiger les specs.
+
+    Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
+    d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
+    auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
+    ne s'est produit. Si tu inclus un exemple de code illustratif, indique explicitement qu'il s'agit
+    d'un exemple non exécuté.
   expected_output: >
     Un document de Game Design clair détaillant les mécaniques de jeu et les composants d'interface requis.
   agent: game_designer_agent
@@ -37,6 +43,13 @@ architecture_task:
     {repo_instructions}
     Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
     (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour analyser l'arborescence réelle du projet.
+
+    Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
+    d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
+    auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
+    ne s'est produit. Si tu inclus un exemple de code illustratif (ex: un hook simulant un appel API),
+    indique explicitement qu'il s'agit d'un exemple non exécuté et n'y fais figurer aucune donnée
+    GitHub factice qui pourrait passer pour réelle.
   expected_output: >
     L'arborescence complète du projet et l'interface TypeScript des principaux composants.
   agent: architect_agent
