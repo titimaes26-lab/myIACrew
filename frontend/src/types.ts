@@ -16,6 +16,7 @@ export interface ExecutionHistoryEntry {
   repo_owner: string | null;
   repo_name: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface RepoTarget {
@@ -39,4 +40,7 @@ export interface ChatTurn {
   questions?: string[];
   result?: string | null;
   createdAt: string;
+  // Renseigné dès que le tour quitte l'état "running" (succès, échec ou clarification
+  // demandée), pour pouvoir afficher la durée écoulée depuis createdAt.
+  updatedAt?: string;
 }
