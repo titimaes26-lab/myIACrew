@@ -10,6 +10,7 @@ function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
     workflow: entry.workflow,
     result: entry.result,
     createdAt: entry.created_at,
+    updatedAt: entry.status !== 'running' ? entry.updated_at : undefined,
   };
 }
 
@@ -66,7 +67,9 @@ export function useConversation(accessToken: string, apiUrl: string) {
         });
         setConversationId(data.conversation_id);
         setPendingClarification(null);
-        setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, id: data.id, status: 'success', result: data.result } : turn)));
+        setTurns((t) => t.map((turn) => (turn.id === tempId
+          ? { ...turn, id: data.id, status: 'success', result: data.result, updatedAt: new Date().toISOString() }
+          : turn)));
         return;
       }
 
@@ -76,7 +79,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       if (!report.is_clear) {
         setPendingClarification({ originalRequest: text, workflow: report.request_type });
         setTurns((t) => t.map((turn) => (turn.id === tempId
-          ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, questions: report.questions }
+          ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, questions: report.questions, updatedAt: new Date().toISOString() }
           : turn)));
         return;
       }
@@ -89,11 +92,15 @@ export function useConversation(accessToken: string, apiUrl: string) {
         target_workflow: report.request_type,
       });
       setConversationId(data.conversation_id);
-      setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, id: data.id, status: 'success', result: data.result } : turn)));
+      setTurns((t) => t.map((turn) => (turn.id === tempId
+        ? { ...turn, id: data.id, status: 'success', result: data.result, updatedAt: new Date().toISOString() }
+        : turn)));
     } catch (err: unknown) {
       if (err instanceof ApiError && err.conversationId) setConversationId(err.conversationId);
       const message = err instanceof Error ? err.message : 'Une erreur est survenue.';
-      setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, status: 'failed', result: message } : turn)));
+      setTurns((t) => t.map((turn) => (turn.id === tempId
+        ? { ...turn, status: 'failed', result: message, updatedAt: new Date().toISOString() }
+        : turn)));
       setError(message);
     } finally {
       setSending(false);

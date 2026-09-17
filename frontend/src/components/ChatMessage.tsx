@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'react';
 import type { ChatTurn } from '../types';
 import StepIndicator from './StepIndicator';
 import { parseCrewResult } from '../utils/parseCrewResult';
+import { parseFailureDetail } from '../utils/parseFailureDetail';
+import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
 
 // Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer
@@ -16,6 +18,9 @@ const STATUS_LABEL: Record<ChatTurn['status'], string> = {
 };
 
 export default function ChatMessage({ turn }: { turn: ChatTurn }) {
+  const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
+  const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
       <div style={{ alignSelf: 'flex-end', maxWidth: '80%', backgroundColor: '#0070f3', color: '#fff', padding: '10px 14px', borderRadius: '12px 12px 2px 12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
@@ -25,6 +30,8 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
         <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }}>
           {STATUS_LABEL[turn.status]}
           {turn.workflow ? ` · ${turn.workflow}` : ''}
+          {` · ${formatTime(turn.createdAt)}`}
+          {duration ? ` · ${duration}` : ''}
         </div>
 
         {turn.agentSummary && <p style={{ margin: '0 0 8px 0' }}>{turn.agentSummary}</p>}
@@ -38,10 +45,24 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
         )}
 
         {turn.status === 'running' && (
-          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} />
+          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} />
         )}
 
-        {turn.result && turn.status === 'failed' && (
+        {turn.result && turn.status === 'failed' && failure && (
+          <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '10px 12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#991b1b', marginBottom: '6px' }}>
+              <span>{agentIcon(failure.agentRole)}</span>
+              <span>
+                Échec à l'étape {failure.stepIndex}/{failure.totalSteps} — {failure.agentRole}
+              </span>
+            </div>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace', color: '#7f1d1d' }}>
+              {failure.message}
+            </pre>
+          </div>
+        )}
+
+        {turn.result && turn.status === 'failed' && !failure && (
           <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
             {turn.result}
           </pre>

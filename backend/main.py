@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from sqlmodel import Session, select
 
-from crewquestion import AppDevelopmentCrew, AnalysisReport
+from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError
 from database import create_db_and_tables, get_session, Conversation, ExecutionHistory
 from auth import get_current_user
 
@@ -151,8 +151,13 @@ async def execute_workflow(
         print("--- ERREUR CREWAI EXECUTION DETECTEE ---")
         print(traceback.format_exc())
 
+        if isinstance(e, CrewStepError):
+            detail = f"Échec à l'étape {e.step_index}/{e.total_steps} ({e.agent_role}) : {e}"
+        else:
+            detail = str(e)
+
         db_entry.status = "failed"
-        db_entry.result = str(e)
+        db_entry.result = detail
         db_entry.updated_at = datetime.utcnow()
         conversation.updated_at = datetime.utcnow()
         session.add(db_entry)
@@ -164,7 +169,7 @@ async def execute_workflow(
         # continuer le même fil de discussion plutôt que d'en recréer un nouveau.
         raise HTTPException(
             status_code=500,
-            detail=str(e),
+            detail=detail,
             headers={"X-Conversation-Id": str(conversation.id)},
         )
 

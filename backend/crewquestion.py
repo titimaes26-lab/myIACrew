@@ -93,6 +93,19 @@ class QuotaManager:
 
 quota_mgr = QuotaManager()
 
+class CrewStepError(Exception):
+    """Erreur levée quand le crew échoue à une étape précise (voir run_dynamic_crew).
+
+    Conserve le message de l'exception d'origine (str(e) identique) pour que
+    retry_on_rate_limit_async continue de détecter les erreurs de quota/rate-limit
+    normalement, tout en exposant l'étape et l'agent en cours au moment de l'échec.
+    """
+    def __init__(self, step_index: int, total_steps: int, agent_role: str, original: Exception):
+        self.step_index = step_index
+        self.total_steps = total_steps
+        self.agent_role = agent_role.strip()
+        super().__init__(str(original))
+
 def _format_crew_result(result) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
@@ -244,15 +257,32 @@ class AppDevelopmentCrew():
             selected_tasks = [self.design_task(), self.architecture_task(), self.development_task(), self.qa_task()]
 
         selected_agents = list({task.agent for task in selected_tasks})
+
+        completed_count = 0
+
+        def on_task_complete(task_output):
+            nonlocal completed_count
+            completed_count += 1
+            quota_mgr.adaptive_pause(task_output)
+
         dynamic_crew = Crew(
             agents=selected_agents,
             tasks=selected_tasks,
             process=Process.sequential,
-            task_callback=quota_mgr.adaptive_pause,
+            task_callback=on_task_complete,
             max_rpm=3,
             output_log_file='crew_execution.log',
             verbose=True
         )
-        result = await dynamic_crew.kickoff_async(inputs=inputs)
+        try:
+            result = await dynamic_crew.kickoff_async(inputs=inputs)
+        except Exception as e:
+            # Identifie la tâche qui était en cours au moment de l'échec (celle juste
+            # après la dernière complétée avec succès) pour que le frontend puisse
+            # afficher "échec pendant X" plutôt qu'une erreur générique.
+            failed_task = selected_tasks[completed_count] if completed_count < len(selected_tasks) else None
+            agent_role = failed_task.agent.role if failed_task else "étape finale"
+            raise CrewStepError(completed_count + 1, len(selected_tasks), agent_role, e) from e
+
         quota_mgr.last_execution_time = time.time()
         return _format_crew_result(result)
