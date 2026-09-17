@@ -15,7 +15,15 @@ if DATABASE_URL.startswith("postgres://"):
 
 engine = create_engine(DATABASE_URL, echo=True)
 
-# Table pour sauvegarder les demandes et rapports CrewAI
+# Regroupe plusieurs exécutions en un fil de discussion persistant
+class Conversation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)  # id Supabase (auth.users) de l'auteur
+    title: str = "Nouvelle conversation"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+# Table pour sauvegarder les demandes et rapports CrewAI (un "message" du fil)
 class ExecutionHistory(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_request: str
@@ -24,6 +32,7 @@ class ExecutionHistory(SQLModel, table=True):
     result: Optional[str] = None
     status: str = Field(default="running")  # running | success | failed
     user_id: Optional[str] = Field(default=None, index=True)  # id Supabase (auth.users) de l'auteur
+    conversation_id: Optional[int] = Field(default=None, index=True)
     repo_owner: Optional[str] = None
     repo_name: Optional[str] = None
     base_branch: Optional[str] = None
@@ -46,6 +55,8 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS repo_name VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS base_branch VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS work_branch VARCHAR",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS conversation_id INTEGER",
+    "CREATE INDEX IF NOT EXISTS ix_executionhistory_conversation_id ON executionhistory (conversation_id)",
 ]
 
 def _run_lightweight_migrations():
