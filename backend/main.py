@@ -1,12 +1,13 @@
 import traceback
 import os
 import uuid
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
-from sqlmodel import Session
+from typing import List, Optional
+from sqlmodel import Session, select
 
 from crewquestion import AppDevelopmentCrew, AnalysisReport
 from database import create_db_and_tables, get_session, ExecutionHistory
@@ -75,6 +76,22 @@ async def execute_workflow(
     has_repo_target = bool(data.repo_owner and data.repo_name)
     work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}" if has_repo_target else ""
 
+    # Enregistrement immédiat (statut "running") pour garder une trace même en cas d'échec
+    db_entry = ExecutionHistory(
+        user_request=data.user_request,
+        workflow=data.target_workflow,
+        clarifications=data.clarifications,
+        status="running",
+        user_id=user.get("id"),
+        repo_owner=data.repo_owner if has_repo_target else None,
+        repo_name=data.repo_name if has_repo_target else None,
+        base_branch=data.base_branch if has_repo_target else None,
+        work_branch=work_branch or None,
+    )
+    session.add(db_entry)
+    session.commit()
+    session.refresh(db_entry)
+
     try:
         result = await crew_instance.run_dynamic_crew(
             inputs={
@@ -95,13 +112,9 @@ async def execute_workflow(
         )
         raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
-        # Enregistrement en base de données SQLModel
-        db_entry = ExecutionHistory(
-            user_request=data.user_request,
-            workflow=data.target_workflow,
-            clarifications=data.clarifications,
-            result=raw_result
-        )
+        db_entry.result = raw_result
+        db_entry.status = "success"
+        db_entry.updated_at = datetime.utcnow()
         session.add(db_entry)
         session.commit()
         session.refresh(db_entry)
@@ -115,4 +128,30 @@ async def execute_workflow(
     except Exception as e:
         print("--- ERREUR CREWAI EXECUTION DETECTEE ---")
         print(traceback.format_exc())
+
+        db_entry.status = "failed"
+        db_entry.result = str(e)
+        db_entry.updated_at = datetime.utcnow()
+        session.add(db_entry)
+        session.commit()
+
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/history", response_model=List[ExecutionHistory])
+async def get_history(
+    limit: int = 20,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Historique des exécutions de l'utilisateur courant, les plus récentes en premier."""
+    limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
+    statement = (
+        select(ExecutionHistory)
+        .where(ExecutionHistory.user_id == user.get("id"))
+        .order_by(ExecutionHistory.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    return session.exec(statement).all()
