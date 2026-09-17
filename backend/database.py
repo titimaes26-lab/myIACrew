@@ -22,6 +22,11 @@ class ExecutionHistory(SQLModel, table=True):
     clarifications: Optional[str] = None
     result: Optional[str] = None
     status: str = Field(default="running")  # running | success | failed
+    user_id: Optional[str] = Field(default=None, index=True)  # id Supabase (auth.users) de l'auteur
+    repo_owner: Optional[str] = None
+    repo_name: Optional[str] = None
+    base_branch: Optional[str] = None
+    work_branch: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -34,6 +39,12 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT now()",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT now()",
     "ALTER TABLE executionhistory ALTER COLUMN result DROP NOT NULL",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+    "CREATE INDEX IF NOT EXISTS ix_executionhistory_user_id ON executionhistory (user_id)",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS repo_owner VARCHAR",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS repo_name VARCHAR",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS base_branch VARCHAR",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS work_branch VARCHAR",
 ]
 
 def _run_lightweight_migrations():

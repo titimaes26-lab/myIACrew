@@ -82,6 +82,11 @@ async def execute_workflow(
         workflow=data.target_workflow,
         clarifications=data.clarifications,
         status="running",
+        user_id=user.get("id"),
+        repo_owner=data.repo_owner if has_repo_target else None,
+        repo_name=data.repo_name if has_repo_target else None,
+        base_branch=data.base_branch if has_repo_target else None,
+        work_branch=work_branch or None,
     )
     session.add(db_entry)
     session.commit()
@@ -139,11 +144,12 @@ async def get_history(
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
 ):
-    """Historique des exécutions, les plus récentes en premier."""
+    """Historique des exécutions de l'utilisateur courant, les plus récentes en premier."""
     limit = min(max(limit, 1), 100)
     offset = max(offset, 0)
     statement = (
         select(ExecutionHistory)
+        .where(ExecutionHistory.user_id == user.get("id"))
         .order_by(ExecutionHistory.created_at.desc())
         .offset(offset)
         .limit(limit)
