@@ -1,3 +1,4 @@
+import http.cookiejar
 import os
 from typing import Optional
 
@@ -6,6 +7,28 @@ from fastapi import Header, HTTPException
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+
+class _RejectAllCookiePolicy(http.cookiejar.DefaultCookiePolicy):
+    """Politique de cookies qui refuse TOUT stockage, quel que soit le Set-Cookie reçu."""
+    def set_ok(self, cookie, request):
+        return False
+
+
+def _new_http_client() -> httpx.AsyncClient:
+    # cookies=<CookieJar dédié, tout refuser> : ce client est PARTAGÉ entre requêtes
+    # concurrentes de DIFFÉRENTS utilisateurs (voir plus bas), et httpx stocke un
+    # Set-Cookie reçu dans le jar du client dès la réception des en-têtes de réponse, AVANT
+    # même que le corps ne soit lu (vérifié dans httpx._client._send_single_request) —
+    # c'est-à-dire avant tout point de suspension `await` que ce module contrôle. Une simple
+    # purge après coup (`client.cookies.clear()`) laisserait donc une fenêtre : une requête
+    # concurrente d'un AUTRE utilisateur, planifiée par l'event loop pendant que la nôtre
+    # attend encore la lecture du corps de la réponse, pourrait déjà avoir repris ce cookie
+    # avant que la purge ne s'exécute. En refusant le stockage à la source (jamais rien
+    # écrit dans le jar), cette fenêtre n'existe plus, que Supabase ou un intermédiaire
+    # devant lui (CDN, WAF) envoie un jour un Set-Cookie ou non.
+    return httpx.AsyncClient(timeout=10, cookies=http.cookiejar.CookieJar(policy=_RejectAllCookiePolicy()))
+
 
 # Client HTTP partagé et réutilisé entre les requêtes plutôt qu'un client neuf ouvert puis
 # refermé à CHAQUE requête (comme avant) : get_current_user est la dépendance appelée sur
@@ -28,7 +51,7 @@ _http_client: httpx.AsyncClient | None = None
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=10)
+        _http_client = _new_http_client()
     return _http_client
 
 
@@ -37,6 +60,14 @@ async def close_http_client() -> None:
     connexions du client HTTP courant plutôt que de le laisser un file descriptor ouvert."""
     if _http_client is not None and not _http_client.is_closed:
         await _http_client.aclose()
+
+
+def _supabase_unavailable() -> HTTPException:
+    # Fonction plutôt que littéral dupliqué aux deux endroits où get_current_user lève cette
+    # même erreur (httpx.HTTPError et RuntimeError sur client fermé). Au niveau module comme
+    # _new_http_client/_get_http_client : ne capture aucun état, rien ne justifie de la
+    # recréer à chaque appel de get_current_user (son chemin le plus chaud).
+    return HTTPException(status_code=503, detail="Impossible de vérifier l'authentification (Supabase injoignable).")
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
@@ -58,21 +89,23 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             f"{SUPABASE_URL}/auth/v1/user",
             headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
         )
-    except (httpx.HTTPError, RuntimeError):
-        # RuntimeError et non seulement httpx.HTTPError : c'est l'exception (non dérivée de
-        # HTTPError) que lève httpx quand une requête concurrente arrive juste après que
-        # close_http_client() a fermé ce client (ex: pendant l'arrêt du serveur, avant que
-        # la prochaine requête n'en obtienne un nouveau via _get_http_client()) — sans ce
-        # cas, elle remonterait comme une 500 non gérée au lieu de la 503 voulue ici.
-        raise HTTPException(status_code=503, detail="Impossible de vérifier l'authentification (Supabase injoignable).")
-    finally:
-        # client est PARTAGÉ entre tous les utilisateurs (voir plus haut, avant c'était un
-        # client neuf par requête). Si Supabase, ou un intermédiaire devant lui, renvoyait un
-        # jour un Set-Cookie sur cette réponse, httpx le stockerait dans le jar de ce client
-        # et le renverrait automatiquement à l'appel suivant — y compris pour un tout autre
-        # utilisateur. On vide le jar par précaution après chaque appel pour qu'aucun cookie
-        # ne puisse jamais s'accumuler ni fuiter d'un utilisateur à l'autre.
-        client.cookies.clear()
+    except httpx.HTTPError:
+        raise _supabase_unavailable()
+    except RuntimeError:
+        # Ne cible QUE le cas précis d'un client déjà fermé (ex: une requête concurrente
+        # arrivée juste après que close_http_client() a fermé ce client, avant que la
+        # prochaine n'en obtienne un nouveau via _get_http_client()) — pas n'importe quelle
+        # RuntimeError. client.is_closed (propriété publique et stable de httpx) plutôt
+        # qu'un test sur le texte exact du message d'erreur : ce dernier est un détail
+        # d'implémentation interne de httpx (non documenté comme API publique, httpx est
+        # d'ailleurs non épinglé dans requirements.txt) qui pourrait changer de formulation
+        # sans avertissement dans une future version. Une RuntimeError sans rapport (client
+        # resté ouvert, ex: connexion coupée en cours de route côté transport) doit remonter
+        # comme une 500 non gérée et rester visible telle quelle dans les logs, plutôt que
+        # d'être maquillée en 503 pointant à tort vers Supabase.
+        if not client.is_closed:
+            raise
+        raise _supabase_unavailable()
 
     if response.status_code != 200:
         raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
