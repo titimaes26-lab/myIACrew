@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from sqlmodel import Session, select
 
-from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError
+from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, build_conversation_context, track_execution_metrics
 from database import create_db_and_tables, get_session, Conversation, ExecutionHistory
 from auth import get_current_user
 
@@ -79,7 +79,6 @@ async def execute_workflow(
     )
 
     has_repo_target = bool(data.repo_owner and data.repo_name)
-    work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}" if has_repo_target else ""
 
     if data.conversation_id is not None:
         conversation = session.get(Conversation, data.conversation_id)
@@ -94,6 +93,36 @@ async def execute_workflow(
         session.commit()
         session.refresh(conversation)
 
+    # Tours précédents de cette conversation : donnent aux agents un rappel de ce qui a
+    # déjà été demandé/livré, et permettent de continuer sur la même branche de travail
+    # plutôt que d'en ouvrir une nouvelle déconnectée à chaque message (voir plus bas).
+    prior_entries = session.exec(
+        select(ExecutionHistory)
+        .where(ExecutionHistory.conversation_id == conversation.id)
+        .order_by(ExecutionHistory.created_at.asc())
+    ).all()
+    conversation_context = build_conversation_context(prior_entries)
+
+    # Normalisé une seule fois : utilisé à la fois pour comparer aux tours précédents et
+    # pour ce qui est stocké sur ce tour, afin que les deux restent cohérents (sinon un
+    # base_branch vide explicitement envoyé empêcherait à tort la réutilisation de
+    # branche au tour suivant, qui compare toujours à la valeur normalisée).
+    normalized_base_branch = (data.base_branch or "main") if has_repo_target else None
+
+    work_branch = ""
+    if has_repo_target:
+        for entry in reversed(prior_entries):
+            if (
+                entry.work_branch
+                and entry.repo_owner == data.repo_owner
+                and entry.repo_name == data.repo_name
+                and entry.base_branch == normalized_base_branch
+            ):
+                work_branch = entry.work_branch
+                break
+        if not work_branch:
+            work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
+
     # Enregistrement immédiat (statut "running") pour garder une trace même en cas d'échec
     db_entry = ExecutionHistory(
         user_request=data.user_request,
@@ -104,7 +133,7 @@ async def execute_workflow(
         conversation_id=conversation.id,
         repo_owner=data.repo_owner if has_repo_target else None,
         repo_name=data.repo_name if has_repo_target else None,
-        base_branch=data.base_branch if has_repo_target else None,
+        base_branch=normalized_base_branch,
         work_branch=work_branch or None,
     )
     session.add(db_entry)
@@ -112,27 +141,35 @@ async def execute_workflow(
     session.refresh(db_entry)
 
     try:
-        result = await crew_instance.run_dynamic_crew(
-            inputs={
-                'user_request': final_prompt,
-                'repo_owner': data.repo_owner or '',
-                'repo_name': data.repo_name or '',
-                'base_branch': data.base_branch or 'main',
-                'work_branch': work_branch,
-                'repo_instructions': (
-                    f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
-                    f"Branche de base : {data.base_branch or 'main'}\n"
-                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
-                    if has_repo_target
-                    else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
-                ),
-            },
-            request_type=data.target_workflow
-        )
+        with track_execution_metrics() as run_metrics:
+            result = await crew_instance.run_dynamic_crew(
+                inputs={
+                    'user_request': final_prompt,
+                    'conversation_context': conversation_context,
+                    'repo_owner': data.repo_owner or '',
+                    'repo_name': data.repo_name or '',
+                    # `or 'main'` : nécessaire ici (contrairement à db_entry.base_branch
+                    # plus haut) car normalized_base_branch est None sans repository cible,
+                    # et les tâches interpolent toujours {base_branch} même dans ce cas.
+                    'base_branch': normalized_base_branch or 'main',
+                    'work_branch': work_branch,
+                    'repo_instructions': (
+                        f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
+                        f"Branche de base : {normalized_base_branch}\n"
+                        f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
+                        if has_repo_target
+                        else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
+                    ),
+                },
+                request_type=data.target_workflow
+            )
         raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
         db_entry.result = raw_result
         db_entry.status = "success"
+        db_entry.api_calls_count = run_metrics.api_calls_count
+        db_entry.rate_limit_hits = run_metrics.rate_limit_hits
+        db_entry.total_wait_time_seconds = run_metrics.total_wait_time
         db_entry.updated_at = datetime.utcnow()
         conversation.updated_at = datetime.utcnow()
         session.add(db_entry)
@@ -145,7 +182,10 @@ async def execute_workflow(
             "id": db_entry.id,
             "conversation_id": conversation.id,
             "workflow": data.target_workflow,
-            "result": raw_result
+            "result": raw_result,
+            "api_calls_count": run_metrics.api_calls_count,
+            "rate_limit_hits": run_metrics.rate_limit_hits,
+            "total_wait_time_seconds": run_metrics.total_wait_time,
         }
     except Exception as e:
         print("--- ERREUR CREWAI EXECUTION DETECTEE ---")
@@ -158,6 +198,10 @@ async def execute_workflow(
 
         db_entry.status = "failed"
         db_entry.result = detail
+        if 'run_metrics' in locals():
+            db_entry.api_calls_count = run_metrics.api_calls_count
+            db_entry.rate_limit_hits = run_metrics.rate_limit_hits
+            db_entry.total_wait_time_seconds = run_metrics.total_wait_time
         db_entry.updated_at = datetime.utcnow()
         conversation.updated_at = datetime.utcnow()
         session.add(db_entry)

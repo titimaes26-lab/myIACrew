@@ -18,9 +18,18 @@ const STATUS_LABEL: Record<ChatTurn['status'], string> = {
   cancelled: '🚫 Annulé',
 };
 
+function formatMetrics(turn: ChatTurn): string | null {
+  if (!turn.apiCallsCount) return null;
+  const callsLabel = `🔢 ${turn.apiCallsCount} appel${turn.apiCallsCount > 1 ? 's' : ''} API`;
+  if (!turn.rateLimitHits) return callsLabel;
+  const waitSeconds = Math.round(turn.totalWaitTimeSeconds ?? 0);
+  return `${callsLabel} · ⏳ ${turn.rateLimitHits} pause${turn.rateLimitHits > 1 ? 's' : ''} quota (${waitSeconds}s)`;
+}
+
 export default function ChatMessage({ turn }: { turn: ChatTurn }) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
+  const metricsLabel = formatMetrics(turn);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
@@ -33,6 +42,7 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
           {turn.workflow ? ` · ${turn.workflow}` : ''}
           {` · ${formatTime(turn.createdAt)}`}
           {duration ? ` · ${duration}` : ''}
+          {metricsLabel ? ` · ${metricsLabel}` : ''}
         </div>
 
         {turn.agentSummary && <p style={{ margin: '0 0 8px 0' }}>{turn.agentSummary}</p>}

@@ -37,6 +37,10 @@ class ExecutionHistory(SQLModel, table=True):
     repo_name: Optional[str] = None
     base_branch: Optional[str] = None
     work_branch: Optional[str] = None
+    # Coût/performance de cette exécution (voir track_execution_metrics dans crewquestion.py).
+    api_calls_count: Optional[int] = None
+    rate_limit_hits: Optional[int] = None
+    total_wait_time_seconds: Optional[float] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -57,6 +61,9 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS work_branch VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS conversation_id INTEGER",
     "CREATE INDEX IF NOT EXISTS ix_executionhistory_conversation_id ON executionhistory (conversation_id)",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS api_calls_count INTEGER",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS rate_limit_hits INTEGER",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS total_wait_time_seconds FLOAT",
 ]
 
 def _run_lightweight_migrations():

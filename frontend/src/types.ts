@@ -17,6 +17,9 @@ export interface ExecutionHistoryEntry {
   repo_name: string | null;
   created_at: string;
   updated_at: string;
+  api_calls_count: number | null;
+  rate_limit_hits: number | null;
+  total_wait_time_seconds: number | null;
 }
 
 export interface RepoTarget {
@@ -45,4 +48,9 @@ export interface ChatTurn {
   // Renseigné dès que le tour quitte l'état "running" (succès, échec ou clarification
   // demandée), pour pouvoir afficher la durée écoulée depuis createdAt.
   updatedAt?: string;
+  // Coût/performance de cette exécution (absent pour les tours qui n'ont jamais atteint
+  // run_dynamic_crew, ex: clarification demandée avant l'exécution).
+  apiCallsCount?: number | null;
+  rateLimitHits?: number | null;
+  totalWaitTimeSeconds?: number | null;
 }
