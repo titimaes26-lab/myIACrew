@@ -74,9 +74,20 @@ development_task:
     2. Vérifie la présence du point de montage React (`src/main.tsx`).
     3. Fournis le code complet corrigé pour rétablir l'application.
 
+    Avant d'écrire quoi que ce soit, énonce dans ta sortie finale (avant le code) la liste des
+    fichiers que tu comptes créer ou modifier et une justification d'une ligne pour chacun : ce
+    plan doit rester visible pour que la QA et l'utilisateur puissent suivre ton raisonnement,
+    pas seulement constater le résultat final.
+
     Contexte de la conversation (tours précédents de cet utilisateur, notamment la
     branche de travail éventuellement déjà utilisée) :
     {conversation_context}
+    Ce contexte est un RÉSUMÉ potentiellement imprécis ou incomplet rédigé à un tour précédent,
+    pas une preuve de l'état réel du code. Si un repository cible est fourni et que ce résumé
+    mentionne une branche de travail déjà utilisée, relis l'état RÉEL des fichiers concernés avec
+    `github_read_file` (branch={work_branch}) avant de t'appuyer dessus : ne présume jamais qu'un
+    fichier existe, a tel contenu, ou qu'une action a réussi uniquement parce que le résumé
+    l'affirme.
 
     Contexte repository :
     {repo_instructions}
@@ -95,9 +106,16 @@ development_task:
     4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant les changements.
     Ne modifie jamais directement la branche {base_branch}.
+
+    Si tu approches de la limite d'appels d'outils disponibles avant d'avoir terminé tous les
+    fichiers prévus dans ton plan, priorise la livraison d'un sous-ensemble cohérent et
+    fonctionnel (jamais un fichier à moitié écrit ni une branche sans commit) plutôt que de tout
+    laisser incomplet, et indique EXPLICITEMENT dans ton rapport final la liste des éléments du
+    plan qui n'ont pas pu être réalisés.
   expected_output: >
-    Le code source complet des fichiers créés ou modifiés, et si un repository cible était fourni,
-    l'URL de la Pull Request créée.
+    D'abord le plan (liste des fichiers prévus et leur justification), puis le code source complet
+    des fichiers créés ou modifiés, la liste explicite de tout élément du plan resté incomplet le
+    cas échéant, et si un repository cible était fourni, l'URL de la Pull Request créée.
   agent: developer_agent
 
 qa_task:
@@ -111,6 +129,22 @@ qa_task:
     résultat exact) de ce que tu n'as évalué qu'en lisant le code : n'affirme jamais une
     absence de bug que tu n'as pas réellement vérifiée avec l'outil.
 
+    Ne fais JAMAIS confiance au rapport du Développeur sur la seule foi de ses affirmations.
+    Pour chaque fichier qu'il prétend avoir créé ou modifié (voir son plan et sa liste de
+    fichiers dans son rapport), confirme sa présence ET son contenu réels : si un repository
+    cible est fourni, avec `github_read_file` sur la branche de travail ({work_branch}) — utilise
+    `github_list_directory` seulement pour repérer les fichiers présents, jamais pour juger de
+    leur contenu, qu'il ne renvoie pas ; sinon (travail sur disque local), avec
+    `read_a_files_content`. Un fichier annoncé mais absent, ou dont le contenu diverge de ce qui
+    est décrit, est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Si un
+    repository cible est fourni,
+    tu n'as pas d'outil pour vérifier toi-même qu'une Pull Request a réellement été ouverte :
+    dis-le clairement dans ton rapport plutôt que de confirmer une affirmation que tu ne peux pas
+    contrôler. Si le Développeur a lui-même signalé, dans son rapport, des éléments de son plan
+    restés incomplets, reflète-le explicitement dans ta conclusion : ne recommande jamais la mise
+    en production d'un travail
+    que le Développeur a lui-même qualifié d'incomplet.
+
     Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
 
@@ -120,5 +154,6 @@ qa_task:
     de travail ({work_branch}) avec `github_read_file` (owner={repo_owner}, repo={repo_name}) plutôt que sur disque.
   expected_output: >
     Un rapport de validation QA listant, pour chaque fichier vérifié, le résultat exact de
-    `check_syntax`, puis une conclusion sur la mise en production ou une liste de correctifs mineurs.
+    `check_syntax` ET la confirmation (ou l'infirmation) de ce que le Développeur prétend avoir
+    fait, puis une conclusion sur la mise en production ou une liste de correctifs mineurs.
   agent: qa_agent

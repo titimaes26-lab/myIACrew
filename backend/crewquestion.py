@@ -237,9 +237,12 @@ def _build_summary_prompt(user_request: str, summary_input: str) -> str:
         "Voici le résultat produit par une équipe d'agents IA pour répondre à la "
         f"demande suivante :\n\n{truncated_request}\n\n"
         f"Résultat complet :\n---\n{summary_input}\n---\n\n"
-        "Rédige, en français, un résumé de 3 à 5 phrases clair et concret de ce qui a "
-        "été livré (décisions clés, ce qui a été produit). N'invente rien qui ne soit "
-        "pas déjà présent dans le résultat ci-dessus."
+        "Rédige, en français, un résumé de 4 à 6 phrases clair et concret de ce qui a été "
+        "livré (décisions clés, ce qui a été produit) ET, quand cette justification est "
+        "présente dans le résultat ci-dessus, du POURQUOI des choix importants qui ont été "
+        "faits (ex: pourquoi tel découpage de composants, pourquoi telle approche plutôt "
+        "qu'une autre). N'invente aucune raison qui n'y figure pas déjà : si le résultat ne "
+        "justifie pas un choix, décris-le sans inventer de justification."
     )
 
 # Borne le temps d'attente total (au-delà du request_timeout de summary_llm lui-même),
