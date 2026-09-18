@@ -388,10 +388,11 @@ class AppDevelopmentCrew():
                 github_read_file, github_list_directory,
                 github_create_branch, github_write_file, github_edit_file, github_open_pull_request,
             ],
-            # 5 et non 3 : le flux GitHub complet (create_branch, write/edit_file,
-            # check_syntax, open_pull_request) dépasse déjà 3 appels d'outils pour un
-            # seul fichier ; max_iter=3 coupait la tâche avant l'ouverture de la PR.
-            llm=gemini_llm, max_iter=5, verbose=True,
+            # 7 et non 5 : le flux GitHub complet pour un BUGFIX d'écran blanc (create_branch,
+            # 2 lectures diagnostiques index.html+main.tsx, write/edit_file, check_syntax,
+            # open_pull_request) atteint déjà 6 appels d'outils pour un seul fichier corrigé ;
+            # max_iter=5 coupait la tâche avant l'ouverture de la PR dans ce cas précis.
+            llm=gemini_llm, max_iter=7, verbose=True,
         )
 
     @agent
