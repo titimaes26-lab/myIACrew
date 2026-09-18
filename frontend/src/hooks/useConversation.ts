@@ -66,20 +66,28 @@ export function useConversation(accessToken: string, apiUrl: string) {
     setPendingClarification(null);
     setWorkflowType('AUTO');
     setError(null);
+    // L'abandon de la requête ci-dessus ne libère `sending` que de façon asynchrone, via le
+    // `finally` de sendMessage : sans ce reset immédiat, ce nouveau fil pourtant vide afficherait
+    // encore brièvement la zone de saisie désactivée et le bouton Annuler de l'ancien envoi.
+    setSending(false);
   };
 
   const loadConversation = async (id: number) => {
+    // Aucun effet si on "reprend" la conversation déjà affichée : ses turns locaux (y compris un
+    // tour "clarifying" en attente de réponse, jamais persisté côté serveur tant qu'il n'est pas
+    // répondu, ou un tour "running" encore identifié par son tempId le temps que /api/execute
+    // réponde) sont déjà à jour, alors que les recharger depuis le serveur les remplacerait par
+    // un instantané qui leur correspond moins bien et casserait le rattachement par tempId
+    // qu'attend applyExecuteSuccess.
+    if (id === conversationId) return;
     setError(null);
-    // Calculé maintenant (avant l'await ci-dessous, donc jamais périmé) : lit conversationId à
-    // sa valeur réellement courante au moment de l'appel, contrairement à une comparaison faite
-    // après l'await qui lirait cette même variable via une closure figée à cet instant-là.
-    const isDifferentConversation = id !== conversationId;
-    if (isDifferentConversation) {
-      // Annulé seulement si on quitte RÉELLEMENT une autre conversation : annuler même en
-      // reprenant la conversation déjà affichée romprait à tort son propre envoi en cours.
-      cancelSending();
-      conversationGenerationRef.current += 1;
-    }
+    // Annulé seulement en changeant RÉELLEMENT de conversation : annuler même en reprenant la
+    // conversation déjà affichée romprait à tort son propre envoi en cours (déjà exclu ci-dessus).
+    cancelSending();
+    conversationGenerationRef.current += 1;
+    // Idem `startNewConversation` : sans ce reset immédiat, la conversation qu'on quitte
+    // afficherait encore brièvement la zone de saisie désactivée après son abandon.
+    setSending(false);
     const myGeneration = conversationGenerationRef.current;
     try {
       const messages = await api.getConversationMessages(id);
@@ -90,9 +98,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       setConversationId(id);
       setTurns(messages.map(historyEntryToTurn));
       setPendingClarification(null);
-      // Seulement si on change réellement de conversation : sinon un simple rafraîchissement
-      // de la conversation déjà affichée effacerait sans raison un choix manuel en cours.
-      if (isDifferentConversation) setWorkflowType('AUTO');
+      setWorkflowType('AUTO');
     } catch (err: unknown) {
       if (myGeneration !== conversationGenerationRef.current) return;
       setError(err instanceof Error ? err.message : 'Impossible de charger cette conversation.');
