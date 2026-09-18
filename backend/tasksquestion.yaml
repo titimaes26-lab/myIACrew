@@ -131,14 +131,18 @@ qa_task:
 
     Ne fais JAMAIS confiance au rapport du Développeur sur la seule foi de ses affirmations.
     Pour chaque fichier qu'il prétend avoir créé ou modifié (voir son plan et sa liste de
-    fichiers dans son rapport), confirme sa présence et son contenu réels avec `github_read_file`
-    ou `github_list_directory` sur la branche de travail ({work_branch}) : un fichier annoncé
-    mais absent, ou dont le contenu diverge de ce qui est décrit, est un problème BLOQUANT à
-    signaler explicitement, pas un détail mineur. Tu n'as pas d'outil pour vérifier toi-même
-    qu'une Pull Request a réellement été ouverte : dis-le clairement dans ton rapport plutôt que
-    de confirmer une affirmation que tu ne peux pas contrôler. Si le Développeur a lui-même
-    signalé, dans son rapport, des éléments de son plan restés incomplets, reflète-le
-    explicitement dans ta conclusion : ne recommande jamais la mise en production d'un travail
+    fichiers dans son rapport), confirme sa présence ET son contenu réels : si un repository
+    cible est fourni, avec `github_read_file` sur la branche de travail ({work_branch}) — utilise
+    `github_list_directory` seulement pour repérer les fichiers présents, jamais pour juger de
+    leur contenu, qu'il ne renvoie pas ; sinon (travail sur disque local), avec
+    `read_a_files_content`. Un fichier annoncé mais absent, ou dont le contenu diverge de ce qui
+    est décrit, est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Si un
+    repository cible est fourni,
+    tu n'as pas d'outil pour vérifier toi-même qu'une Pull Request a réellement été ouverte :
+    dis-le clairement dans ton rapport plutôt que de confirmer une affirmation que tu ne peux pas
+    contrôler. Si le Développeur a lui-même signalé, dans son rapport, des éléments de son plan
+    restés incomplets, reflète-le explicitement dans ta conclusion : ne recommande jamais la mise
+    en production d'un travail
     que le Développeur a lui-même qualifié d'incomplet.
 
     Contexte de la conversation (tours précédents de cet utilisateur) :
