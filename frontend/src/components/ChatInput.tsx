@@ -3,6 +3,7 @@ import { apiClient } from '../api';
 import type { RepoTarget, RepoTargetSuggestion } from '../types';
 import RepoTargetFields from './RepoTargetFields';
 import { readChatDraft, writeChatDraft } from '../utils/chatDraft';
+import { WORKFLOW_TYPE_OPTIONS, type WorkflowType } from '../constants/workflowTypes';
 
 const MIN_TEXTAREA_HEIGHT = 52;
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -13,9 +14,16 @@ interface ChatInputProps {
   apiUrl: string;
   accessToken: string;
   onSend: (text: string, repoTarget: RepoTarget) => void;
+  // Contrôlé par useConversation (pas un état local à ce composant) : ce hook a besoin de
+  // pouvoir remettre ce choix à 'AUTO' à des limites que ce composant ne connaît pas
+  // (nouvelle conversation, reprise d'une conversation différente) sans quoi un choix
+  // manuel resterait actif en silence pour une demande sans rapport avec celle où il avait
+  // été fait.
+  workflowType: WorkflowType;
+  onWorkflowTypeChange: (workflowType: WorkflowType) => void;
 }
 
-export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onSend }: ChatInputProps) {
+export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onSend, workflowType, onWorkflowTypeChange }: ChatInputProps) {
   const [text, setText] = useState(readChatDraft);
   const [showRepoFields, setShowRepoFields] = useState(false);
   const [repoOwner, setRepoOwner] = useState('');
@@ -68,13 +76,46 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-      <button
-        type="button"
-        onClick={() => setShowRepoFields((v) => !v)}
-        style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: '13px', backgroundColor: 'transparent', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer', color: '#666' }}
-      >
-        🔗 {repoOwner && repoName ? `${repoOwner}/${repoName}` : 'Repository GitHub cible (optionnel)'}
-      </button>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <label style={{ fontSize: '13px', color: '#666', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          Type de demande :
+          <select
+            value={workflowType}
+            onChange={(e) => onWorkflowTypeChange(e.target.value as WorkflowType)}
+            disabled={disabled}
+            // Ce choix persiste d'un message à l'autre (jamais réinitialisé à 'AUTO' après
+            // l'envoi) pour permettre plusieurs messages de suite dans un même mode manuel
+            // sans avoir à le re-sélectionner à chaque fois. Un style distinct quand il
+            // n'est pas 'AUTO' est donc nécessaire : sans lui, un choix manuel oublié depuis
+            // un message précédent resterait actif en silence pour une demande sans rapport,
+            // qui contournerait alors /api/qualify sans que rien ne le signale à l'écran.
+            style={{
+              padding: '4px 8px',
+              fontSize: '13px',
+              borderRadius: '6px',
+              border: workflowType === 'AUTO' ? '1px solid #ccc' : '1px solid #0070f3',
+              backgroundColor: workflowType === 'AUTO' ? '#fff' : '#eff6ff',
+              color: workflowType === 'AUTO' ? '#333' : '#0070f3',
+              fontWeight: workflowType === 'AUTO' ? 'normal' : 600,
+              cursor: disabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {WORKFLOW_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.icon} {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <button
+          type="button"
+          onClick={() => setShowRepoFields((v) => !v)}
+          style={{ padding: '4px 10px', fontSize: '13px', backgroundColor: 'transparent', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer', color: '#666' }}
+        >
+          🔗 {repoOwner && repoName ? `${repoOwner}/${repoName}` : 'Repository GitHub cible (optionnel)'}
+        </button>
+      </div>
 
       {showRepoFields && (
         <>
