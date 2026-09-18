@@ -127,8 +127,12 @@ development_task:
        un correctif déjà commité à un tour précédent sur cette même branche de travail réutilisée.
        Pour une correction ciblée sur un fichier déjà existant et volumineux, préfère
        `github_edit_file` (extrait exact à remplacer) à `github_write_file` : c'est plus
-       rapide et ça évite de faire disparaître du contenu en régénérant tout le fichier.
-       Toujours un commit_message clair.
+       rapide et ça évite de faire disparaître du contenu en régénérant tout le fichier. Si
+       `github_edit_file` t'indique explicitement un ÉCHEC RÉPÉTÉ sur ce même fichier,
+       n'insiste pas avec une nouvelle tentative : bascule sur `github_write_file` avec son
+       contenu complet déjà corrigé, plutôt que de risquer d'épuiser ton budget d'appels
+       d'outils sur un seul fichier sans jamais committer de correctif. Toujours un
+       commit_message clair.
     3. Avant de committer un fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx, vérifie sa syntaxe
        avec `check_syntax` (vérification statique, sans exécution) et corrige tout problème
        signalé avant de continuer.

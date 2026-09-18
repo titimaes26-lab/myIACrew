@@ -35,6 +35,7 @@ from github_tools import (
     github_write_file,
     github_edit_file,
     github_open_pull_request,
+    track_edit_failures,
 )
 
 # --- MÉTRIQUES & PAUSES ---
@@ -388,11 +389,16 @@ class AppDevelopmentCrew():
                 github_read_file, github_list_directory,
                 github_create_branch, github_write_file, github_edit_file, github_open_pull_request,
             ],
-            # 7 et non 5 : le flux GitHub complet pour un BUGFIX d'écran blanc (create_branch,
+            # 8 et non 5 : le flux GitHub complet pour un BUGFIX d'écran blanc (create_branch,
             # 2 lectures diagnostiques index.html+main.tsx, write/edit_file, check_syntax,
-            # open_pull_request) atteint déjà 6 appels d'outils pour un seul fichier corrigé ;
-            # max_iter=5 coupait la tâche avant l'ouverture de la PR dans ce cas précis.
-            llm=gemini_llm, max_iter=7, verbose=True,
+            # open_pull_request) atteint déjà 6 appels d'outils pour un seul fichier corrigé, et
+            # la stratégie de repli sur échec répété de github_edit_file (voir github_tools.py,
+            # _record_edit_failure) ajoute encore une relecture avant la réécriture complète
+            # (create_branch, 2 tentatives github_edit_file, github_read_file, github_write_file,
+            # check_syntax, open_pull_request = 7 appels sans même compter un diagnostic écran
+            # blanc) ; max_iter=5 coupait déjà la tâche avant l'ouverture de la PR pour le premier
+            # cas, max_iter=7 laissait trop peu de marge pour le second.
+            llm=gemini_llm, max_iter=8, verbose=True,
         )
 
     @agent
@@ -496,7 +502,12 @@ class AppDevelopmentCrew():
             verbose=True
         )
         try:
-            result = await dynamic_crew.kickoff_async(inputs=inputs)
+            # track_edit_failures() : isole le suivi des échecs répétés de github_edit_file
+            # (voir github_tools.py) à CETTE exécution, pour qu'il ne se souvienne pas à tort
+            # d'échecs d'un tour précédent sur le même work_branch réutilisé (voir la docstring
+            # de _edit_failure_counts dans github_tools.py pour le raisonnement complet).
+            with track_edit_failures():
+                result = await dynamic_crew.kickoff_async(inputs=inputs)
         except Exception as e:
             # Identifie la tâche qui était en cours au moment de l'échec (celle juste
             # après la dernière complétée avec succès) pour que le frontend puisse
