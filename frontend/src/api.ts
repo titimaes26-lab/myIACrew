@@ -1,6 +1,6 @@
 import type { ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
 
-interface ExecuteResponse {
+export interface ExecuteResponse {
   status: string;
   id: number;
   conversation_id: number;
