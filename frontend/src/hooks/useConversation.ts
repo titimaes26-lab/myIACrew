@@ -39,6 +39,13 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // silencieusement actif pour une demande sans rapport avec celle où il avait été choisi.
   const [workflowType, setWorkflowType] = useState<WorkflowType>('AUTO');
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Incrémenté à chaque changement de conversation (nouvelle ou reprise d'une différente),
+  // jamais pour un simple envoi de message. Sert à repérer, après un await, si l'opération en
+  // cours est toujours la plus récente avant d'appliquer son résultat sur l'état : contrairement
+  // à une comparaison ponctuelle du type `id !== conversationId` (lue via une closure qui peut
+  // être périmée une fois l'await résolu), un ref se lit toujours à sa valeur courante, donc ce
+  // test reste valable quel que soit ce qui s'est produit pendant l'attente.
+  const conversationGenerationRef = useRef(0);
 
   const api = apiClient(apiUrl, accessToken);
 
@@ -53,6 +60,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // ce nouveau fil (vide) au conversationId de l'ancienne requête via son propre
     // setConversationId(data.conversation_id) dans sendMessage.
     cancelSending();
+    conversationGenerationRef.current += 1;
     setConversationId(null);
     setTurns([]);
     setPendingClarification(null);
@@ -62,13 +70,31 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
   const loadConversation = async (id: number) => {
     setError(null);
+    // Calculé maintenant (avant l'await ci-dessous, donc jamais périmé) : lit conversationId à
+    // sa valeur réellement courante au moment de l'appel, contrairement à une comparaison faite
+    // après l'await qui lirait cette même variable via une closure figée à cet instant-là.
+    const isDifferentConversation = id !== conversationId;
+    if (isDifferentConversation) {
+      // Annulé seulement si on quitte RÉELLEMENT une autre conversation : annuler même en
+      // reprenant la conversation déjà affichée romprait à tort son propre envoi en cours.
+      cancelSending();
+      conversationGenerationRef.current += 1;
+    }
+    const myGeneration = conversationGenerationRef.current;
     try {
       const messages = await api.getConversationMessages(id);
+      // Abandonné si une navigation plus récente (nouvel appel à loadConversation ou
+      // startNewConversation) a eu lieu pendant cet await : sans ce garde-fou, cette réponse
+      // périmée écraserait silencieusement l'état de la conversation réellement affichée.
+      if (myGeneration !== conversationGenerationRef.current) return;
       setConversationId(id);
       setTurns(messages.map(historyEntryToTurn));
       setPendingClarification(null);
-      setWorkflowType('AUTO');
+      // Seulement si on change réellement de conversation : sinon un simple rafraîchissement
+      // de la conversation déjà affichée effacerait sans raison un choix manuel en cours.
+      if (isDifferentConversation) setWorkflowType('AUTO');
     } catch (err: unknown) {
+      if (myGeneration !== conversationGenerationRef.current) return;
       setError(err instanceof Error ? err.message : 'Impossible de charger cette conversation.');
     }
   };
@@ -109,9 +135,25 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    // Capturé maintenant (jamais modifié par sendMessage lui-même, seulement lu) : si une
+    // navigation vers une autre conversation survient pendant un des await ci-dessous, ce
+    // nombre ne correspondra plus à conversationGenerationRef.current au retour de l'await,
+    // ce qui permet d'abandonner silencieusement un résultat devenu obsolète (pendingClarification
+    // notamment est un état global, pas propre à une conversation, qui serait sinon modifié à
+    // tort pour la conversation désormais affichée).
+    const myGeneration = conversationGenerationRef.current;
 
     setSending(true);
     setError(null);
+
+    // Partagé entre les 3 chemins qui poussent le tour de CET envoi avant son exécution
+    // (repli manuel avec clarification, repli manuel sans clarification, AUTO avant
+    // /api/qualify) pour qu'ils ne puissent pas diverger silencieusement sur sa forme.
+    // workflow omis (undefined) tant que la catégorie n'est pas encore connue (avant
+    // /api/qualify) : ChatTurn.workflow est optionnel précisément pour ce cas.
+    const pushRunningTurn = (workflow?: string) => {
+      setTurns((t) => [...t, { id: tempId, userMessage: text, status: 'running', workflow, createdAt: new Date().toISOString() }]);
+    };
 
     try {
       if (pendingClarification) {
@@ -123,13 +165,14 @@ export function useConversation(accessToken: string, apiUrl: string) {
         // l'utilisateur. Le tour "❓ Précisions nécessaires" n'a donc pas besoin d'être
         // annulé : il est répondu, comme dans le flux AUTO normal (reste en historique).
         const effectiveWorkflow = workflowType === 'AUTO' ? pendingClarification.workflow : workflowType;
-        setTurns((t) => [...t, { id: tempId, userMessage: text, status: 'running', workflow: effectiveWorkflow, createdAt: new Date().toISOString() }]);
+        pushRunningTurn(effectiveWorkflow);
         const data = await api.execute({
           ...executePayload,
           user_request: pendingClarification.originalRequest,
           target_workflow: effectiveWorkflow,
           clarifications: text,
         }, controller.signal);
+        if (myGeneration !== conversationGenerationRef.current) return;
         setPendingClarification(null);
         applyExecuteSuccess(tempId, data);
         return;
@@ -139,18 +182,24 @@ export function useConversation(accessToken: string, apiUrl: string) {
         // Sélection manuelle du type de demande, sans clarification en attente : contourne
         // /api/qualify pour exécuter directement le workflow choisi, le texte tapé étant
         // ici la demande complète (pas la réponse à une question précédente).
-        setTurns((t) => [...t, { id: tempId, userMessage: text, status: 'running', workflow: workflowType, createdAt: new Date().toISOString() }]);
+        pushRunningTurn(workflowType);
         const data = await api.execute({
           ...executePayload,
           user_request: text,
           target_workflow: workflowType,
         }, controller.signal);
+        if (myGeneration !== conversationGenerationRef.current) return;
         applyExecuteSuccess(tempId, data);
         return;
       }
 
-      setTurns((t) => [...t, { id: tempId, userMessage: text, status: 'running', createdAt: new Date().toISOString() }]);
+      pushRunningTurn();
       const report = await api.qualify(text, controller.signal);
+      // Abandonné si une navigation vers une autre conversation a eu lieu pendant cet await :
+      // sans ce garde-fou, la suite (setPendingClarification notamment, état global non
+      // propre à une conversation) modifierait à tort l'état de la conversation désormais
+      // affichée plutôt que celle, abandonnée, à l'origine de cette demande.
+      if (myGeneration !== conversationGenerationRef.current) return;
 
       if (!report.is_clear) {
         setPendingClarification({ originalRequest: text, workflow: report.request_type });
@@ -167,8 +216,13 @@ export function useConversation(accessToken: string, apiUrl: string) {
         user_request: text,
         target_workflow: report.request_type,
       }, controller.signal);
+      if (myGeneration !== conversationGenerationRef.current) return;
       applyExecuteSuccess(tempId, data);
     } catch (err: unknown) {
+      // Idem : une erreur (y compris une annulation) rattachée à une conversation abandonnée
+      // ne doit affecter ni son historique (de toute façon remplacé entretemps) ni, surtout,
+      // pendingClarification/error/conversationId de la conversation désormais affichée.
+      if (myGeneration !== conversationGenerationRef.current) return;
       if (isAbortError(err)) {
         // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
         // réponse de clarification à la demande d'origine (désormais abandonnée).
