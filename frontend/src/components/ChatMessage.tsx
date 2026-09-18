@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, memo, Suspense, useMemo } from 'react';
 import type { ChatTurn } from '../types';
 import StepIndicator from './StepIndicator';
 import { parseCrewResult } from '../utils/parseCrewResult';
@@ -38,10 +38,19 @@ function formatMetrics(turn: ChatTurn): string | null {
   return parts.join(' · ');
 }
 
-export default function ChatMessage({ turn }: { turn: ChatTurn }) {
+function ChatMessage({ turn }: { turn: ChatTurn }) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
+  // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
+  // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
+  // l'un est modifié sans l'autre (ex: JSX étendu à un autre statut sans mettre à jour
+  // la condition du useMemo), laissant `sections` vide pour un cas que le JSX affiche.
+  const isSuccess = Boolean(turn.result) && turn.status === 'success';
+  // Le parsing par regex du résultat complet (qui peut contenir du code source entier sur
+  // un workflow FEATURE/DESIGN_AND_DEV) ne doit être refait que si turn.result change, pas
+  // à chaque rendu de ce composant.
+  const sections = useMemo(() => (isSuccess ? parseCrewResult(turn.result!) : []), [isSuccess, turn.result]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
@@ -95,10 +104,10 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
           <p style={{ margin: 0, fontSize: '13px', color: '#666', fontStyle: 'italic' }}>{turn.result}</p>
         )}
 
-        {turn.result && turn.status === 'success' && (
+        {isSuccess && (
           <Suspense fallback={<p style={{ margin: 0, fontSize: '13px', color: '#666' }}>Chargement du résultat...</p>}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {parseCrewResult(turn.result).map((section, i) => (
+              {sections.map((section, i) => (
                 <div
                   key={i}
                   style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
@@ -119,3 +128,10 @@ export default function ChatMessage({ turn }: { turn: ChatTurn }) {
     </div>
   );
 }
+
+// memo() : sans ça, chaque mutation de `turns` dans useConversation (nouveau tour ajouté,
+// tour "running" -> "success") remonte un nouveau tableau et re-rendrait TOUS les messages
+// déjà affichés, même ceux dont le `turn` n'a pas changé de référence (useConversation
+// renvoie le même objet pour les tours non modifiés) — coûteux sur une longue conversation
+// vu le markdown/la coloration syntaxique à refaire pour chacun.
+export default memo(ChatMessage);

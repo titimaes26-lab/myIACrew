@@ -13,7 +13,12 @@ DATABASE_URL = _RAW_DATABASE_URL or "sqlite:///./dev.db"
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, echo=True)
+# echo=True loggue l'intégralité de chaque requête SQL exécutée (utile en debug local,
+# mais un coût I/O systématique en production sur CHAQUE écriture d'ExecutionHistory et
+# lecture d'historique/conversation) : désactivé par défaut, réactivable via SQL_ECHO=true
+# pour le débogage sans devoir modifier le code.
+_SQL_ECHO = os.getenv("SQL_ECHO", "false").strip().lower() == "true"
+engine = create_engine(DATABASE_URL, echo=_SQL_ECHO)
 
 # Regroupe plusieurs exécutions en un fil de discussion persistant
 class Conversation(SQLModel, table=True):

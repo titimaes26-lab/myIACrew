@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, build_conversation_context, track_execution_metrics
 from database import create_db_and_tables, get_session, Conversation, ExecutionHistory
-from auth import get_current_user
+from auth import get_current_user, close_http_client
 
 # 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
 app = FastAPI(title="CrewAI App Development API")
@@ -20,6 +20,12 @@ app = FastAPI(title="CrewAI App Development API")
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
+
+# Ferme proprement le client HTTP partagé de auth.py (voir sa docstring) plutôt que de
+# laisser ses connexions ouvertes à l'arrêt du process.
+@app.on_event("shutdown")
+async def on_shutdown():
+    await close_http_client()
 
 # 3. CONFIGURATION CORS
 app.add_middleware(
