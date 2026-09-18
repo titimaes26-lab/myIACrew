@@ -19,11 +19,23 @@ const STATUS_LABEL: Record<ChatTurn['status'], string> = {
 };
 
 function formatMetrics(turn: ChatTurn): string | null {
-  if (!turn.apiCallsCount) return null;
-  const callsLabel = `🔢 ${turn.apiCallsCount} appel${turn.apiCallsCount > 1 ? 's' : ''} API`;
-  if (!turn.rateLimitHits) return callsLabel;
+  // == null (pas !turn.apiCallsCount) : une exécution avec 0 appel réel doit afficher
+  // "0 appel API", pas être traitée comme si la métrique était absente.
+  if (turn.apiCallsCount == null) return null;
+
+  const parts = [`🔢 ${turn.apiCallsCount} appel${turn.apiCallsCount === 1 ? '' : 's'} API`];
+  if (turn.rateLimitHits) {
+    parts.push(`⏳ ${turn.rateLimitHits} pause${turn.rateLimitHits === 1 ? '' : 's'} quota`);
+  }
+  // Temps d'attente total (pacing interne systématique + pauses quota confondus) :
+  // affiché séparément de "pauses quota" ci-dessus plutôt qu'entre parenthèses juste
+  // après, ce qui laisserait croire à tort que cette durée n'est due qu'aux pauses
+  // quota alors qu'elle inclut aussi l'espacement volontaire entre chaque appel.
   const waitSeconds = Math.round(turn.totalWaitTimeSeconds ?? 0);
-  return `${callsLabel} · ⏳ ${turn.rateLimitHits} pause${turn.rateLimitHits > 1 ? 's' : ''} quota (${waitSeconds}s)`;
+  if (waitSeconds >= 1) {
+    parts.push(`⏱️ ${waitSeconds}s d'attente au total`);
+  }
+  return parts.join(' · ');
 }
 
 export default function ChatMessage({ turn }: { turn: ChatTurn }) {
