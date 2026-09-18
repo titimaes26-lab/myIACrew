@@ -103,6 +103,21 @@ async def execute_workflow(
     ).all()
     conversation_context = build_conversation_context(prior_entries)
 
+    # Empêche deux exécutions concurrentes sur la même conversation. Nécessaire depuis la
+    # réutilisation du work_branch entre tours (voir plus bas) : sans ce garde-fou, deux
+    # requêtes lancées en parallèle sur la même conversation (ex: double clic, deux onglets)
+    # écriraient toutes les deux sur la même branche via github_write_file/github_edit_file,
+    # qui se basent sur le SHA du fichier pour détecter les conflits (optimistic concurrency) —
+    # l'une des deux échouerait alors avec un SHA obsolète au lieu d'une erreur claire.
+    # Limite connue : un tour resté bloqué à "running" (ex: crash serveur en cours d'exécution,
+    # qui saute le bloc except ci-dessous) bloquerait la conversation jusqu'à correction manuelle
+    # de son statut en base ; accepté ici plutôt que d'ajouter un mécanisme d'expiration.
+    if any(entry.status == "running" for entry in prior_entries):
+        raise HTTPException(
+            status_code=409,
+            detail="Une exécution est déjà en cours pour cette conversation. Attends qu'elle se termine avant d'envoyer un nouveau message.",
+        )
+
     # Normalisé une seule fois : utilisé à la fois pour comparer aux tours précédents et
     # pour ce qui est stocké sur ce tour, afin que les deux restent cohérents (sinon un
     # base_branch vide explicitement envoyé empêcherait à tort la réutilisation de

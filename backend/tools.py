@@ -31,7 +31,13 @@ def read_a_files_content(file_path: str) -> str:
             f"Détail : {str(e)}. Ne réessaie pas d'ouvrir ce fichier."
         )
 
-_REGEX_LITERAL_PRECEDERS = set('([{,;:=!&|?+-*%^~<>') | {''}
+# "<" est volontairement absent : dans ce dépôt (React/TSX), un "/" suit presque
+# toujours "<" comme fermeture de balise JSX (`</A>`), jamais comme opérateur "inférieur
+# à" avant une regex (`x < /regex/`, un cas très rare). Le garder faisait manquer
+# entièrement le contenu entre deux balises fermantes sur une même ligne (tout traité
+# à tort comme un littéral regex), un faux négatif bien pire que le faux positif que ça
+# évitait.
+_REGEX_LITERAL_PRECEDERS = set('([{,;:=!&|?+-*%^~>') | {''}
 # Mots-clés après lesquels un littéral regex peut suivre sans parenthèse/opérateur
 # entre les deux (ex: `return /regex/.test(x);`) : après le dernier caractère de ces
 # mots, last_significant serait sinon une simple lettre (absente de _REGEX_LITERAL_PRECEDERS),
