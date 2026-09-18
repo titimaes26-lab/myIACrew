@@ -192,7 +192,11 @@ MAX_SUMMARY_INPUT_CHARS = 6000
 
 # Timeout dédié, plus court que celui des agents (120s) : un résumé qui traîne ne doit
 # pas ajouter jusqu'à 2 minutes à une réponse dont le vrai travail est déjà terminé.
-summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, request_timeout=20)
+# 25 et non 20 : le résumé demande désormais 4-6 phrases (au lieu de 3-5) plus, le cas
+# échéant, la justification des choix (voir _build_summary_prompt), une génération
+# légèrement plus longue qui reprenait la marge de cette valeur sans que celle-ci ait
+# été ajustée en conséquence.
+summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, request_timeout=25)
 
 MAX_SUMMARY_REQUEST_CHARS = 1500
 
@@ -212,6 +216,12 @@ def _build_summary_input(result) -> str:
     workflow à plusieurs tâches (ex: FEATURE), une troncature globale ne garderait que
     le début (architecture) et perdrait entièrement le code produit et l'avis QA, qui
     sont pourtant l'essentiel de ce qui a été livré.
+
+    Pour chaque tâche, garde le DÉBUT et la FIN de son rapport plutôt qu'un simple préfixe :
+    un agent conclut typiquement son rapport par sa synthèse/justification ("pourquoi tel
+    choix"), qu'un pur `raw[:budget]` couperait systématiquement en tout premier sur un
+    rapport dépassant le budget, alors que le résumé demandé à summary_llm cherche justement
+    ce genre de rationale (voir _build_summary_prompt).
     """
     sections = list(_iter_task_sections(result))
     if not sections:
@@ -222,9 +232,12 @@ def _build_summary_input(result) -> str:
     per_task_budget = max(MAX_SUMMARY_INPUT_CHARS // len(sections), 500)
     parts = []
     for agent_name, raw in sections:
-        truncated = raw[:per_task_budget]
-        if len(raw) > per_task_budget:
-            truncated += " [...tronqué...]"
+        if len(raw) <= per_task_budget:
+            truncated = raw
+        else:
+            head_budget = per_task_budget * 2 // 3
+            tail_budget = per_task_budget - head_budget
+            truncated = f"{raw[:head_budget]} [...tronqué...] {raw[-tail_budget:]}"
         parts.append(f"## {agent_name}\n{truncated}")
     return "\n\n".join(parts)
 
@@ -241,8 +254,10 @@ def _build_summary_prompt(user_request: str, summary_input: str) -> str:
         "livré (décisions clés, ce qui a été produit) ET, quand cette justification est "
         "présente dans le résultat ci-dessus, du POURQUOI des choix importants qui ont été "
         "faits (ex: pourquoi tel découpage de composants, pourquoi telle approche plutôt "
-        "qu'une autre). N'invente aucune raison qui n'y figure pas déjà : si le résultat ne "
-        "justifie pas un choix, décris-le sans inventer de justification."
+        "qu'une autre). N'invente rien qui ne soit pas déjà présent dans le résultat "
+        "ci-dessus : ni un fait (ex: un fichier livré qui ne l'a pas été), ni une raison "
+        "absente — si le résultat ne justifie pas un choix, décris-le sans inventer de "
+        "justification."
     )
 
 # Borne le temps d'attente total (au-delà du request_timeout de summary_llm lui-même),
@@ -250,7 +265,10 @@ def _build_summary_prompt(user_request: str, summary_input: str) -> str:
 # appel : sans ce filet, une erreur transitoire pourrait déclencher jusqu'à 7 tentatives
 # internes avant que summary_llm.call() ne lève enfin, contredisant l'objectif même
 # d'un résumé qui ne doit jamais faire attendre longtemps une réponse déjà acquise.
-SUMMARY_WALL_CLOCK_TIMEOUT = 25
+# 30 et non 25 : doit rester strictement supérieur au request_timeout de summary_llm
+# (25 désormais, voir plus haut) pour continuer à lui laisser le temps de lever sa
+# propre erreur de timeout plutôt que d'être coupé par celui-ci en premier.
+SUMMARY_WALL_CLOCK_TIMEOUT = 30
 
 async def _generate_summary(user_request: str, result) -> str | None:
     """Résumé de synthèse ajouté en fin de résultat combiné.
