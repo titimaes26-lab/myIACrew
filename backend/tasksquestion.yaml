@@ -44,8 +44,16 @@ design_task:
 
 architecture_task:
   description: >
-    Reçois le document de spécifications (Game Design ou spécifications applicatives) et définis
-    la structure des fichiers du projet React/Vite.
+    Demande initiale de l'utilisateur :
+    ---
+    {user_request}
+    ---
+    Pour un workflow DESIGN_AND_DEV ou ANALYSE_ONLY, tu reçois aussi le document de spécifications
+    (Game Design ou spécifications applicatives) produit par la tâche précédente, disponible dans
+    ton contexte. Pour un workflow FEATURE en revanche, cette tâche est la PREMIÈRE du crew (aucune
+    tâche de conception avant) : base-toi alors directement sur la demande ci-dessus, faute de quoi
+    tu ne saurais pas ce qui doit être construit.
+    Définis la structure des fichiers du projet React/Vite.
     Spécifie la hiérarchie des composants, les props et la gestion d'état.
 
     Contexte de la conversation (tours précédents de cet utilisateur) :
@@ -68,11 +76,27 @@ architecture_task:
 
 development_task:
   description: >
+    Demande initiale de l'utilisateur :
+    ---
+    {user_request}
+    ---
+    Base-toi sur cette demande (et, le cas échéant, sur les documents de spécifications/architecture
+    produits par les tâches précédentes de ce workflow, disponibles dans ton contexte). Un workflow
+    BUGFIX ne comprend que cette tâche et la QA, sans tâche de conception/architecture avant : sans
+    la demande rappelée ci-dessus, tu n'aurais aucune information sur ce qui a été demandé, le
+    contexte de conversation plus bas ne couvrant que les tours PRÉCÉDENTS, jamais la demande en
+    cours.
+
     Génère le code source complet ou apporte les corrections nécessaires sur les fichiers existants.
-    Si la tâche est un BUGFIX d'écran blanc :
-    1. Utilise l'outil `read_a_files_content` pour vérifier le point d'entrée (`index.html`).
-    2. Vérifie la présence du point de montage React (`src/main.tsx`).
-    3. Fournis le code complet corrigé pour rétablir l'application.
+    Si la demande ci-dessus décrit spécifiquement un écran blanc ou une erreur de démarrage, ta
+    correction doit porter sur le point d'entrée (`index.html`) et le point de montage React
+    (`src/main.tsx`) : lis-les avant de fournir ton correctif (voir plus bas comment lire un fichier
+    existant selon qu'un repository cible est fourni ou non — une seule et même procédure, pas
+    d'appel d'outil distinct à faire ici).
+    Pour tout autre BUGFIX, NE PRÉSUME JAMAIS qu'il s'agit d'un écran blanc simplement parce que la
+    catégorie du workflow est "BUGFIX" : diagnostique la cause réelle à partir de ce que la demande
+    ci-dessus décrit précisément (ex: un calcul faux, une validation de formulaire qui échoue, un
+    comportement incorrect signalé par l'utilisateur), en lisant le code concerné.
 
     Avant d'écrire quoi que ce soit, énonce dans ta sortie finale (avant le code) la liste des
     fichiers que tu comptes créer ou modifier et une justification d'une ligne pour chacun : ce
@@ -93,9 +117,14 @@ development_task:
     {repo_instructions}
     Si un repository GitHub cible est fourni (owner={repo_owner}, repo={repo_name}), applique STRICTEMENT
     cette procédure au lieu d'écrire sur le disque local :
-    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch}.
+    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch}
+       (un seul appel pour toute cette tâche, y compris pour toute lecture diagnostique d'un fichier
+       existant à l'étape 2).
     2. Pour un nouveau fichier, lis d'abord le contexte utile avec `github_read_file`
        (branch={base_branch}) puis crée-le avec `github_write_file` (branch={work_branch}).
+       Pour lire un fichier déjà existant (diagnostic d'un bug, ou avant une correction ciblée),
+       utilise `github_read_file` sur {work_branch} — jamais {base_branch}, qui ne refléterait pas
+       un correctif déjà commité à un tour précédent sur cette même branche de travail réutilisée.
        Pour une correction ciblée sur un fichier déjà existant et volumineux, préfère
        `github_edit_file` (extrait exact à remplacer) à `github_write_file` : c'est plus
        rapide et ça évite de faire disparaître du contenu en régénérant tout le fichier.
@@ -106,6 +135,8 @@ development_task:
     4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant les changements.
     Ne modifie jamais directement la branche {base_branch}.
+    Sans repository cible (travail sur disque local), utilise `read_a_files_content` pour toute
+    lecture, y compris diagnostique.
 
     Si tu approches de la limite d'appels d'outils disponibles avant d'avoir terminé tous les
     fichiers prévus dans ton plan, priorise la livraison d'un sous-ensemble cohérent et
@@ -120,6 +151,11 @@ development_task:
 
 qa_task:
   description: >
+    Demande initiale de l'utilisateur (rappelée ici pour comparaison, voir plus bas) :
+    ---
+    {user_request}
+    ---
+
     Revois le code produit par le Développeur.
     Pour chaque fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx créé ou modifié, appelle l'outil
     `check_syntax` sur son contenu (vérification statique, sans exécution) avant de conclure :
@@ -148,6 +184,14 @@ qa_task:
     en production d'un travail
     que le Développeur a lui-même qualifié d'incomplet.
 
+    Au-delà de la syntaxe et de la véracité des affirmations du Développeur, compare aussi le
+    résultat livré à la demande initiale rappelée en haut de cette tâche : un code syntaxiquement
+    valide et fidèlement décrit par le Développeur peut quand même ne PAS répondre à ce que
+    l'utilisateur a réellement demandé (ex: un correctif qui traite un symptôme différent du bug
+    décrit, une fonctionnalité qui ne couvre qu'une partie de ce qui était demandé). Si tu identifies
+    un tel écart, signale-le explicitement dans ta conclusion, même si tout le reste (syntaxe,
+    fichiers réellement présents) est correct.
+
     Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
 
@@ -156,5 +200,6 @@ qa_task:
   expected_output: >
     Un rapport de validation QA listant, pour chaque fichier vérifié, le résultat exact de
     `check_syntax` ET la confirmation (ou l'infirmation) de ce que le Développeur prétend avoir
-    fait, puis une conclusion sur la mise en production ou une liste de correctifs mineurs.
+    fait, une évaluation de la correspondance entre le résultat livré et la demande initiale, puis
+    une conclusion sur la mise en production ou une liste de correctifs mineurs.
   agent: qa_agent
