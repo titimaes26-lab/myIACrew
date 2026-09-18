@@ -123,7 +123,10 @@ qa_task:
     Revois le code produit par le Développeur.
     Pour chaque fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx créé ou modifié, appelle l'outil
     `check_syntax` sur son contenu (vérification statique, sans exécution) avant de conclure :
-    ne te contente pas d'une relecture visuelle pour juger de la validité syntaxique.
+    ne te contente pas d'une relecture visuelle pour juger de la validité syntaxique. Récupère ce
+    contenu avec `github_read_file` sur la branche de travail ({work_branch}) si un repository
+    cible est fourni (jamais depuis le disque local dans ce cas, puisque le Développeur n'y a rien
+    écrit), ou avec `read_a_files_content` sinon.
     Vérifie aussi les importations manquantes et les incohérences de montage React.
     Dans ton rapport, distingue clairement ce que tu as vérifié avec `check_syntax` (et son
     résultat exact) de ce que tu n'as évalué qu'en lisant le code : n'affirme jamais une
@@ -150,8 +153,6 @@ qa_task:
 
     Contexte repository :
     {repo_instructions}
-    Si un repository GitHub cible est fourni, relis les fichiers modifiés directement sur la branche
-    de travail ({work_branch}) avec `github_read_file` (owner={repo_owner}, repo={repo_name}) plutôt que sur disque.
   expected_output: >
     Un rapport de validation QA listant, pour chaque fichier vérifié, le résultat exact de
     `check_syntax` ET la confirmation (ou l'infirmation) de ce que le Développeur prétend avoir
