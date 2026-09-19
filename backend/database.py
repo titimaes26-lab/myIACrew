@@ -36,6 +36,16 @@ class ExecutionHistory(SQLModel, table=True):
     clarifications: Optional[str] = None
     result: Optional[str] = None
     status: str = Field(default="running")  # running | success | failed
+    # Clé de l'étape CrewAI actuellement en cours (ex: 'design', 'architecture', 'development',
+    # 'qa' — voir WORKFLOW_STEPS côté frontend), mise à jour par on_step_change pendant
+    # l'exécution (voir crewquestion.run_dynamic_crew et main.py). Persisté en base (pas juste
+    # gardé en mémoire) pour que la progression survive à un rechargement de page ou à un
+    # redémarrage du serveur pendant qu'une exécution est en cours. Remis à None dès que status
+    # quitte "running" (succès OU échec) : plus rien n'est alors réellement en cours, y compris
+    # pendant une pause avant une nouvelle tentative sur erreur de quota (retry_on_rate_limit_async
+    # peut attendre plusieurs minutes) — le message "Échec à l'étape X/Y" de CrewStepError couvre
+    # déjà, plus précisément, le besoin diagnostique de savoir où une exécution s'est arrêtée.
+    current_step: Optional[str] = Field(default=None)
     user_id: Optional[str] = Field(default=None, index=True)  # id Supabase (auth.users) de l'auteur
     conversation_id: Optional[int] = Field(default=None, index=True)
     repo_owner: Optional[str] = None
@@ -69,6 +79,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS api_calls_count INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS rate_limit_hits INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS total_wait_time_seconds FLOAT",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS current_step VARCHAR",
 ]
 
 def _run_lightweight_migrations():

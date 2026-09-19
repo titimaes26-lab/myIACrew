@@ -10,6 +10,13 @@ const MAX_TEXTAREA_HEIGHT = 200;
 
 interface ChatInputProps {
   disabled: boolean;
+  // Distinct de `disabled` : `disabled` couvre aussi le cas d'une conversation reprise dont
+  // l'exécution tourne encore côté serveur sans que CETTE session l'ait elle-même envoyée (voir
+  // Studio.tsx, busy = sending || hasRunningTurn), auquel cas onCancel n'aurait rien à annuler
+  // (abortControllerRef.current est null : rien n'a été fetché depuis cette session). Cancellable
+  // décide donc si le bouton affiché pendant `disabled` est un vrai "Annuler" fonctionnel ou un
+  // simple indicateur d'attente.
+  cancellable: boolean;
   onCancel: () => void;
   apiUrl: string;
   accessToken: string;
@@ -21,9 +28,15 @@ interface ChatInputProps {
   // été fait.
   workflowType: WorkflowType;
   onWorkflowTypeChange: (workflowType: WorkflowType) => void;
+  // "Relancer cette demande" (ChatMessage, via Studio) : préremplit la zone de saisie avec le
+  // texte d'un tour en échec. `nonce` change à chaque clic (même si le texte relancé est
+  // identique au tour précédent) pour que l'effet ci-dessous se redéclenche à coup sûr — un
+  // objet figé sur le seul `text` ne le ferait pas si l'utilisateur relance deux fois de
+  // suite exactement la même demande sans rien taper entretemps.
+  retryDraft: { text: string; nonce: number } | null;
 }
 
-export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onSend, workflowType, onWorkflowTypeChange }: ChatInputProps) {
+export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, accessToken, onSend, workflowType, onWorkflowTypeChange, retryDraft }: ChatInputProps) {
   const [text, setText] = useState(readChatDraft);
   const [showRepoFields, setShowRepoFields] = useState(false);
   const [repoOwner, setRepoOwner] = useState('');
@@ -31,6 +44,18 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
   const [baseBranch, setBaseBranch] = useState('main');
   const [repoSuggestions, setRepoSuggestions] = useState<RepoTargetSuggestion[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Dernier `nonce` de retryDraft déjà appliqué à `text` : comparé pendant le rendu (pas dans
+  // un effet, voir juste plus bas) pour détecter un NOUVEAU clic sur "Relancer" — y compris
+  // un second clic sur le même tour, qui renvoie un texte identique mais un nonce différent.
+  const [syncedRetryNonce, setSyncedRetryNonce] = useState(retryDraft?.nonce);
+
+  // Synchronisation pendant le rendu plutôt que dans un effet ("Adjusting some state when a
+  // prop changes" — react.dev) : évite un rendu supplémentaire (effet -> setState -> nouveau
+  // rendu) pour un simple recopiage de prop vers l'état local.
+  if (retryDraft && retryDraft.nonce !== syncedRetryNonce) {
+    setSyncedRetryNonce(retryDraft.nonce);
+    setText(retryDraft.text);
+  }
 
   useEffect(() => {
     writeChatDraft(text);
@@ -39,6 +64,12 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
   }, [text]);
+
+  // Focus : un vrai effet de bord sur le DOM (pas une synchronisation d'état), qui reste donc
+  // ici plutôt que dans le bloc de rendu ci-dessus.
+  useEffect(() => {
+    if (retryDraft?.nonce !== undefined) textareaRef.current?.focus();
+  }, [retryDraft?.nonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +185,7 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Décrivez votre besoin ou répondez à l'agent..."
+          aria-label="Votre message"
           style={{
             flex: 1,
             padding: '12px',
@@ -168,13 +200,24 @@ export default function ChatInput({ disabled, onCancel, apiUrl, accessToken, onS
             fontFamily: 'inherit',
           }}
         />
-        {disabled ? (
+        {disabled && cancellable ? (
           <button
             type="button"
             onClick={onCancel}
             style={{ padding: '0 20px', backgroundColor: '#fff', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
           >
             🚫 Annuler
+          </button>
+        ) : disabled ? (
+          // Rien à annuler dans ce cas (voir cancellable ci-dessus) : un bouton visuellement
+          // désactivé plutôt que le "Annuler" fonctionnel ci-dessus, pour ne pas laisser croire
+          // qu'un clic aurait un effet.
+          <button
+            type="button"
+            disabled
+            style={{ padding: '0 20px', backgroundColor: '#f3f4f6', color: '#666', border: '1px solid #ccc', borderRadius: '6px', cursor: 'not-allowed', fontWeight: 'bold' }}
+          >
+            🔄 En attente...
           </button>
         ) : (
           <button

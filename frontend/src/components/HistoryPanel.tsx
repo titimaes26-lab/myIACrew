@@ -61,7 +61,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
       <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>📜 Historique des exécutions</p>
 
       {loading && <p style={{ color: '#666', fontSize: '14px' }}>Chargement...</p>}
-      {error && <p style={{ color: '#991b1b', fontSize: '14px' }}>❌ {error}</p>}
+      {error && <p role="alert" style={{ color: '#991b1b', fontSize: '14px' }}>❌ {error}</p>}
       {!loading && !error && entries.length === 0 && (
         <p style={{ color: '#666', fontSize: '14px' }}>Aucune exécution pour l'instant.</p>
       )}
@@ -91,14 +91,16 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
                   Reprendre
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => handleDelete(entry.id)}
-                disabled={deletingId === entry.id}
-                style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: deletingId === entry.id ? 'not-allowed' : 'pointer', fontSize: '13px' }}
-              >
-                {deletingId === entry.id ? '...' : 'Supprimer'}
-              </button>
+              {entry.status !== 'running' && (
+                <button
+                  type="button"
+                  onClick={() => handleDelete(entry.id)}
+                  disabled={deletingId === entry.id}
+                  style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: deletingId === entry.id ? 'not-allowed' : 'pointer', fontSize: '13px' }}
+                >
+                  {deletingId === entry.id ? '...' : 'Supprimer'}
+                </button>
+              )}
             </div>
           </li>
         ))}
