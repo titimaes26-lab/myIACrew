@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from pathlib import Path
-from typing import List, Literal, Callable, Any
+from typing import List, Literal, Callable, Any, Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
@@ -473,16 +473,22 @@ class AppDevelopmentCrew():
             f.write(md_content)
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
-    async def run_dynamic_crew(self, inputs: dict, request_type: str):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None):
+        # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
+        # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
+        # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 4 valeurs
+        # pour faire correspondre la progression réelle à l'étape affichée dans StepIndicator.
         if request_type == "ANALYSE_ONLY":
-            selected_tasks = [self.design_task(), self.architecture_task()]
+            selected = [('design', self.design_task()), ('architecture', self.architecture_task())]
         elif request_type == "BUGFIX":
-            selected_tasks = [self.development_task(), self.qa_task()]
+            selected = [('development', self.development_task()), ('qa', self.qa_task())]
         elif request_type == "FEATURE":
-            selected_tasks = [self.architecture_task(), self.development_task(), self.qa_task()]
+            selected = [('architecture', self.architecture_task()), ('development', self.development_task()), ('qa', self.qa_task())]
         else:
-            selected_tasks = [self.design_task(), self.architecture_task(), self.development_task(), self.qa_task()]
+            selected = [('design', self.design_task()), ('architecture', self.architecture_task()), ('development', self.development_task()), ('qa', self.qa_task())]
 
+        step_keys = [key for key, _ in selected]
+        selected_tasks = [task for _, task in selected]
         selected_agents = list({task.agent for task in selected_tasks})
 
         completed_count = 0
@@ -491,6 +497,31 @@ class AppDevelopmentCrew():
             nonlocal completed_count
             completed_count += 1
             quota_mgr.adaptive_pause(task_output)
+            # Annonce la tâche SUIVANTE qui démarre (pas celle qui vient de finir) : rien à
+            # annoncer après la dernière (le résultat est ensuite juste agrégé/résumé, sans
+            # étape agent supplémentaire pour l'utilisateur).
+            if on_step_change is not None and completed_count < len(selected_tasks):
+                on_step_change(step_keys[completed_count])
+
+        if on_step_change is not None:
+            # Rejoué à l'identique par retry_on_rate_limit_async (décorateur sur cette méthode)
+            # si une erreur de quota/rate-limit survient plus loin : selected_tasks est
+            # entièrement reconstruit à zéro à chaque nouvelle tentative (self.architecture_task()
+            # etc. recréent des Task neufs), donc les tâches déjà terminées lors d'une tentative
+            # précédente sont réellement refaites depuis le début, pas juste réaffichées. La
+            # progression annoncée ici reflète donc fidèlement ce qui se passe réellement (retour
+            # à la première étape), même si ça peut surprendre après avoir vu 'qa' s'afficher.
+            #
+            # await asyncio.to_thread(...) et non un appel direct : contrairement aux appels
+            # suivants (déclenchés par task_callback depuis le thread d'arrière-plan de
+            # kickoff_async, voir on_task_complete ci-dessus), CE point du code s'exécute encore
+            # sur le thread de la boucle asyncio elle-même (avant le premier `await
+            # kickoff_async`). on_step_change effectue une écriture DB synchrone bloquante (voir
+            # _persist_current_step, main.py) : l'appeler ici directement bloquerait la boucle
+            # asyncio, et donc TOUTES les autres requêtes concurrentes servies par ce même
+            # worker, le temps de l'aller-retour réseau vers la base — à chaque exécution ET à
+            # chaque nouvelle tentative sur rate-limit.
+            await asyncio.to_thread(on_step_change, step_keys[0])
 
         dynamic_crew = Crew(
             agents=selected_agents,
@@ -520,7 +551,37 @@ class AppDevelopmentCrew():
             else:
                 step_index = len(selected_tasks)
                 agent_role = "finalisation du résultat"
+            if on_step_change is not None:
+                # Plus aucune étape n'est réellement en cours à cet instant, que cette erreur
+                # finisse par être définitive OU rejouée par retry_on_rate_limit_async (dans ce
+                # dernier cas, ce même appel repartira du tout début — voir plus haut) : entre
+                # les deux, l'exécution est simplement à l'arrêt, potentiellement pendant
+                # plusieurs minutes d'attente (retry_on_rate_limit_async attend jusqu'à 2^4 fois
+                # base_delay avant de rejouer). Sans ce nettoyage, ExecutionHistory.current_step
+                # resterait affiché comme "suivi en direct" (StepIndicator.tsx) sur la dernière
+                # étape connue alors que rien n'est concrètement en train de s'exécuter — un
+                # message "Échec à l'étape X/Y" bien plus précis (step_index/agent_role
+                # ci-dessus) existe déjà pour indiquer où ça s'est arrêté (voir CrewStepError,
+                # parseFailureDetail côté frontend), current_step n'a donc pas besoin de faire
+                # doublon comme trace diagnostique.
+                await asyncio.to_thread(on_step_change, None)
             raise CrewStepError(step_index, len(selected_tasks), agent_role, e) from e
+        finally:
+            # Filet de sécurité secondaire, pas le mécanisme principal : self.design_task()/
+            # architecture_task()/development_task()/qa_task() sont décorées @task par crewai,
+            # qui les MÉMOÏSE par (nom de méthode, id(self)) — voir crewai/project/utils.py.
+            # main.py instancie désormais un AppDevelopmentCrew() dédié à CHAQUE exécution
+            # (`crew_for_this_execution`, jamais le singleton crew_instance) précisément pour que
+            # `self` ait un id() distinct à chaque fois, donc des objets Task neufs à chaque
+            # exécution — c'est ce qui évite, dans l'immense majorité des cas, qu'un rôle de
+            # tâche partagé entre deux exécutions (y compris deux conversations DIFFÉRENTES en
+            # parallèle) ne partage aussi le même objet Task, et donc sa `.callback`/`.output`.
+            # Ce nettoyage ne couvre plus que le cas résiduel où CPython réutiliserait l'id()
+            # d'une instance déjà garbage-collectée (rare mais pas impossible) : sans lui, une
+            # future exécution qui obtiendrait par coïncidence CE MÊME id() récupérerait alors
+            # via le cache de mémoïsation ces mêmes objets Task, `.callback` non nettoyée incluse.
+            for t in selected_tasks:
+                t.callback = None
 
         formatted = _format_crew_result(result)
 

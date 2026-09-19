@@ -20,6 +20,10 @@ export interface ExecutionHistoryEntry {
   api_calls_count: number | null;
   rate_limit_hits: number | null;
   total_wait_time_seconds: number | null;
+  // Clé de l'étape CrewAI en cours (ex: 'design', 'development'...), voir WORKFLOW_STEPS ;
+  // null dès que l'exécution quitte "running" (succès OU échec) — voir
+  // ExecutionHistory.current_step côté backend pour le détail du pourquoi.
+  current_step: string | null;
 }
 
 export interface RepoTarget {
@@ -53,4 +57,9 @@ export interface ChatTurn {
   apiCallsCount?: number | null;
   rateLimitHits?: number | null;
   totalWaitTimeSeconds?: number | null;
+  // Progression réelle sondée en base (voir useConversation.ts) plutôt qu'estimée par le
+  // temps écoulé : absente tant qu'aucun sondage n'a encore abouti (ex: tout début d'une
+  // conversation, où conversationId n'est connu qu'une fois /api/execute résolu), auquel
+  // cas StepIndicator retombe sur l'estimation par temps.
+  currentStep?: string | null;
 }

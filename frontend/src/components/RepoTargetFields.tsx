@@ -24,6 +24,7 @@ export default function RepoTargetFields({
         <input
           type="text"
           placeholder="owner (ex: titimaes26-lab)"
+          aria-label="Propriétaire du repository"
           disabled={disabled}
           value={repoOwner}
           onChange={(e) => onRepoOwnerChange(e.target.value)}
@@ -32,6 +33,7 @@ export default function RepoTargetFields({
         <input
           type="text"
           placeholder="repo (ex: myIACrew)"
+          aria-label="Nom du repository"
           disabled={disabled}
           value={repoName}
           onChange={(e) => onRepoNameChange(e.target.value)}
@@ -40,6 +42,7 @@ export default function RepoTargetFields({
         <input
           type="text"
           placeholder="branche de base"
+          aria-label="Branche de base"
           disabled={disabled}
           value={baseBranch}
           onChange={(e) => onBaseBranchChange(e.target.value)}

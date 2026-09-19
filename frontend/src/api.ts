@@ -15,6 +15,12 @@ export class ApiError extends Error {
   conversationId?: number;
 }
 
+export interface ConversationProgress {
+  id: number | null;
+  status: string | null;
+  current_step: string | null;
+}
+
 function authHeaders(accessToken: string): HeadersInit {
   return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` };
 }
@@ -55,6 +61,10 @@ export function apiClient(apiUrl: string, accessToken: string) {
     getConversationMessages: (conversationId: number) =>
       fetch(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
+
+    getConversationProgress: (conversationId: number) =>
+      fetch(`${apiUrl}/api/conversations/${conversationId}/progress`, { headers: authHeaders(accessToken) })
+        .then((res) => parseJsonOrThrow<ConversationProgress>(res)),
 
     listRepoTargets: () =>
       fetch(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })

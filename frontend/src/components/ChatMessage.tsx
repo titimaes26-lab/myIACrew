@@ -38,7 +38,22 @@ function formatMetrics(turn: ChatTurn): string | null {
   return parts.join(' · ');
 }
 
-function ChatMessage({ turn }: { turn: ChatTurn }) {
+interface ChatMessageProps {
+  turn: ChatTurn;
+  // Optionnel : absent (HistoryPanel n'affiche pas de ChatMessage) ou non fourni ne change
+  // rien d'autre que masquer le bouton "Relancer", jamais une erreur.
+  onRetry?: (turn: ChatTurn) => void;
+  // Désactive "Relancer" pendant qu'un autre envoi est déjà en cours (une seule exécution à la
+  // fois par conversation, imposée côté serveur — voir backend/main.py), MAIS AUSSI tant qu'une
+  // clarification est en attente de réponse : "Relancer" préremplit la zone de saisie avec le
+  // texte d'UN AUTRE tour, qui serait alors envoyé comme réponse à cette clarification-là plutôt
+  // que comme la nouvelle demande affichée (sendMessage route tout texte tapé pendant qu'une
+  // clarification est en attente vers cette clarification, quel que soit son contenu réel — voir
+  // Studio.tsx).
+  retryDisabled: boolean;
+}
+
+function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
@@ -58,7 +73,7 @@ function ChatMessage({ turn }: { turn: ChatTurn }) {
         {turn.userMessage}
       </div>
       <div style={{ alignSelf: 'flex-start', maxWidth: '90%', backgroundColor: '#f8f9fa', border: '1px solid #e1e4e8', borderRadius: '2px 12px 12px 12px', padding: '12px 14px' }}>
-        <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }}>
+        <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }} role="status" aria-live="polite">
           {STATUS_LABEL[turn.status]}
           {turn.workflow ? ` · ${turn.workflow}` : ''}
           {` · ${formatTime(turn.createdAt)}`}
@@ -77,13 +92,13 @@ function ChatMessage({ turn }: { turn: ChatTurn }) {
         )}
 
         {turn.status === 'running' && (
-          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} />
+          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} currentStepKey={turn.currentStep} />
         )}
 
         {turn.result && turn.status === 'failed' && failure && (
-          <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '10px 12px' }}>
+          <div role="alert" style={{ backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '10px 12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#991b1b', marginBottom: '6px' }}>
-              <span>{agentIcon(failure.agentRole)}</span>
+              <span aria-hidden="true">{agentIcon(failure.agentRole)}</span>
               <span>
                 Échec à l'étape {failure.stepIndex}/{failure.totalSteps} — {failure.agentRole}
               </span>
@@ -95,9 +110,29 @@ function ChatMessage({ turn }: { turn: ChatTurn }) {
         )}
 
         {turn.result && turn.status === 'failed' && !failure && (
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
+          <pre role="alert" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
             {turn.result}
           </pre>
+        )}
+
+        {turn.status === 'failed' && onRetry && (
+          <button
+            type="button"
+            onClick={() => onRetry(turn)}
+            disabled={retryDisabled}
+            style={{
+              marginTop: '8px',
+              padding: '5px 12px',
+              fontSize: '13px',
+              backgroundColor: '#fff',
+              color: '#991b1b',
+              border: '1px solid #fca5a5',
+              borderRadius: '6px',
+              cursor: retryDisabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            🔁 Relancer cette demande
+          </button>
         )}
 
         {turn.result && turn.status === 'cancelled' && (
@@ -108,18 +143,35 @@ function ChatMessage({ turn }: { turn: ChatTurn }) {
           <Suspense fallback={<p style={{ margin: 0, fontSize: '13px', color: '#666' }}>Chargement du résultat...</p>}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {sections.map((section, i) => (
-                <div
+                // <details>/<summary> plutôt qu'un état React local : un résultat FEATURE/
+                // DESIGN_AND_DEV peut empiler plusieurs sections contenant du code source
+                // complet, repliables au clic sans code de gestion d'état supplémentaire et
+                // nativement accessibles au clavier/lecteur d'écran. `open` par défaut :
+                // conserve la densité d'affichage actuelle (tout visible d'entrée), seule la
+                // possibilité de replier est nouvelle.
+                <details
                   key={i}
+                  open
                   style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
                 >
-                  {section.agentName && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
-                      <span>{agentIcon(section.agentName)}</span>
-                      <span>{section.agentName}</span>
-                    </div>
-                  )}
-                  <MarkdownRenderer content={section.content} />
-                </div>
+                  <summary
+                    style={{
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: '#444',
+                    }}
+                  >
+                    <span aria-hidden="true">{agentIcon(section.agentName ?? 'Résultat')}</span>
+                    <span>{section.agentName ?? 'Résultat'}</span>
+                  </summary>
+                  <div style={{ marginTop: '8px' }}>
+                    <MarkdownRenderer content={section.content} />
+                  </div>
+                </details>
               ))}
             </div>
           </Suspense>

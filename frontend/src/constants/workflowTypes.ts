@@ -26,3 +26,10 @@ export const WORKFLOW_TYPE_OPTIONS: WorkflowTypeOption[] = [
   { value: 'FEATURE', icon: '✨', label: 'Nouvelle fonctionnalité' },
   { value: 'DESIGN_AND_DEV', icon: '🎨', label: 'Design + développement complet' },
 ];
+
+// Utilisé pour "Relancer cette demande" (ChatMessage/Studio) : turn.workflow est un simple
+// `string` (valeur reçue du backend, potentiellement absente/inattendue), donc jamais
+// assignable tel quel à WorkflowType sans cette vérification à l'exécution.
+export function isWorkflowType(value: string): value is WorkflowType {
+  return WORKFLOW_TYPE_OPTIONS.some((opt) => opt.value === value);
+}
