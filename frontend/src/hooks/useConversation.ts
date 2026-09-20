@@ -38,6 +38,17 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // cette valeur avec workflowType (typé WorkflowType), perdant la garantie à la
   // compilation que seule une des 4 catégories reconnues par le backend est envoyée.
   const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type'] } | null>(null);
+  // Incrémenté à ces mêmes deux limites que workflowType ci-dessous (startNewConversation, et
+  // loadConversation seulement quand il ne s'agit pas d'un no-op sur la conversation déjà
+  // affichée) — PAS à chaque changement de conversationId : conversationId lui-même passe de
+  // null à un id réel dès le premier envoi réussi d'une nouvelle conversation (voir
+  // applyExecuteSuccess), une transition de LA MÊME conversation, pas un changement de
+  // conversation. Destiné à servir de `key` React sur <ChatInput> (voir Studio.tsx) : un simple
+  // remontage via key réinitialise tout l'état local de ce composant (repo cible préremplis
+  // compris) bien plus simplement qu'un prop à comparer et resynchroniser à la main, mais
+  // seulement si ce qu'on lui donne comme key change UNIQUEMENT à ces limites précises — d'où
+  // ce compteur dédié plutôt que conversationId directement.
+  const [conversationResetSignal, setConversationResetSignal] = useState(0);
   // Choix du type de demande, modifiable avant chaque envoi (voir sendMessage) mais tenu
   // ici plutôt que localement dans ChatInput : startNewConversation/loadConversation ont
   // besoin de pouvoir le remettre à 'AUTO' à ces limites naturelles (nouvelle conversation,
@@ -227,6 +238,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
     setTurns([]);
     setPendingClarification(null);
     setWorkflowType('AUTO');
+    setConversationResetSignal((n) => n + 1);
     setError(null);
     // L'abandon de la requête ci-dessus ne libère `sending` que de façon asynchrone, via le
     // `finally` de sendMessage : sans ce reset immédiat, ce nouveau fil pourtant vide afficherait
@@ -261,6 +273,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       setTurns(messages.map(historyEntryToTurn));
       setPendingClarification(null);
       setWorkflowType('AUTO');
+      setConversationResetSignal((n) => n + 1);
     } catch (err: unknown) {
       if (myGeneration !== conversationGenerationRef.current) return;
       setError(err instanceof Error ? err.message : 'Impossible de charger cette conversation.');
@@ -418,5 +431,5 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  return { turns, sending, hasRunningTurn, error, conversationId, pendingClarification, workflowType, setWorkflowType, sendMessage, cancelSending, startNewConversation, loadConversation };
+  return { turns, sending, hasRunningTurn, error, conversationId, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
 }

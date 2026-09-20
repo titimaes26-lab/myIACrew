@@ -146,12 +146,16 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
                 // <details>/<summary> plutôt qu'un état React local : un résultat FEATURE/
                 // DESIGN_AND_DEV peut empiler plusieurs sections contenant du code source
                 // complet, repliables au clic sans code de gestion d'état supplémentaire et
-                // nativement accessibles au clavier/lecteur d'écran. `open` par défaut :
-                // conserve la densité d'affichage actuelle (tout visible d'entrée), seule la
-                // possibilité de replier est nouvelle.
+                // nativement accessibles au clavier/lecteur d'écran. Seule la DERNIÈRE section
+                // est ouverte par défaut (le résumé de synthèse quand il existe — parseCrewResult
+                // l'ajoute toujours en dernier — sinon le dernier agent à s'être exprimé) : les
+                // précédentes, déjà "dépassées" par la suite du résultat, restent repliées pour
+                // éviter un mur de texte sur un DESIGN_AND_DEV à 4 sections. `open` n'est lu par
+                // React qu'au premier rendu de ce <details> (non contrôlé ensuite) : un repli/
+                // dépli manuel par l'utilisateur reste donc acquis malgré un re-rendu du parent.
                 <details
                   key={i}
-                  open
+                  open={i === sections.length - 1}
                   style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
                 >
                   <summary
