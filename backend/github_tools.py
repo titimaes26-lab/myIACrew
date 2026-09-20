@@ -1,7 +1,9 @@
 import os
 import threading
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import NamedTuple
 
 from crewai.tools import tool
 from github import Auth, Github, GithubException
@@ -287,6 +289,146 @@ def github_edit_file(
         return _github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
+
+
+class GitHubVerificationUnavailable(Exception):
+    """Levée par get_branch_head_sha quand l'API GitHub n'a PAS pu confirmer si {branch} existe
+    ou non (erreur réseau, rate-limit, credentials temporairement invalides...) — distinct d'une
+    branche confirmée absente (404, cas normal au tout premier tour sur un work_branch neuf).
+    Son appelant dans main.py traite spécifiquement ce cas comme "repère indisponible" (best-effort,
+    n'empêche pas le lancement du crew) plutôt que de le confondre avec "branche inexistante"."""
+
+
+def get_branch_head_sha(owner: str, repo: str, branch: str) -> str | None:
+    """SHA du commit HEAD de {branch}, ou None si la branche n'existe PAS ENCORE (confirmé, 404).
+
+    Lève GitHubVerificationUnavailable (jamais silencieusement None) sur toute autre erreur : un
+    appelant qui confondrait "l'API n'a pas répondu" avec "la branche n'existe pas" désactiverait
+    par erreur la comparaison de SHA de verify_github_delivery (voir plus bas) exactement quand
+    elle est le plus utile — un work_branch réutilisé qui a déjà des commits/une PR d'un tour
+    précédent.
+
+    Appelée par main.py AVANT de lancer le crew, pour donner à verify_github_delivery un point de
+    référence : sans lui, un work_branch réutilisé d'un tour précédent de la même conversation
+    (voir main.py, réutilisation de work_branch entre tours) ferait passer la vérification pour
+    "confirmée" même si CE tour n'a lui-même rien poussé, simplement parce qu'une branche et une
+    Pull Request d'un tour PRÉCÉDENT existent toujours.
+    """
+    try:
+        gh_repo = _get_repo(owner, repo)
+        return gh_repo.get_branch(branch).commit.sha
+    except GithubException as e:
+        if e.status == 404:
+            return None
+        raise GitHubVerificationUnavailable(_github_error(e)) from e
+    except Exception as e:
+        raise GitHubVerificationUnavailable(str(e)) from e
+
+
+class DeliveryIssue(NamedTuple):
+    """Résultat d'un verify_github_delivery en échec (voir plus bas). `message` : à afficher tel
+    quel à l'utilisateur. `likely_access_problem` : True pour les seuls cas où le conseil "vérifie
+    GITHUB_TOKEN/les permissions" est un diagnostic juste (branche introuvable ou API injoignable) ;
+    False quand la branche ET ses nouveaux commits sont confirmés mais qu'il manque une PR à jour
+    (l'écriture a bien fonctionné, le problème est ailleurs — l'agent n'a pas terminé sa procédure).
+    Un type structuré plutôt qu'un simple texte à parser par préfixe côté appelant (main.py) : un
+    futur reformulation de `message` ne pourrait alors plus faire dériver silencieusement ce choix
+    de conseil affiché.
+    """
+    message: str
+    likely_access_problem: bool
+
+
+def verify_github_delivery(
+    owner: str, repo: str, branch: str, base_branch: str, sha_before: str | None
+) -> DeliveryIssue | None:
+    """Vérifie après coup, directement via l'API GitHub, qu'une Pull Request existe réellement
+    pour {branch} -> {base_branch} ET que la branche a bien reçu un NOUVEAU commit pendant CETTE
+    exécution (sha_before, capturé avant le lancement du crew — voir get_branch_head_sha).
+    Renvoie None si confirmé, sinon un DeliveryIssue expliquant ce qui manque.
+
+    Appelée par main.py une fois le crew terminé, jamais en se fiant au texte produit par l'agent
+    développeur : qa_task (tasksquestion.yaml) le dit elle-même explicitement, la QA n'a aucun
+    outil pour confirmer qu'une PR a réellement été ouverte, donc rien côté agents ne peut détecter
+    un rapport de "succès" où github_create_branch/github_write_file/github_open_pull_request
+    auraient échoué en silence (erreur retournée comme simple texte à l'agent, jamais une
+    exception) ou n'auraient tout simplement jamais été appelés. Comparer au SHA d'avant-exécution
+    (plutôt que de se contenter de constater qu'une branche/PR existe, point faible d'une première
+    version de cette vérification) est nécessaire précisément à cause de cette réutilisation de
+    work_branch : sans ça, un second tour qui ne pousse rien de nouveau serait quand même validé
+    par la seule présence de la branche/PR laissée par le tour précédent.
+
+    Limite assumée : si get_branch_head_sha (appelé par main.py AVANT le crew) a lui-même échoué
+    sur un souci transitoire, sha_before vaut None — traité ici comme "branche neuve, tout commit
+    trouvé est forcément nouveau" plutôt que comme "repère non fiable". Sur un work_branch réutilisé
+    qui avait déjà une PR d'un tour précédent, ce cas limite (deux échecs indépendants combinés :
+    souci transitoire PUIS agent qui ne pousse rien ce tour-ci) pourrait laisser passer un tour qui
+    n'a en réalité rien livré. Accepté : durcir ce cas précis demanderait de propager un troisième
+    état ("repère non fiable") jusqu'ici pour un scénario déjà peu probable, alors que l'essentiel
+    (détecter l'absence totale de branche/PR, le cas très majoritairement observé) reste couvert.
+    """
+    # Réutilise get_branch_head_sha (plutôt que de refaire ici _get_repo + get_branch + gestion du
+    # 404) pour ne pas avoir deux implémentations de la même logique de classification d'erreur
+    # susceptibles de diverger silencieusement si l'une est retouchée sans l'autre.
+    #
+    # Une seule tentative avant de conclure à un échec de LIVRAISON serait trop sévère ici : cette
+    # vérification arrive juste après la rafale d'appels github_* du Développeur (jusqu'à 8, sur
+    # le même GITHUB_TOKEN partagé) — le moment le plus probable pour heurter un rate-limit
+    # secondaire transitoire côté GitHub. Sans ce réessai, une exécution qui a RÉELLEMENT réussi
+    # (branche, commits et PR bien présents) pourrait être marquée à tort en échec à cause d'un
+    # simple aléa réseau survenu APRÈS coup, pendant cette seule vérification — inutile d'infliger
+    # à l'utilisateur un nouveau lancement de crew (coûteux, plusieurs minutes) pour un problème
+    # qui n'existe déjà plus quelques secondes après.
+    try:
+        sha_after = get_branch_head_sha(owner, repo, branch)
+    except GitHubVerificationUnavailable:
+        time.sleep(2)
+        try:
+            sha_after = get_branch_head_sha(owner, repo, branch)
+        except GitHubVerificationUnavailable as e:
+            return DeliveryIssue(f"impossible de vérifier la branche '{branch}' ({e}).", True)
+
+    if sha_after is None:
+        return DeliveryIssue(
+            f"aucune branche '{branch}' n'existe sur {owner}/{repo} : aucune modification n'a "
+            "été poussée sur GitHub malgré le repository cible configuré.",
+            True,
+        )
+
+    if sha_before is not None and sha_after == sha_before:
+        return DeliveryIssue(
+            f"la branche '{branch}' existe sur {owner}/{repo} mais pointe toujours sur le même "
+            "commit qu'avant le lancement de cette exécution : aucun nouveau commit n'a été "
+            "poussé pendant celle-ci (une Pull Request éventuellement présente peut dater d'un "
+            "tour précédent réutilisant cette même branche).",
+            False,
+        )
+
+    try:
+        gh_repo = _get_repo(owner, repo)
+        pulls = gh_repo.get_pulls(state="all", head=f"{owner}:{branch}", base=base_branch)
+        # p.head.sha == sha_after (pas juste totalCount > 0) : sur un work_branch réutilisé, une
+        # PR d'un tour précédent déjà mergée/fermée matcherait aussi head/base sans refléter LE
+        # commit actuel — un nouveau commit poussé après ce merge n'aurait alors jamais été
+        # réellement proposé en revue, malgré la présence de cette ancienne PR sans rapport.
+        if any(p.head.sha == sha_after for p in pulls):
+            return None
+    except Exception:
+        # Ne bloque pas la vérification sur un souci transitoire de LISTE des PR : la branche
+        # existe bien et a été vérifiée juste au-dessus, c'est déjà la partie la plus importante.
+        # On traite prudemment comme "PR non confirmée" plutôt que de risquer un faux positif.
+        pass
+
+    # sha_before is not None à ce stade garantit sha_after != sha_before (le cas égal est déjà
+    # sorti par l'early return ci-dessus) : un vrai nouveau commit est donc confirmé. Si
+    # sha_before est None (branche neuve avant cette exécution, ou repère indisponible — voir la
+    # docstring), on ne peut rien affirmer de plus que "la branche existe".
+    commit_note = " (nouveaux commits confirmés)" if sha_before is not None else ""
+    return DeliveryIssue(
+        f"la branche '{branch}' existe bien sur {owner}/{repo}{commit_note} mais aucune Pull "
+        f"Request à jour vers '{base_branch}' n'a été trouvée pour le commit actuel.",
+        False,
+    )
 
 
 @tool("github_open_pull_request")
