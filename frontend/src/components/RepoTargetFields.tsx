@@ -1,3 +1,5 @@
+import { memo } from 'react';
+
 interface RepoTargetFieldsProps {
   repoOwner: string;
   repoName: string;
@@ -8,7 +10,7 @@ interface RepoTargetFieldsProps {
   disabled: boolean;
 }
 
-export default function RepoTargetFields({
+function RepoTargetFields({
   repoOwner,
   repoName,
   baseBranch,
@@ -55,3 +57,9 @@ export default function RepoTargetFields({
     </div>
   );
 }
+
+// memo() : ChatInput.tsx enveloppe déjà ses 3 handlers onXChange dans useCallback (références
+// stables) précisément pour que cette mémoïsation ait un effet réel — sinon chaque frappe dans
+// la zone de message de ChatInput (un state qui ne concerne pas ce composant) le re-rendrait
+// quand même.
+export default memo(RepoTargetFields);

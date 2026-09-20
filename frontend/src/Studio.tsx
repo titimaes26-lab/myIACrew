@@ -11,7 +11,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   const [showHistory, setShowHistory] = useState(false);
   const [retryDraft, setRetryDraft] = useState<{ text: string; nonce: number } | null>(null);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-  const { turns, sending, hasRunningTurn, error, pendingClarification, workflowType, setWorkflowType, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
+  const { turns, sending, hasRunningTurn, error, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
   // `sending` seul (envoi en vol DANS cette session) ne suffit pas : un tour repris depuis
   // l'Historique peut encore être "running" côté serveur sans que CETTE session l'ait
   // elle-même envoyé (sending resterait alors false). Sans bloquer la saisie dans ce cas
@@ -94,6 +94,12 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
 
       <div style={{ marginTop: '20px' }}>
         <ChatInput
+          // Voir la définition de conversationResetSignal (useConversation.ts) : un remontage
+          // via key réinitialise tout l'état local pertinent de ChatInput (repo cible
+          // préremplis compris) à ces mêmes limites que workflowType (nouvelle conversation,
+          // reprise d'une différente), sans avoir à dupliquer sa logique de préremplissage
+          // dans un second mécanisme de synchronisation manuel.
+          key={conversationResetSignal}
           disabled={busy}
           cancellable={sending}
           onCancel={cancelSending}
