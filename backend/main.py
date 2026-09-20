@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, build_conversation_context, track_execution_metrics
 from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
 from auth import get_current_user, close_http_client
+from github_tools import verify_github_delivery, get_branch_head_sha, GitHubVerificationUnavailable
 
 # 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
 app = FastAPI(title="CrewAI App Development API")
@@ -136,6 +137,12 @@ async def execute_workflow(
     )
 
     has_repo_target = bool(data.repo_owner and data.repo_name)
+    # ANALYSE_ONLY ne comprend que design_task/architecture_task, en lecture seule (voir
+    # run_dynamic_crew dans crewquestion.py) : jamais de branche/commit/PR à vérifier pour ce
+    # workflow. Calculé une seule fois et réutilisé aux deux points qui en ont besoin plus bas
+    # (capture du SHA de référence avant le crew, vérification après coup) plutôt que dupliqué,
+    # pour qu'ils ne puissent pas diverger silencieusement si l'un est modifié sans l'autre.
+    should_verify_github_delivery = has_repo_target and data.target_workflow != "ANALYSE_ONLY"
 
     if data.conversation_id is not None:
         conversation = session.get(Conversation, data.conversation_id)
@@ -253,7 +260,30 @@ async def execute_workflow(
         # échec d'exécution (db_entry marqué "failed", pas laissé bloqué pour toujours sur
         # "running" — voir le contrôle de concurrence plus haut, et /api/history qui refuse
         # désormais de supprimer une ligne "running").
-        crew_for_this_execution = await asyncio.to_thread(AppDevelopmentCrew)
+        async def _repo_branch_sha_before() -> str | None:
+            # Capturé AVANT le lancement du crew (jamais après) : c'est le repère utilisé plus
+            # bas par verify_github_delivery pour distinguer "cette exécution a réellement poussé
+            # un nouveau commit" de "une branche/PR d'un tour précédent existe toujours" sur un
+            # work_branch réutilisé entre tours d'une même conversation. None (branche pas encore
+            # créée : cas normal au tout premier tour) reste distinct d'une erreur transitoire de
+            # l'API GitHub (GitHubVerificationUnavailable) : les deux sont volontairement traités
+            # pareil ici (repère indisponible, best-effort) plutôt que de laisser un simple souci
+            # réseau côté vérification empêcher le lancement du crew lui-même.
+            if not should_verify_github_delivery:
+                return None
+            try:
+                return await asyncio.to_thread(get_branch_head_sha, data.repo_owner, data.repo_name, work_branch)
+            except GitHubVerificationUnavailable:
+                return None
+
+        # asyncio.gather (pas deux `await` séquentiels) : AppDevelopmentCrew() (parsing des YAML,
+        # thread séparé) et la capture du SHA de référence (aller-retour réseau vers l'API GitHub)
+        # sont deux opérations indépendantes qui ne dépendent l'une de l'autre en rien, autant les
+        # laisser se chevaucher plutôt que d'ajouter inutilement leurs latences bout à bout.
+        crew_for_this_execution, repo_branch_sha_before = await asyncio.gather(
+            asyncio.to_thread(AppDevelopmentCrew),
+            _repo_branch_sha_before(),
+        )
 
         with track_execution_metrics() as run_metrics:
             result = await crew_for_this_execution.run_dynamic_crew(
@@ -279,6 +309,64 @@ async def execute_workflow(
                 on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
             )
         raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
+
+        # Un rapport d'agent "réussi" ne prouve rien de ce qui s'est réellement passé sur GitHub
+        # (voir qa_task dans tasksquestion.yaml : la QA elle-même n'a aucun outil pour confirmer
+        # qu'une PR a été ouverte) : un échec silencieux d'un outil github_* (erreur renvoyée
+        # comme simple texte à l'agent, jamais une exception qui ferait échouer ce try) ou un
+        # agent qui n'appelle tout simplement jamais ces outils produirait quand même ce même
+        # statut "success" sans qu'aucune modification n'ait été poussée sur GitHub. Vérifié
+        # uniquement quand un développement a effectivement eu lieu (ANALYSE_ONLY ne comprend que
+        # design_task/architecture_task, en lecture seule — voir run_dynamic_crew) : sans cela,
+        # cette vérification échouerait toujours à tort sur ce workflow, qui n'a jamais eu
+        # l'intention de créer de branche ou de PR.
+        if should_verify_github_delivery:
+            # await asyncio.to_thread(...) : verify_github_delivery fait des appels HTTP
+            # bloquants (PyGithub) — comme pour crew_for_this_execution plus haut, un appel
+            # direct bloquerait la boucle asyncio, donc toutes les autres requêtes concurrentes,
+            # le temps de l'aller-retour réseau vers l'API GitHub.
+            delivery_issue = await asyncio.to_thread(
+                verify_github_delivery, data.repo_owner, data.repo_name, work_branch,
+                normalized_base_branch, repo_branch_sha_before,
+            )
+            if delivery_issue:
+                # likely_access_problem (champ structuré de DeliveryIssue, pas un texte à parser
+                # par préfixe) distingue les cas où recommander de vérifier GITHUB_TOKEN est un
+                # diagnostic juste (branche introuvable, API injoignable) de ceux où la branche ET
+                # ses nouveaux commits sont confirmés mais où il manque une PR à jour : l'écriture
+                # a alors bien fonctionné, le problème est que l'agent développeur n'a pas terminé
+                # sa procédure (ex: budget d'appels d'outils épuisé avant l'ouverture de la Pull
+                # Request) — un conseil GITHUB_TOKEN y serait un diagnostic faux.
+                if delivery_issue.likely_access_problem:
+                    remediation = (
+                        "Vérifie la configuration GITHUB_TOKEN du backend (présence, permissions "
+                        "d'écriture sur ce repository) puis relance."
+                    )
+                else:
+                    # Deux causes possibles, indiscernables depuis ce seul constat (une lecture
+                    # GitHub a réussi, mais rien de neuf n'a été confirmé en écriture) : soit
+                    # GITHUB_TOKEN peut lire ce repository mais n'a pas les permissions d'écriture
+                    # nécessaires, soit le Développeur n'a pas terminé sa procédure GitHub (budget
+                    # d'appels d'outils épuisé, étape non atteinte). Volontairement pas plus
+                    # précis sur l'étape en cause (ex: "avant d'ouvrir la Pull Request") : ce même
+                    # DeliveryIssue est aussi renvoyé quand AUCUN commit n'a été poussé du tout,
+                    # pas seulement quand il ne manque que la Pull Request finale.
+                    remediation = (
+                        "Cela peut venir d'un manque de permissions d'écriture du GITHUB_TOKEN "
+                        "configuré sur ce repository, ou du Développeur qui n'a pas terminé sa "
+                        "procédure GitHub : vérifie les deux, puis relance."
+                    )
+                # raw_result (plan et fichiers annoncés par le Développeur, rapport de la QA) est
+                # inclus tel quel plutôt que perdu : bien qu'invérifié côté GitHub, il reste utile
+                # à l'utilisateur pour comprendre ce que l'agent a effectivement tenté avant que
+                # cette vérification n'échoue, notamment pour juger s'il faut relancer tel quel ou
+                # reformuler la demande.
+                raise RuntimeError(
+                    "Un repository GitHub cible était configuré mais la vérification après coup "
+                    f"a échoué : {delivery_issue.message} {remediation}\n\n"
+                    "--- Rapport de l'agent (non vérifié sur GitHub) ---\n"
+                    f"{raw_result[:3000]}"
+                )
 
         _safe_refresh(session, db_entry, "succès")
 
