@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 from sqlmodel import Session, select
 
 from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, build_conversation_context, track_execution_metrics
@@ -23,6 +23,11 @@ app = FastAPI(title="CrewAI App Development API")
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
+    # Imprimé une seule fois, au démarrage : rend le plafond mémoire du conteneur visible dans les
+    # logs Render dès le boot, sans attendre qu'une exécution déclenche la première ligne [MEM]
+    # (_log_memory) — utile pour juger d'emblée si le plan actuel a une marge suffisante pour ce
+    # type de charge (CrewAI + plusieurs agents Gemini), avant même de lancer quoi que ce soit.
+    _log_memory("démarrage du service")
 
 # Ferme proprement le client HTTP partagé de auth.py (voir sa docstring) plutôt que de
 # laisser ses connexions ouvertes à l'arrêt du process.
@@ -151,6 +156,67 @@ def _current_memory_mb() -> Optional[float]:
         pass
     return None
 
+class _MemoryLimit(NamedTuple):
+    """`mb` : la valeur en Mo. `is_container_limit` : True si lue depuis un cgroup (le plafond
+    RÉEL de ce conteneur), False si repli sur /proc/meminfo (MemTotal de la machine HÔTE,
+    potentiellement partagée entre plusieurs services — une valeur sans rapport avec ce qui est
+    réellement alloué ici, à ne jamais confondre avec un vrai plafond dans les logs)."""
+    mb: float
+    is_container_limit: bool
+
+def _container_memory_limit_mb() -> Optional[_MemoryLimit]:
+    """Plafond mémoire réellement appliqué à CE conteneur — lu depuis les cgroups Linux, le
+    mécanisme que Docker/Render utilisent pour appliquer cette limite. Essaie cgroup v2
+    (memory.max) puis v1 (memory.limit_in_bytes) ; ne retombe sur /proc/meminfo (MemTotal, la RAM
+    de la machine hôte) que si aucun des deux n'est accessible ou n'indique de limite explicite —
+    voir _MemoryLimit.is_container_limit, qui distingue ce cas pour que son appelant ne l'affiche
+    jamais comme un vrai plafond de service.
+
+    Ne renvoie que des valeurs STRICTEMENT positives (jamais 0 ni négatif) : un cgroup mal
+    configuré ou lu en pleine transition d'arrêt du conteneur pourrait théoriquement exposer une
+    limite de 0, qui diviserait par zéro chez l'appelant plutôt que de simplement dégrader vers
+    "indisponible" comme n'importe quelle autre lecture ratée.
+
+    Calculé une seule fois au démarrage (_CONTAINER_MEMORY_LIMIT_MB ci-dessous), jamais à chaque
+    appel de _log_memory : ce plafond ne peut pas changer pendant la vie du process, inutile de
+    rouvrir ces fichiers à chaque changement d'étape d'une exécution.
+    """
+    try:
+        with open("/sys/fs/cgroup/memory.max") as f:
+            raw = f.read().strip()
+            if raw != "max":
+                mb = int(raw) / (1024 * 1024)
+                if mb > 0:
+                    return _MemoryLimit(mb, True)
+    except Exception:
+        pass
+    try:
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
+            raw = int(f.read().strip())
+            # cgroup v1 représente "illimité" par une très grande valeur (pas un mot-clé explicite
+            # comme "max" en v2) : un seuil large mais arbitraire écarte ce cas plutôt que
+            # d'afficher une "limite" de plusieurs exaoctets, dénuée de sens pratique.
+            if 0 < raw < (1 << 62):
+                return _MemoryLimit(raw / (1024 * 1024), True)
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    mb = int(line.split()[1]) / 1024
+                    if mb > 0:
+                        return _MemoryLimit(mb, False)
+    except Exception:
+        pass
+    return None
+
+# Calculé une seule fois à l'import (voir la docstring de _container_memory_limit_mb) : imprimé
+# explicitement au démarrage (on_startup plus bas) pour que ce plafond soit visible même sans
+# faire défiler les logs jusqu'à une exécution, et réutilisé par chaque ligne [MEM] (_log_memory)
+# pour situer la RSS courante par rapport à ce plafond sans avoir à les rapprocher manuellement.
+_CONTAINER_MEMORY_LIMIT_MB = _container_memory_limit_mb()
+
 def _log_memory(context: str) -> None:
     # Best-effort, y compris print() lui-même : appelée depuis des points qui doivent absolument
     # ne jamais lever (le except d'execute_workflow avant que db_entry ne soit marqué "failed", et
@@ -161,7 +227,17 @@ def _log_memory(context: str) -> None:
     try:
         mem_mb = _current_memory_mb()
         if mem_mb is not None:
-            print(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS)")
+            if _CONTAINER_MEMORY_LIMIT_MB is not None:
+                limit = _CONTAINER_MEMORY_LIMIT_MB
+                pct = 100 * mem_mb / limit.mb
+                # "plafond conteneur" seulement si RÉELLEMENT lu depuis un cgroup — sinon
+                # "RAM machine hôte, PAS le plafond réel de ce service" : les deux ont des
+                # implications opposées (3% d'un plafond conteneur de 512 Mo est alarmant tout
+                # près de la limite, 3% d'une RAM hôte de 16 Go ne veut rien dire du tout).
+                label = "plafond conteneur" if limit.is_container_limit else "RAM machine hôte, PAS le plafond réel de ce service"
+                print(f"[MEM] {context} : {mem_mb:.0f} Mo / {limit.mb:.0f} Mo ({pct:.0f}%) (RSS / {label})")
+            else:
+                print(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS) — plafond du conteneur indisponible")
     except Exception:
         pass
 
