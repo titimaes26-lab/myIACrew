@@ -33,6 +33,7 @@ from github_tools import (
     github_list_directory,
     github_create_branch,
     github_write_file,
+    github_write_files,
     github_edit_file,
     github_open_pull_request,
     track_edit_failures,
@@ -387,7 +388,8 @@ class AppDevelopmentCrew():
             tools=[
                 read_a_files_content, file_write_tool, check_syntax,
                 github_read_file, github_list_directory,
-                github_create_branch, github_write_file, github_edit_file, github_open_pull_request,
+                github_create_branch, github_write_file, github_write_files,
+                github_edit_file, github_open_pull_request,
             ],
             # 8 et non 5 : le flux GitHub complet pour un BUGFIX d'écran blanc (create_branch,
             # 2 lectures diagnostiques index.html+main.tsx, write/edit_file, check_syntax,
@@ -397,7 +399,11 @@ class AppDevelopmentCrew():
             # (create_branch, 2 tentatives github_edit_file, github_read_file, github_write_file,
             # check_syntax, open_pull_request = 7 appels sans même compter un diagnostic écran
             # blanc) ; max_iter=5 coupait déjà la tâche avant l'ouverture de la PR pour le premier
-            # cas, max_iter=7 laissait trop peu de marge pour le second.
+            # cas, max_iter=7 laissait trop peu de marge pour le second. Ce budget reste
+            # volontairement bas malgré github_write_files (commit de plusieurs fichiers en un
+            # seul appel, voir github_tools.py) : c'est justement ce nouvel outil qui absorbe la
+            # variation du NOMBRE de fichiers à écrire (un projet de 5 fichiers ou de 50 coûte le
+            # même unique appel), donc max_iter n'a plus besoin de suivre cette taille.
             llm=gemini_llm, max_iter=8, verbose=True,
         )
 
@@ -406,9 +412,15 @@ class AppDevelopmentCrew():
         return Agent(
             config=self.agents_config['qa_agent'],
             tools=[read_a_files_content, file_write_tool, check_syntax, github_read_file, github_list_directory],
-            # Idem developer_agent : lire un fichier PUIS le vérifier avec check_syntax
-            # est déjà 2 appels par fichier modifié, avant même le rapport final.
-            llm=gemini_llm, max_iter=5, verbose=True,
+            # 10 et non 5 : lire un fichier PUIS le vérifier avec check_syntax est déjà 2 appels
+            # par fichier modifié, avant même le rapport final — 5 ne couvrait donc que ~2
+            # fichiers. Depuis github_write_files (voir developer_agent), development_task peut
+            # committer des lots bien plus larges en un seul appel ; qa_task reste volontairement
+            # instruite à ne PAS exiger une vérification exhaustive de chaque fichier d'un gros lot
+            # (elle doit alors signaler explicitement lesquels restent non vérifiés, voir
+            # tasksquestion.yaml), donc ce budget n'a pas besoin de suivre la taille du lot — juste
+            # d'en couvrir davantage qu'avant sans pour autant viser l'exhaustivité.
+            llm=gemini_llm, max_iter=10, verbose=True,
         )
 
     @task

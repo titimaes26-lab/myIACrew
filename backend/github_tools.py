@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -6,7 +7,7 @@ from contextvars import ContextVar
 from typing import NamedTuple
 
 from crewai.tools import tool
-from github import Auth, Github, GithubException
+from github import Auth, Github, GithubException, InputGitTreeElement
 
 
 def _get_repo(owner: str, repo: str):
@@ -223,6 +224,123 @@ def github_write_file(owner: str, repo: str, path: str, content: str, branch: st
         return f"ERREUR : {str(e)}"
 
 
+@tool("github_write_files")
+def github_write_files(owner: str, repo: str, branch: str, commit_message: str, files_json: str) -> str:
+    """
+    Crée ou met à jour PLUSIEURS fichiers EN UN SEUL COMMIT, avec un seul appel d'outil quel que
+    soit leur nombre. À PRÉFÉRER À github_write_file dès que tu dois créer/écrire plus de 2-3
+    fichiers (ex: un nouveau projet, une fonctionnalité qui touche de nombreux composants) :
+    chaque appel d'outil consomme une part de ton budget total (max_iter) pour cette tâche, et un
+    projet de plusieurs dizaines de fichiers épuiserait ce budget bien avant la fin si chaque
+    fichier coûtait son propre appel — tu produirais alors une réponse qui DÉCRIT le code sans
+    l'avoir réellement poussé sur GitHub. github_edit_file reste préférable pour une correction
+    CIBLÉE (quelques lignes) sur un seul fichier déjà existant et volumineux.
+    L'écriture directe sur 'main'/'master' est refusée : crée d'abord une branche avec github_create_branch.
+    Arguments:
+        owner (str), repo (str): repository cible.
+        branch (str): branche de travail cible (jamais main/master).
+        commit_message (str): message de commit unique pour tous les fichiers de cet appel.
+        files_json (str): liste JSON des fichiers à écrire (nouveaux ou existants), chacun avec
+            "path" (chemin dans le repo) et "content" (contenu complet du fichier). Exemple :
+            '[{"path": "src/App.tsx", "content": "..."}, {"path": "package.json", "content": "..."}]'
+    """
+    rejection = _reject_protected_branch(branch)
+    if rejection:
+        return rejection
+
+    try:
+        files = json.loads(files_json)
+    except json.JSONDecodeError as e:
+        return (
+            f"ERREUR : files_json n'est pas un JSON valide ({e}). Fournis une liste JSON "
+            'de {"path": ..., "content": ...}, ex: [{"path": "a.txt", "content": "..."}]. '
+            "Si cette erreur se reproduit (contenu difficile à échapper correctement en JSON), "
+            "n'insiste pas : bascule sur des appels séparés à github_write_file, un par fichier."
+        )
+    if not isinstance(files, list) or not files:
+        return 'ERREUR : files_json doit être une liste JSON non vide de {"path": ..., "content": ...}.'
+
+    # Validé intégralement AVANT le premier appel réseau : un chemin dupliqué ou un élément mal
+    # formé découvert à mi-parcours (ex: après avoir déjà créé des blobs pour les premiers
+    # fichiers) laisserait ce commit dans un état incomplet sans possibilité de revenir en arrière
+    # proprement — mieux vaut échouer d'un coup, avant toute écriture, avec un message qui permet
+    # à l'agent de corriger et de retenter l'appel en entier.
+    paths_seen = set()
+    for f in files:
+        if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not isinstance(f.get("content"), str):
+            return 'ERREUR : chaque élément de files_json doit être un objet avec "path" (str) et "content" (str).'
+        if f["path"] in paths_seen:
+            return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans files_json, chaque chemin doit être unique."
+        paths_seen.add(f["path"])
+
+    try:
+        gh_repo = _get_repo(owner, repo)
+        ref = gh_repo.get_git_ref(f"heads/{branch}")
+        base_commit = gh_repo.get_git_commit(ref.object.sha)
+
+        # Un chemin qui correspond à un DOSSIER existant sur la branche (pas juste "déjà un
+        # fichier", que create_git_tree gère très bien en le remplaçant) doit être bloqué AVANT
+        # de construire l'arbre : create_git_tree accepterait sans broncher un blob au même
+        # chemin qu'un dossier entier, et le commit résultant effacerait silencieusement tout ce
+        # dossier (aucune ERREUR renvoyée, rien qui permette à la QA de comprendre pourquoi ces
+        # fichiers ont disparu). Un seul appel recursive=True pour tout le lot plutôt qu'un
+        # get_contents par chemin (qui coûterait un aller-retour réseau par fichier, à l'encontre
+        # du but même de cet outil).
+        existing_tree = gh_repo.get_git_tree(base_commit.tree.sha, recursive=True)
+        if existing_tree.truncated:
+            # Arbre trop volumineux pour être listé en entier en un seul appel (repo avec un très
+            # grand nombre de fichiers) : impossible de garantir l'absence de collision avec un
+            # dossier existant en dehors de la portion renvoyée. Mieux vaut refuser explicitement
+            # que de risquer un écrasement silencieux non détecté par la vérification ci-dessous.
+            return (
+                "ERREUR : ce repository a une arborescence trop volumineuse pour être vérifiée en "
+                "un seul appel (risque de collision avec un dossier existant non garanti). "
+                "Utilise github_write_file séparément pour chaque fichier de ce lot à la place."
+            )
+        existing_dir_paths = {item.path for item in existing_tree.tree if item.type == "tree"}
+        colliding = sorted(paths_seen & existing_dir_paths)
+        if colliding:
+            return (
+                f"ERREUR : {', '.join(colliding)} correspond(ent) à un DOSSIER existant sur la "
+                f"branche '{branch}', pas à un fichier — écrire dessus l'effacerait entièrement. "
+                "Choisis un chemin de fichier différent (ex: à l'intérieur de ce dossier)."
+            )
+
+        tree_elements = [
+            InputGitTreeElement(
+                path=f["path"], mode="100644", type="blob",
+                sha=gh_repo.create_git_blob(f["content"], "utf-8").sha,
+            )
+            for f in files
+        ]
+        new_tree = gh_repo.create_git_tree(tree_elements, base_commit.tree)
+        new_commit = gh_repo.create_git_commit(commit_message, new_tree, [base_commit])
+        ref.edit(new_commit.sha)
+        for f in files:
+            _record_edit_success(owner, repo, f["path"], branch)
+        return (
+            f"OK : {len(files)} fichier(s) écrit(s) en un seul commit ({new_commit.sha[:8]}) "
+            f"sur la branche '{branch}'."
+        )
+    except GithubException as e:
+        # "non fast-forward" (ref.edit rejeté) : CrewAI peut exécuter plusieurs appels d'outils de
+        # cette même tâche en parallèle (voir _edit_failure_lock plus haut) — un autre appel
+        # d'écriture sur CETTE MÊME branche a pu avancer sa référence entretemps. Rien n'est perdu
+        # ni corrompu : ce commit n'a simplement jamais été appliqué. Retenter cet appel EN L'ÉTAT
+        # repart de la référence à jour (get_git_ref est refait à chaque appel), donc un simple
+        # nouvel essai suffit — pas besoin de reconstruire files_json.
+        message = _github_error(e)
+        if "fast" in message.lower() and "forward" in message.lower():
+            return (
+                f"{message} La branche '{branch}' a été mise à jour par un autre appel entretemps : "
+                "aucun fichier de CET appel n'a été perdu, il n'a simplement pas encore été appliqué. "
+                "Retente ce même appel github_write_files tel quel."
+            )
+        return message
+    except Exception as e:
+        return f"ERREUR : {str(e)}"
+
+
 @tool("github_edit_file")
 def github_edit_file(
     owner: str, repo: str, path: str, branch: str, old_string: str, new_string: str, commit_message: str
@@ -435,7 +553,7 @@ def verify_github_delivery(
 def github_open_pull_request(owner: str, repo: str, branch: str, base_branch: str, title: str, body: str) -> str:
     """
     Ouvre une Pull Request de la branche de travail vers la branche de base.
-    À appeler une fois toutes les modifications commitées via github_write_file.
+    À appeler une fois toutes les modifications commitées via github_write_file/github_write_files.
     Arguments:
         owner (str), repo (str): repository cible.
         branch (str): branche de travail (head).
