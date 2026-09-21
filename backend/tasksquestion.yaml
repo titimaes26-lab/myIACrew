@@ -120,22 +120,41 @@ development_task:
     1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch}
        (un seul appel pour toute cette tâche, y compris pour toute lecture diagnostique d'un fichier
        existant à l'étape 2).
-    2. Pour un nouveau fichier, lis d'abord le contexte utile avec `github_read_file`
-       (branch={base_branch}) puis crée-le avec `github_write_file` (branch={work_branch}).
-       Pour lire un fichier déjà existant (diagnostic d'un bug, ou avant une correction ciblée),
-       utilise `github_read_file` sur {work_branch} — jamais {base_branch}, qui ne refléterait pas
-       un correctif déjà commité à un tour précédent sur cette même branche de travail réutilisée.
-       Pour une correction ciblée sur un fichier déjà existant et volumineux, préfère
-       `github_edit_file` (extrait exact à remplacer) à `github_write_file` : c'est plus
-       rapide et ça évite de faire disparaître du contenu en régénérant tout le fichier. Si
-       `github_edit_file` t'indique explicitement un ÉCHEC RÉPÉTÉ sur ce même fichier,
+    2. DÈS QUE PLUS DE 2-3 FICHIERS doivent être créés ou intégralement réécrits (nouveau projet,
+       fonctionnalité touchant de nombreux composants...), utilise `github_write_files` : il
+       committe TOUS ces fichiers EN UN SEUL appel d'outil, quel que soit leur nombre. C'est
+       CRITIQUE — appeler `github_write_file` séparément pour chacun consomme ton budget total
+       d'appels d'outils un par un, et un projet de plusieurs dizaines de fichiers l'épuiserait
+       bien avant la fin : tu produirais alors une réponse qui DÉCRIT le code sans l'avoir
+       réellement poussé sur GitHub, ce qui sera détecté et rejeté (voir plus bas et qa_task).
+       Pour un fichier isolé (1-2 fichiers seulement), `github_write_file` reste suffisant.
+       Pour lire le contexte utile avant d'écrire, ou pour lire un fichier déjà existant
+       (diagnostic d'un bug, ou avant une correction ciblée), utilise `github_read_file` sur
+       {work_branch} — jamais {base_branch}, qui ne refléterait pas un correctif déjà commité à un
+       tour précédent sur cette même branche de travail réutilisée.
+       Pour une correction ciblée sur UN SEUL fichier déjà existant et volumineux, préfère
+       `github_edit_file` (extrait exact à remplacer) à `github_write_file`/`github_write_files` :
+       c'est plus rapide et ça évite de faire disparaître du contenu en régénérant tout le
+       fichier. Si `github_edit_file` t'indique explicitement un ÉCHEC RÉPÉTÉ sur ce même fichier,
        n'insiste pas avec une nouvelle tentative : bascule sur `github_write_file` avec son
        contenu complet déjà corrigé, plutôt que de risquer d'épuiser ton budget d'appels
        d'outils sur un seul fichier sans jamais committer de correctif. Toujours un
        commit_message clair.
-    3. Avant de committer un fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx, vérifie sa syntaxe
-       avec `check_syntax` (vérification statique, sans exécution) et corrige tout problème
-       signalé avant de continuer.
+    3. Vérification de syntaxe avec `check_syntax` (statique, sans exécution), AVANT de committer
+       un fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx :
+       - Pour 1 à quelques fichiers via `github_write_file`/`github_edit_file` : vérifie chaque
+         fichier et corrige tout problème signalé avant de continuer.
+       - Pour un LOT via `github_write_files` (le cas visé par l'étape 2 ci-dessus) : NE vérifie
+         PAS chaque fichier un par un avant de committer — qa_task (la tâche suivante) revérifie
+         après coup avec ce même outil autant de fichiers que SON PROPRE budget le permet (pas
+         nécessairement la totalité d'un très gros lot) et signale explicitement ceux qu'elle n'a
+         pas pu vérifier. Committer via
+         `github_write_files` est ta PRIORITÉ ABSOLUE : ne la retarde jamais en épuisant ton
+         budget d'appels d'outils sur des `check_syntax` un par un avant d'avoir committé quoi que
+         ce soit — un lot jamais committé (0 fichier réellement présent sur GitHub) est bien pire
+         qu'un lot committé avec une erreur de syntaxe mineure que la QA détectera ensuite. S'il
+         te reste du budget après le commit, vérifie après coup les fichiers qui te semblent les
+         plus à risque et corrige-les avec `github_edit_file` si besoin.
     4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant les changements.
     Ne modifie jamais directement la branche {base_branch}.
@@ -167,6 +186,13 @@ qa_task:
     contenu avec `github_read_file` sur la branche de travail ({work_branch}) si un repository
     cible est fourni (jamais depuis le disque local dans ce cas, puisque le Développeur n'y a rien
     écrit), ou avec `read_a_files_content` sinon.
+    Sur un TRÈS GROS lot de fichiers (le Développeur peut désormais en committer des dizaines en
+    un seul appel via `github_write_files`, voir development_task), vérifier CHACUN avec
+    `check_syntax` peut dépasser ton propre budget d'appels d'outils : dans ce cas, priorise les
+    fichiers qui te semblent les plus à risque (logique complexe, fichiers de configuration
+    structurants comme `package.json`/`tsconfig.json`) plutôt que de t'arrêter à mi-chemin sans
+    jamais conclure, et liste EXPLICITEMENT dans ton rapport les fichiers que tu n'as PAS pu
+    vérifier avec `check_syntax` faute de budget restant.
     Vérifie aussi les importations manquantes et les incohérences de montage React.
     Dans ton rapport, distingue clairement ce que tu as vérifié avec `check_syntax` (et son
     résultat exact) de ce que tu n'as évalué qu'en lisant le code : n'affirme jamais une
@@ -179,8 +205,13 @@ qa_task:
     `github_list_directory` seulement pour repérer les fichiers présents, jamais pour juger de
     leur contenu, qu'il ne renvoie pas ; sinon (travail sur disque local), avec
     `read_a_files_content`. Un fichier annoncé mais absent, ou dont le contenu diverge de ce qui
-    est décrit, est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Si un
-    repository cible est fourni,
+    est décrit, est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Sur un
+    TRÈS GROS lot (voir plus haut) où confirmer chaque fichier un par un dépasserait ton propre
+    budget d'appels d'outils, applique la même priorisation que pour `check_syntax` : commence par
+    `github_list_directory` pour au moins confirmer que les fichiers annoncés sont bien présents
+    (peu coûteux, un seul appel), puis approfondis avec `github_read_file` sur autant de fichiers
+    que ton budget le permet, et liste explicitement ceux dont tu n'as confirmé ni infirmé le
+    contenu. Si un repository cible est fourni,
     tu n'as pas d'outil pour vérifier toi-même qu'une Pull Request a réellement été ouverte :
     dis-le clairement dans ton rapport plutôt que de confirmer une affirmation que tu ne peux pas
     contrôler. Si le Développeur a lui-même signalé, dans son rapport, des éléments de son plan
