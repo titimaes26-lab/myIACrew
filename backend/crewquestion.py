@@ -397,7 +397,10 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
             for k in stale_keys:
                 del internal_cache[k]
     except Exception as e:
-        print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}")
+        # flush=True : sys.stdout est bufferisé par bloc une fois redirigé vers les logs Render
+        # (pas un terminal) — voir main.py, _log_memory, qui applique la même garde partout pour
+        # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
+        print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}", flush=True)
 
 # --- CREW BASE ---
 @CrewBase

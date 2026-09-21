@@ -83,8 +83,14 @@ async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResp
     # pour éliminer.
     try:
         _log_memory(f"exception non gérée sur {request.url.path}")
-        print(f"--- EXCEPTION NON GEREE SUR {request.method} {request.url.path} ---")
-        print(traceback.format_exc())
+        # flush=True : sys.stdout est bufferisé par bloc (pas par ligne) dès qu'il n'est pas
+        # attaché à un terminal — le cas normal une fois redirigé vers les logs Render. Sans
+        # vidage explicite, ce print() pourrait rester en mémoire tampon, jamais écrit, si le
+        # process se termine brutalement juste après (ex: OOM kill, SIGKILL — qui ne laisse
+        # aucune chance de vider ce tampon en sortie normale) : exactement le genre de trace
+        # perdue que ce handler existe pour éviter.
+        print(f"--- EXCEPTION NON GEREE SUR {request.method} {request.url.path} ---", flush=True)
+        print(traceback.format_exc(), flush=True)
     except Exception:
         pass
 
@@ -235,11 +241,36 @@ def _log_memory(context: str) -> None:
                 # implications opposées (3% d'un plafond conteneur de 512 Mo est alarmant tout
                 # près de la limite, 3% d'une RAM hôte de 16 Go ne veut rien dire du tout).
                 label = "plafond conteneur" if limit.is_container_limit else "RAM machine hôte, PAS le plafond réel de ce service"
-                print(f"[MEM] {context} : {mem_mb:.0f} Mo / {limit.mb:.0f} Mo ({pct:.0f}%) (RSS / {label})")
+                # flush=True : sys.stdout est bufferisé par bloc (pas par ligne) une fois
+                # redirigé vers les logs Render (pas un terminal) — sans vidage explicite, cette
+                # ligne pourrait rester en mémoire tampon et disparaître si le process se termine
+                # brutalement juste après (OOM kill notamment, qui ne laisse aucune chance de
+                # vider ce tampon), précisément la dernière lecture la plus utile à voir.
+                print(f"[MEM] {context} : {mem_mb:.0f} Mo / {limit.mb:.0f} Mo ({pct:.0f}%) (RSS / {label})", flush=True)
             else:
-                print(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS) — plafond du conteneur indisponible")
+                print(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS) — plafond du conteneur indisponible", flush=True)
     except Exception:
         pass
+
+_MEMORY_TICK_SECONDS = 2.0
+
+async def _periodic_memory_logger(context: str) -> None:
+    """Répète _log_memory(context) toutes les _MEMORY_TICK_SECONDS secondes, indéfiniment, jusqu'à
+    ce que cette tâche asyncio soit annulée (task.cancel()) — voir son appelant, qui la lance en
+    tâche de fond juste avant un kickoff_async potentiellement long, puis l'annule dès qu'il se
+    termine (succès ou échec).
+
+    Une granularité plus fine que les points [MEM] existants (uniquement au démarrage de la
+    requête et à chaque CHANGEMENT DE TÂCHE du crew, voir _persist_current_step) est nécessaire
+    pour repérer la tendance mémoire PENDANT une tâche unique, pas seulement entre deux tâches :
+    le crash observé en pratique (voir PR #36) est survenu en plein streaming de la toute première
+    tâche (design_task), avant qu'aucun changement d'étape n'ait eu l'occasion de déclencher la
+    moindre ligne [MEM] existante — la dernière lecture disponible (au tout début de la requête)
+    était alors déjà bien trop ancienne pour être utile.
+    """
+    while True:
+        _log_memory(context)
+        await asyncio.sleep(_MEMORY_TICK_SECONDS)
 
 def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) -> None:
     """Recharge db_entry depuis la base avant d'y réassigner des champs — voir ses appelants.
@@ -261,7 +292,7 @@ def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) ->
         session.refresh(db_entry)
     except Exception as e:
         session.rollback()
-        print(f"AVERTISSEMENT : échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}")
+        print(f"AVERTISSEMENT : échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}", flush=True)
 
 def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     """Invoqué par run_dynamic_crew (voir crewquestion.py) à chaque changement d'étape.
@@ -293,7 +324,7 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
                 step_session.add(entry)
                 step_session.commit()
     except Exception as e:
-        print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}")
+        print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}", flush=True)
 
 # 4. ENDPOINTS API
 @app.get("/")
@@ -308,8 +339,8 @@ async def qualify_request(data: UserRequestInput, user: dict = Depends(get_curre
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:
-        print("--- ERREUR CREWAI DETECTEE ---")
-        print(traceback.format_exc())
+        print("--- ERREUR CREWAI DETECTEE ---", flush=True)
+        print(traceback.format_exc(), flush=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/execute")
@@ -478,29 +509,54 @@ async def execute_workflow(
         )
         _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
 
-        with track_execution_metrics() as run_metrics:
-            result = await crew_for_this_execution.run_dynamic_crew(
-                inputs={
-                    'user_request': final_prompt,
-                    'conversation_context': conversation_context,
-                    'repo_owner': data.repo_owner or '',
-                    'repo_name': data.repo_name or '',
-                    # `or 'main'` : nécessaire ici (contrairement à db_entry.base_branch
-                    # plus haut) car normalized_base_branch est None sans repository cible,
-                    # et les tâches interpolent toujours {base_branch} même dans ce cas.
-                    'base_branch': normalized_base_branch or 'main',
-                    'work_branch': work_branch,
-                    'repo_instructions': (
-                        f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
-                        f"Branche de base : {normalized_base_branch}\n"
-                        f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
-                        if has_repo_target
-                        else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
-                    ),
-                },
-                request_type=data.target_workflow,
-                on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
-            )
+        # Tâche de fond dédiée : voir _periodic_memory_logger pour le raisonnement (les points
+        # [MEM] existants n'ont qu'une granularité par CHANGEMENT DE TÂCHE, insuffisante pour
+        # repérer une dérive mémoire PENDANT une tâche unique). Toujours annulée dans le finally
+        # ci-dessous, que le kickoff réussisse, lève une CrewStepError, ou toute autre exception —
+        # sans quoi cette tâche continuerait à s'exécuter (et donc à logger) indéfiniment après la
+        # fin de CETTE requête, une fuite de tâche asyncio à chaque exécution.
+        memory_ticker = asyncio.create_task(
+            _periodic_memory_logger(f"execution_id={db_entry.id}, sondage périodique")
+        )
+        try:
+            with track_execution_metrics() as run_metrics:
+                result = await crew_for_this_execution.run_dynamic_crew(
+                    inputs={
+                        'user_request': final_prompt,
+                        'conversation_context': conversation_context,
+                        'repo_owner': data.repo_owner or '',
+                        'repo_name': data.repo_name or '',
+                        # `or 'main'` : nécessaire ici (contrairement à db_entry.base_branch
+                        # plus haut) car normalized_base_branch est None sans repository cible,
+                        # et les tâches interpolent toujours {base_branch} même dans ce cas.
+                        'base_branch': normalized_base_branch or 'main',
+                        'work_branch': work_branch,
+                        'repo_instructions': (
+                            f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
+                            f"Branche de base : {normalized_base_branch}\n"
+                            f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
+                            if has_repo_target
+                            else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
+                        ),
+                    },
+                    request_type=data.target_workflow,
+                    on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
+                )
+        finally:
+            memory_ticker.cancel()
+            try:
+                await memory_ticker
+            except asyncio.CancelledError:
+                # Ne PAS avaler aveuglément : si CETTE tâche (execute_workflow elle-même, ex:
+                # arrêt gracieux d'Uvicorn lors d'un redéploiement Render) a elle-même reçu une
+                # annulation pendant qu'elle était suspendue ici sur `await memory_ticker`, la
+                # CancelledError résultante est indiscernable de celle de memory_ticker — sans
+                # cette vérification (Task.cancelling(), Python 3.11+), l'annulation de CETTE
+                # requête serait silencieusement perdue, laissant l'exécution se poursuivre
+                # normalement (raw_result, commit "success"...) alors qu'elle aurait dû s'arrêter.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling() > 0:
+                    raise
         raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
         # Un rapport d'agent "réussi" ne prouve rien de ce qui s'est réellement passé sur GitHub
@@ -593,8 +649,8 @@ async def execute_workflow(
         }
     except Exception as e:
         _log_memory(f"execution_id={db_entry.id}, exception attrapée")
-        print("--- ERREUR CREWAI EXECUTION DETECTEE ---")
-        print(traceback.format_exc())
+        print("--- ERREUR CREWAI EXECUTION DETECTEE ---", flush=True)
+        print(traceback.format_exc(), flush=True)
 
         if isinstance(e, CrewStepError):
             detail = f"Échec à l'étape {e.step_index}/{e.total_steps} ({e.agent_role}) : {e}"
