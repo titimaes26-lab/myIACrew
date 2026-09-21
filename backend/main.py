@@ -349,16 +349,18 @@ async def execute_workflow(
     # distinct et donc des objets Task/Agent distincts pour toute la durée de cette exécution.
     #
     # Compromis assumé : le cache de mémoïsation de CrewAI (crewai.project.utils.cache, un
-    # dict module-level SANS éviction) grossit alors d'une poignée d'entrées à CHAQUE exécution
-    # au lieu de rester borné à la taille du singleton précédent — une lente fuite mémoire,
-    # bornée par le nombre total d'exécutions depuis le démarrage du process. Volontairement
+    # dict module-level SANS éviction native) grossirait alors d'une poignée d'entrées à CHAQUE
+    # exécution au lieu de rester borné à la taille du singleton précédent — une lente fuite
+    # mémoire, bornée par le nombre total d'exécutions depuis le démarrage du process. Volontairement
     # accepté plutôt que de continuer à réutiliser le singleton : l'alternative (des exécutions
     # concurrentes de conversations différentes partageant, via ce même cache, le MÊME objet
     # Task — donc sa `.callback` et son `.output` pendant qu'il s'exécute) mélangerait de vrais
     # résultats d'agents entre exécutions sans rapport, un risque de corruption de données bien
-    # plus grave qu'une croissance mémoire lente sur un service de cette échelle. Pas de moyen
-    # public d'éviction connu côté CrewAI à ce jour ; un redémarrage périodique du service reste
-    # le filet de sécurité si la mémoire venait un jour à réellement poser problème.
+    # plus grave qu'une croissance mémoire lente sur un service de cette échelle. Depuis, purgé
+    # activement par run_dynamic_crew (crewquestion.py, voir _evict_memoized_cache_entries dans
+    # son propre finally) plutôt que simplement accepté : pas de moyen PUBLIC d'éviction côté
+    # CrewAI à ce jour, d'où un nettoyage best-effort de ce cache interne, avec un redémarrage
+    # périodique du service comme filet de sécurité résiduel si ce nettoyage venait à échouer.
     #
     try:
         # await asyncio.to_thread(...) et non un appel direct : AppDevelopmentCrew() (la
