@@ -26,6 +26,7 @@ os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
+from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai_tools import FileWriterTool
 from tools import read_a_files_content, check_syntax
 from github_tools import (
@@ -355,6 +356,49 @@ def build_conversation_context(prior_entries) -> str:
                 lines.append(f"  Résultat : {summary}")
     return "\n".join(lines)
 
+def _evict_memoized_cache_entries(crew_instance: Any) -> None:
+    """Purge, best-effort, les entrées de crewai.project.utils.cache (voir son import plus haut)
+    associées à `crew_instance`, une fois son exécution terminée.
+
+    Les méthodes décorées @task/@agent de AppDevelopmentCrew sont mémoïsées par CrewAI dans ce
+    dict module-level, clé par (nom de méthode, id(self)) — voir le commentaire sur
+    crew_for_this_execution dans main.py, qui explique pourquoi chaque exécution instancie un
+    AppDevelopmentCrew() DÉDIÉ (donc un id(self) distinct) plutôt que de réutiliser un singleton.
+    Ce cache n'offre aucune API d'éviction publique et n'est JAMAIS purgé de lui-même : sans cet
+    appel, chaque exécution y laisse une poignée d'entrées orphelines pour toujours, même une fois
+    `crew_instance` elle-même devenue inaccessible et éligible au garbage collection — une fuite
+    mémoire lente mais réelle, jusqu'ici seulement "acceptée" (voir ce même commentaire dans
+    main.py, qui suggérait un redémarrage périodique du service comme seul filet de sécurité).
+    Significatif sur un service à mémoire limitée (ex: plan gratuit Render, souvent 512 Mo)
+    recevant de nombreuses exécutions sans redémarrage entretemps.
+
+    Reste dans les entrailles PRIVÉES de crewai (cache._cache, un PrivateAttr Pydantic, structure
+    non garantie stable d'une version à l'autre — requirements.txt n'épingle pas crewai) faute de
+    mieux : best-effort et strictement défensif, une évolution future de cette structure interne
+    ne doit jamais faire échouer une exécution par ailleurs saine, juste laisser le cache grossir
+    comme avant ce correctif (dégradation silencieuse, pas une régression).
+
+    Passe par cache._lock (le même RWLock que CacheHandler.add()/read() utilisent pour CE MÊME
+    dict _cache) plutôt que d'y toucher directement : deux conversations DIFFÉRENTES peuvent
+    s'exécuter concurremment (voir main.py, contrôle de concurrence limité à UNE conversation à la
+    fois), donc la construction d'un AppDevelopmentCrew() pour l'une (qui appelle cache.add() sous
+    ce verrou) peut survenir pendant que cette fonction itère ici sur _cache pour une autre — sans
+    le même verrou, ce serait un dict modifié pendant son itération (RuntimeError), rattrapé par
+    le except ci-dessous mais qui ferait échouer silencieusement la purge de cette exécution-là.
+    """
+    try:
+        with _crewai_memoize_cache._lock.w_locked():
+            internal_cache = _crewai_memoize_cache._cache
+            # Repère la clé "__instance__" que _make_hashable (crewai/project/utils.py) produit
+            # pour `self` : `("__instance__", id(self))`, dont str() rend exactement ce fragment —
+            # présent tel quel dans la clé finale de cache quelle que soit la méthode mémoïsée.
+            marker = f"'__instance__', {id(crew_instance)})"
+            stale_keys = [k for k in internal_cache if marker in k]
+            for k in stale_keys:
+                del internal_cache[k]
+    except Exception as e:
+        print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}")
+
 # --- CREW BASE ---
 @CrewBase
 class AppDevelopmentCrew():
@@ -579,19 +623,28 @@ class AppDevelopmentCrew():
                 await asyncio.to_thread(on_step_change, None)
             raise CrewStepError(step_index, len(selected_tasks), agent_role, e) from e
         finally:
-            # Filet de sécurité secondaire, pas le mécanisme principal : self.design_task()/
-            # architecture_task()/development_task()/qa_task() sont décorées @task par crewai,
-            # qui les MÉMOÏSE par (nom de méthode, id(self)) — voir crewai/project/utils.py.
-            # main.py instancie désormais un AppDevelopmentCrew() dédié à CHAQUE exécution
-            # (`crew_for_this_execution`, jamais le singleton crew_instance) précisément pour que
-            # `self` ait un id() distinct à chaque fois, donc des objets Task neufs à chaque
-            # exécution — c'est ce qui évite, dans l'immense majorité des cas, qu'un rôle de
-            # tâche partagé entre deux exécutions (y compris deux conversations DIFFÉRENTES en
-            # parallèle) ne partage aussi le même objet Task, et donc sa `.callback`/`.output`.
-            # Ce nettoyage ne couvre plus que le cas résiduel où CPython réutiliserait l'id()
-            # d'une instance déjà garbage-collectée (rare mais pas impossible) : sans lui, une
-            # future exécution qui obtiendrait par coïncidence CE MÊME id() récupérerait alors
-            # via le cache de mémoïsation ces mêmes objets Task, `.callback` non nettoyée incluse.
+            # _evict_memoized_cache_entries(self) : self.design_task()/architecture_task()/
+            # development_task()/qa_task() sont décorées @task par crewai, qui les MÉMOÏSE par
+            # (nom de méthode, id(self)) dans un cache module-level SANS éviction native — voir
+            # crewai/project/utils.py et la docstring de cette fonction. Purge ici, à la fin de
+            # CETTE exécution, les entrées qu'elle y a laissées : sans ça, ce cache grossit sans
+            # limite sur la durée de vie du process (une poignée d'entrées orphelines par
+            # exécution, jamais nettoyées), un risque réel de mémoire sur un service à ressources
+            # limitées (ex: plan gratuit Render) qui enchaîne de nombreuses exécutions.
+            _evict_memoized_cache_entries(self)
+
+            # t.callback = None : filet de sécurité résiduel, plus le mécanisme principal
+            # maintenant que le cache est activement purgé ci-dessus. main.py instancie un
+            # AppDevelopmentCrew() dédié à CHAQUE exécution (`crew_for_this_execution`, jamais le
+            # singleton crew_instance) précisément pour que `self` ait un id() distinct à chaque
+            # fois, donc des objets Task neufs — ce qui évite, dans l'immense majorité des cas,
+            # qu'un rôle de tâche partagé entre deux exécutions (y compris deux conversations
+            # DIFFÉRENTES en parallèle) ne partage aussi le même objet Task, et donc sa
+            # `.callback`/`.output`. Ne couvre plus qu'un cas résiduel très improbable (éviction
+            # ci-dessus qui aurait elle-même échoué ET CPython qui réutiliserait ensuite l'id()
+            # d'une instance déjà garbage-collectée) : sans lui, une future exécution qui
+            # obtiendrait par coïncidence CE MÊME id() récupérerait alors via le cache ces mêmes
+            # objets Task, `.callback` non nettoyée incluse.
             for t in selected_tasks:
                 t.callback = None
 
