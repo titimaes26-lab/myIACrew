@@ -4,8 +4,9 @@ import os
 import uuid
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlmodel import Session, select
@@ -30,14 +31,83 @@ async def on_shutdown():
     await close_http_client()
 
 # 3. CONFIGURATION CORS
+# Constantes (pas juste inline dans add_middleware) : relues par _log_unhandled_exception plus
+# bas, qui doit reproduire la même décision d'autorisation d'origine/identifiants que
+# CORSMiddleware — une seule source de vérité, pour qu'un futur changement de l'une de ces deux
+# valeurs ne puisse pas être oublié dans l'un des deux endroits qui en dépendent.
+CORS_ALLOW_ORIGINS = ["*"]
+CORS_ALLOW_CREDENTIALS = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Conversation-Id"],
 )
+
+# Filet de sécurité global : ne remplace PAS les try/except explicites des endpoints (ex:
+# execute_workflow imprime déjà sa propre trace détaillée et marque db_entry "failed" avant de
+# lever HTTPException — Starlette route un HTTPException vers le handler dédié que FastAPI
+# enregistre lui-même, plus spécifique que celui-ci, donc ce handler-ci ne l'intercepte jamais).
+# Couvre uniquement le cas où une exception échapperait à TOUT try/except existant (ex: bug dans
+# une dépendance, erreur avant le try d'un endpoint) : sans ce filet, Starlette renvoie quand même
+# un 500 par défaut, mais rien ne garantit que sa trace complète soit toujours visible en clair
+# dans les logs applicatifs — exactement le genre de "500 sans aucune trace exploitable" observé
+# sur une exécution réelle, qu'il ne faut plus jamais laisser invisible.
+#
+# Un handler enregistré sur la classe Exception NUE (comme ici) est extrait par Starlette dans
+# ServerErrorMiddleware, qui enveloppe TOUT le reste — y compris CORSMiddleware ci-dessus — et non
+# l'inverse : sa réponse ne passe donc JAMAIS par l'injection d'en-têtes CORS de CORSMiddleware.
+# Sans les ajouter nous-mêmes ici, le navigateur d'un frontend cross-origin (allow_origins=["*"])
+# rejetterait cette réponse 500 comme une erreur CORS opaque ("Failed to fetch" côté JS), cachant
+# le vrai statut/contenu à l'utilisateur malgré un vrai 500 bien envoyé sur le fil — exactement le
+# symptôme observé (log Render confirmant un 500, mais l'interface n'affiche qu'une erreur
+# générique). allow_credentials=True interdit le littéral "*" : il faut réfléchir l'Origin exacte
+# de la requête, comme le ferait CORSMiddleware lui-même.
+@app.exception_handler(Exception)
+async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    # Ce diagnostic (print/lecture mémoire) ne doit JAMAIS empêcher de renvoyer une réponse :
+    # print() lui-même peut échouer (pipe de logs saturé/coupé, disque plein — plausible pile
+    # dans les conditions de pression mémoire que ce diagnostic vise à détecter). Une exception
+    # ICI, dans ce handler global lui-même, ne serait rattrapée par personne (ServerErrorMiddleware
+    # ne retombe sur son propre filet de sécurité QUE quand aucun handler custom n'est enregistré,
+    # ce qui n'est plus le cas dès qu'on en définit un) : la connexion serait alors abandonnée
+    # sans aucune réponse, exactement le symptôme opaque ("Failed to fetch") que ce handler existe
+    # pour éliminer.
+    try:
+        _log_memory(f"exception non gérée sur {request.url.path}")
+        print(f"--- EXCEPTION NON GEREE SUR {request.method} {request.url.path} ---")
+        print(traceback.format_exc())
+    except Exception:
+        pass
+
+    # Message générique (pas str(exc)) : contrairement aux deux endpoints qui choisissent
+    # délibérément d'exposer le détail d'une erreur CrewAI connue, ce filet attrape N'IMPORTE
+    # QUELLE exception non anticipée sur N'IMPORTE QUEL endpoint — le détail réel reste
+    # disponible dans les logs Render (print ci-dessus), jamais renvoyé tel quel au client.
+    response = JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
+
+    # Reproduit la décision d'autorisation d'origine de CORSMiddleware (voir CORS_ALLOW_ORIGINS) :
+    # un handler enregistré sur la classe Exception nue est extrait par Starlette dans
+    # ServerErrorMiddleware, qui enveloppe TOUT le reste — y compris CORSMiddleware — et non
+    # l'inverse, donc cette réponse ne passe JAMAIS par l'injection d'en-têtes CORS habituelle.
+    # Sans ça, le navigateur d'un frontend cross-origin rejetterait ce 500 comme une erreur CORS
+    # opaque ("Failed to fetch" côté JS), cachant le vrai statut/contenu à l'utilisateur malgré un
+    # vrai 500 bien envoyé sur le fil. CORS_ALLOW_CREDENTIALS=True interdit le littéral "*" : il
+    # faut réfléchir l'Origin exacte de la requête (uniquement si elle est bien autorisée par
+    # CORS_ALLOW_ORIGINS), plus Vary: Origin — comme le fait CORSMiddleware lui-même — pour qu'un
+    # éventuel cache intermédiaire ne serve jamais la réponse d'une origine à une autre. Ne couvre
+    # que allow_origins/allow_credentials (les seules options CORS utilisées ci-dessus) : un futur
+    # allow_origin_regex sur CORSMiddleware devrait être répercuté ici aussi.
+    origin = request.headers.get("origin")
+    if origin and ("*" in CORS_ALLOW_ORIGINS or origin in CORS_ALLOW_ORIGINS):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        if CORS_ALLOW_CREDENTIALS:
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Vary"] = "Origin"
+    return response
 
 crew_instance = AppDevelopmentCrew()
 
@@ -55,6 +125,45 @@ class WorkflowExecutionInput(BaseModel):
 
 class ConversationCreateInput(BaseModel):
     title: Optional[str] = None
+
+def _current_memory_mb() -> Optional[float]:
+    """RSS (mémoire physique réellement utilisée par ce process) en Mo, lue depuis
+    /proc/self/status (Linux uniquement — couvre tout environnement de déploiement réaliste ici :
+    Render, Docker...). Best-effort : None si indisponible (OS différent, fichier absent) plutôt
+    qu'une exception — un simple diagnostic ne doit jamais faire échouer une exécution par
+    ailleurs saine.
+
+    Ajouté pour diagnostiquer les cas où le process backend semble mourir sans laisser aucune
+    trace applicative (voir _log_memory, appelé à chaque changement d'étape d'exécution) : sur le
+    plan gratuit de Render, ni l'onglet "Events" (qui indiquerait un OOM kill explicitement) ni le
+    graphique mémoire des "Metrics" ne sont accessibles, ce print() dans les logs applicatifs est
+    donc le seul moyen de voir la tendance mémoire avant une éventuelle coupure brutale — un OOM
+    kill (SIGKILL) tue le process instantanément, sans qu'aucune exception Python ne soit jamais
+    levée ni journalisée : seules ces lectures PÉRIODIQUES avant le crash peuvent le suggérer
+    (une dernière valeur déjà élevée juste avant l'arrêt net des logs), jamais une preuve directe.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # kB -> Mo
+    except Exception:
+        pass
+    return None
+
+def _log_memory(context: str) -> None:
+    # Best-effort, y compris print() lui-même : appelée depuis des points qui doivent absolument
+    # ne jamais lever (le except d'execute_workflow avant que db_entry ne soit marqué "failed", et
+    # _persist_current_step avant la classification CrewStepError — voir leurs docstrings). print()
+    # peut échouer (pipe de logs saturé/coupé, disque plein) précisément dans les conditions de
+    # pression mémoire que ce diagnostic vise à observer ; sans cette garde, l'échec d'un simple
+    # print() de diagnostic ferait dérailler l'exécution qu'il essaie seulement d'observer.
+    try:
+        mem_mb = _current_memory_mb()
+        if mem_mb is not None:
+            print(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS)")
+    except Exception:
+        pass
 
 def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) -> None:
     """Recharge db_entry depuis la base avant d'y réassigner des champs — voir ses appelants.
@@ -96,6 +205,10 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     l'échec — dans les deux cas, une simple panne d'affichage de la progression ferait échouer
     (ou mal diagnostiquer) une exécution par ailleurs saine.
     """
+    # Appelé à CHAQUE changement d'étape (donc plusieurs fois par exécution) : le point le plus
+    # régulier disponible pour observer la tendance mémoire pendant une exécution DESIGN_AND_DEV/
+    # FEATURE, qui peut enchaîner 4 tâches sur plusieurs minutes. Voir _current_memory_mb.
+    _log_memory(f"execution_id={execution_id}, étape={step_key!r}")
     try:
         with Session(engine) as step_session:
             entry = step_session.get(ExecutionHistory, execution_id)
@@ -130,6 +243,7 @@ async def execute_workflow(
     user: dict = Depends(get_current_user),
 ):
     """Étape 2 : Lancement dynamique des agents & enregistrement BDD"""
+    _log_memory("début /api/execute")
     final_prompt = (
         f"Demande initiale : {data.user_request}\n"
         f"Type d'exécution : {data.target_workflow}\n"
@@ -284,6 +398,7 @@ async def execute_workflow(
             asyncio.to_thread(AppDevelopmentCrew),
             _repo_branch_sha_before(),
         )
+        _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
 
         with track_execution_metrics() as run_metrics:
             result = await crew_for_this_execution.run_dynamic_crew(
@@ -399,6 +514,7 @@ async def execute_workflow(
             "total_wait_time_seconds": run_metrics.total_wait_time,
         }
     except Exception as e:
+        _log_memory(f"execution_id={db_entry.id}, exception attrapée")
         print("--- ERREUR CREWAI EXECUTION DETECTEE ---")
         print(traceback.format_exc())
 
