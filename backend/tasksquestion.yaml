@@ -107,24 +107,24 @@ diagnostic_task:
     plutôt que de continuer à investiguer : un correctif imparfait mais rédigé vaut toujours mieux
     qu'une analyse jamais conclue, qui laisserait la tâche suivante sans rien à committer.
 
-    Contexte de la conversation (tours précédents de cet utilisateur, notamment la branche de travail
-    éventuellement déjà utilisée) :
+    Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
     Ce contexte est un RÉSUMÉ potentiellement imprécis ou incomplet rédigé à un tour précédent, pas
-    une preuve de l'état réel du code. Si un repository cible est fourni et que ce résumé mentionne
-    une branche de travail déjà utilisée, relis l'état RÉEL des fichiers concernés avec
-    `github_read_file` (branch={work_branch}) avant de t'appuyer dessus — sinon, lis sur
-    {base_branch}, puisque {work_branch} n'existe pas encore à ce stade (elle ne sera créée que par
-    la tâche suivante). Ne présume jamais qu'un fichier existe, a tel contenu, ou qu'une action a
-    réussi uniquement parce que le résumé l'affirme.
+    une preuve de l'état réel du code : ne présume jamais qu'un fichier existe, a tel contenu, ou
+    qu'une action a réussi uniquement parce que ce résumé l'affirme. Pour savoir SUR QUELLE BRANCHE
+    lire, fie-toi exclusivement à ce que dit "Contexte repository" ci-dessous (calculé de façon
+    fiable par le système, pas résumé par un LLM), jamais à ce résumé de conversation.
 
     Contexte repository :
     {repo_instructions}
     Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
-    (owner={repo_owner}, repo={repo_name}) pour lire le code existant pertinent. Tu n'as accès à
-    aucun outil d'écriture GitHub : ce n'est pas ton rôle de committer, seulement de produire le code
-    — n'invente JAMAIS d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni
-    d'identifiants qui auraient l'air réels, rien de tout cela ne s'est produit à ce stade.
+    (owner={repo_owner}, repo={repo_name}) pour lire le code existant pertinent, sur la branche que
+    "Contexte repository" ci-dessus indique (jamais une autre : lire {work_branch} alors qu'il
+    n'existe pas encore produirait une erreur inutile ; lire {base_branch} alors que {work_branch}
+    existe déjà ignorerait un correctif commité à un tour précédent sur cette même branche). Tu n'as
+    accès à aucun outil d'écriture GitHub : ce n'est pas ton rôle de committer, seulement de produire
+    le code — n'invente JAMAIS d'action GitHub réalisée (commit, branche créée, Pull Request ouverte)
+    ni d'identifiants qui auraient l'air réels, rien de tout cela ne s'est produit à ce stade.
     Sans repository cible (travail sur disque local), utilise `read_a_files_content` pour toute
     lecture.
 
@@ -158,15 +158,12 @@ development_task:
        leur nombre — c'est TA PRIORITÉ ABSOLUE, avant tout `check_syntax`. Un lot jamais committé (0
        fichier réellement présent sur GitHub) est bien pire qu'un lot committé avec une imperfection
        mineure que la QA détectera ensuite. Pour un fichier isolé (1-2 fichiers seulement),
-       `github_write_file` reste suffisant.
-       Pour une correction ciblée sur UN SEUL fichier déjà existant et volumineux, `github_edit_file`
-       (extrait exact à remplacer, tel que fourni par l'Analyste) reste une option ; si
-       `github_edit_file` t'indique un ÉCHEC RÉPÉTÉ sur ce même fichier, n'insiste pas : bascule sur
-       `github_write_file` avec le contenu complet déjà fourni par l'Analyste. Toujours un
-       commit_message clair.
+       `github_write_file` reste suffisant. Tu n'as PAS accès à `github_edit_file` (aucune édition
+       partielle) : l'Analyste t'a fourni le contenu COMPLET de chaque fichier, écris-le tel quel,
+       intégralement, avec `github_write_file`/`github_write_files` — jamais un extrait.
     3. S'il te reste du budget après le commit, vérifie avec `check_syntax` les fichiers qui te
-       semblent les plus à risque et corrige-les avec `github_edit_file` si besoin (le contenu à
-       corriger reste celui fourni par l'Analyste) — mais NE retarde jamais l'étape 2 pour ça :
+       semblent les plus à risque. En cas de problème, recommitte le fichier concerné en entier
+       avec `github_write_file` (jamais un extrait) — mais NE retarde jamais l'étape 2 pour ça :
        qa_task (la tâche suivante) revérifie de toute façon après coup.
     4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant

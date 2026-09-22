@@ -549,7 +549,20 @@ async def _run_crew_and_persist(
                                 'repo_instructions': (
                                     f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
                                     f"Branche de base : {normalized_base_branch}\n"
-                                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
+                                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}\n"
+                                    + (
+                                        # Signal FIABLE (basé sur l'historique DB de cette conversation,
+                                        # jamais sur le résumé {conversation_context}) pour diagnostic_task :
+                                        # sur quelle branche lire AVANT que development_task ne crée
+                                        # {work_branch} (voir tasksquestion.yaml, diagnostic_task).
+                                        f"Cette branche de travail EXISTE DÉJÀ sur GitHub (réutilisée d'un "
+                                        f"tour précédent de cette conversation) : pour toute lecture, lis-la "
+                                        f"directement avec branch={work_branch}."
+                                        if work_branch_reused
+                                        else f"Cette branche de travail N'EXISTE PAS ENCORE sur GitHub (sera "
+                                        f"créée par la tâche de commit qui suit) : pour toute lecture, lis "
+                                        f"sur branch={normalized_base_branch} en attendant."
+                                    )
                                     if has_repo_target
                                     else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
                                 ),
@@ -803,6 +816,14 @@ async def execute_workflow(
     normalized_base_branch = (data.base_branch or "main") if has_repo_target else None
 
     work_branch = ""
+    # Vrai seulement si CE tour réutilise un work_branch trouvé dans l'historique DB de cette
+    # conversation (donc créé par un tour précédent) — jamais déduit du résumé texte
+    # {conversation_context}, potentiellement imprécis (voir tasksquestion.yaml, diagnostic_task) :
+    # ce booléen, lui, reflète directement ce que CE backend a réellement enregistré, pas ce qu'un
+    # LLM a choisi de mentionner dans un résumé. Utilisé plus bas pour dire à diagnostic_task, de
+    # façon fiable, si {work_branch} existe déjà sur GitHub (lisible directement) ou pas encore
+    # (sera créée par development_task, donc rien à y lire avant cela).
+    work_branch_reused = False
     if has_repo_target:
         for entry in reversed(prior_entries):
             if (
@@ -812,6 +833,7 @@ async def execute_workflow(
                 and entry.base_branch == normalized_base_branch
             ):
                 work_branch = entry.work_branch
+                work_branch_reused = True
                 break
         if not work_branch:
             work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"

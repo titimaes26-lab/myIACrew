@@ -455,18 +455,25 @@ class AppDevelopmentCrew():
             # diagnostic et le code complet lui arrivent déjà tout prêts via le contexte de
             # diagnostic_task (process séquentiel CrewAI). Voir diagnostic_agent ci-dessus pour
             # le raisonnement complet de cette séparation.
+            # Pas de github_edit_file ici, volontairement : cet outil remplace un extrait exact
+            # (old_string/new_string) et, sur échec (occurrences 0 ou >1), son propre message
+            # d'erreur (voir github_tools.py, _record_edit_failure) instruit l'agent appelant de
+            # RELIRE le fichier avec github_read_file avant de retenter — un outil que cet agent
+            # n'a justement plus (voir plus haut). diagnostic_task ne produit d'ailleurs jamais de
+            # old_string/new_string, seulement le contenu complet de chaque fichier : github_write_file/
+            # github_write_files (qui n'ont besoin d'aucune lecture préalable) couvrent donc tous les
+            # cas réels de cette tâche.
             tools=[
                 file_write_tool, check_syntax,
                 github_create_branch, github_write_file, github_write_files,
-                github_edit_file, github_open_pull_request,
+                github_open_pull_request,
             ],
             # 6 (pas 8) : depuis la séparation avec diagnostic_agent (voir ci-dessus), cette tâche
             # n'a plus AUCUN diagnostic à faire, seulement à committer un code déjà rédigé — le
-            # flux GitHub complet pour un BUGFIX (create_branch, write_file(s)/edit_file,
-            # check_syntax, open_pull_request) tient en 4 appels, 6 laisse de la marge pour un
-            # repli sur échec répété de github_edit_file (voir github_tools.py,
-            # _record_edit_failure) sans jamais retomber au niveau d'avant cette séparation, qui
-            # devait aussi couvrir un diagnostic entier dans le même budget.
+            # flux GitHub complet pour un BUGFIX (create_branch, write_file(s), check_syntax,
+            # open_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
+            # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
+            # entier dans le même budget.
             llm=gemini_llm, max_iter=6, verbose=True,
         )
 
