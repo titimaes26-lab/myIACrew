@@ -171,6 +171,17 @@ development_task:
        `github_write_file` reste suffisant. Tu n'as PAS accès à `github_edit_file` (aucune édition
        partielle) : l'Analyste t'a fourni le contenu COMPLET de chaque fichier, écris-le tel quel,
        intégralement, avec `github_write_file`/`github_write_files` — jamais un extrait.
+       Depuis peu, `github_write_file` et `github_write_files` valident eux-mêmes la syntaxe de
+       chaque fichier (Python/JSON/YAML : vérification exacte ; JS/TS/JSX/TSX : heuristique
+       d'équilibrage ; autres extensions : non vérifiées) AVANT tout commit, pour détecter une
+       troncature du contenu que l'Analyste t'a fourni. `github_write_file` refuse alors le commit
+       et te renvoie l'erreur sans rien écrire sur GitHub. `github_write_files` committe uniquement
+       les fichiers qui passent et liste les autres dans une section "REJETÉS" de sa réponse (ou
+       refuse tout le lot si AUCUN ne passe). Dans les deux cas, NE RETENTE JAMAIS le même appel
+       avec un contenu identique pour un fichier rejeté : tu n'as aucun moyen de le corriger (pas
+       d'outil de lecture). Traite chaque fichier REJETÉ exactement comme un fichier que ton budget
+       d'appels ne t'aurait pas permis de committer : liste-le EXPLICITEMENT dans ton rapport final
+       comme non livré, avec la raison donnée par l'outil.
     3. S'il te reste du budget après le commit, vérifie avec `check_syntax` les fichiers qui te
        semblent les plus à risque. En cas de problème, recommitte le fichier concerné en entier
        avec `github_write_file` (jamais un extrait) — mais NE retarde jamais l'étape 2 pour ça :

@@ -9,6 +9,8 @@ from typing import NamedTuple
 from crewai.tools import tool
 from github import Auth, Github, GithubException, InputGitTreeElement
 
+from tools import check_syntax_content
+
 
 def _get_repo(owner: str, repo: str):
     token = os.getenv("GITHUB_TOKEN")
@@ -27,6 +29,35 @@ def _reject_protected_branch(branch: str) -> str | None:
     """None si l'écriture peut continuer, sinon le message d'erreur à renvoyer tel quel."""
     if branch in ("main", "master"):
         return "ERREUR : écriture directe sur la branche principale interdite. Utilise d'abord github_create_branch."
+    return None
+
+
+def _reject_invalid_syntax(path: str, content: str) -> str | None:
+    """None si le contenu passe check_syntax_content (ou si son extension n'est pas couverte par
+    elle), sinon le message qu'elle renvoie, à faire remonter tel quel à l'agent appelant.
+
+    Garde-fou avant commit (voir github_write_file/github_write_files) contre une troncature
+    silencieuse du contenu produit par diagnostic_task (voir tasksquestion.yaml) : ni
+    developer_agent (qui committe ce contenu) ni ses outils d'écriture n'ont normalement de
+    moyen de détecter qu'un fichier a été coupé en cours de génération — ce filet le fait à leur
+    place, sans coût sur le budget max_iter de l'agent (appel Python interne, pas un outil
+    CrewAI invoqué séparément). Complémentaire à la consigne de prompt qui demande déjà à
+    diagnostic_task de ne pas soumettre un fichier qu'elle craint de tronquer, pas un
+    remplacement : les deux peuvent laisser passer des cas que l'autre aurait rattrapés.
+    """
+    try:
+        result = check_syntax_content(content, path)
+    except Exception:
+        # Défensif seulement : check_syntax_content ne lève normalement jamais elle-même (toutes
+        # ses branches sont déjà protégées par try/except et renvoient une chaîne). Si cet appel
+        # échoue quand même, ne pas bloquer un commit par ailleurs valide — ce garde-fou est un
+        # filet SUPPLÉMENTAIRE, pas la seule protection contre une troncature (voir plus haut).
+        return None
+    # Les deux SEULS préfixes d'échec renvoyés par check_syntax_content (voir tools.py) —
+    # couplage volontairement étroit avec son format de sortie textuel, à garder synchronisé si
+    # ce fichier est retouché.
+    if result.startswith("ERREUR_SYNTAXE") or result.startswith("PROBLÈME(S) DÉTECTÉ(S)"):
+        return result
     return None
 
 
@@ -196,6 +227,14 @@ def github_write_file(owner: str, repo: str, path: str, content: str, branch: st
     rejection = _reject_protected_branch(branch)
     if rejection:
         return rejection
+    syntax_issue = _reject_invalid_syntax(path, content)
+    if syntax_issue:
+        return (
+            f"ERREUR : écriture refusée, vérification syntaxique de '{path}' échouée AVANT tout "
+            f"commit (rien n'a été modifié sur GitHub) : {syntax_issue} Ne retente PAS ce même "
+            "appel avec un contenu identique (tu n'as aucun moyen de le corriger) : signale ce "
+            "fichier comme non livré dans ton rapport final, avec cette raison."
+        )
     try:
         gh_repo = _get_repo(owner, repo)
         try:
@@ -233,8 +272,7 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
     chaque appel d'outil consomme une part de ton budget total (max_iter) pour cette tâche, et un
     projet de plusieurs dizaines de fichiers épuiserait ce budget bien avant la fin si chaque
     fichier coûtait son propre appel — tu produirais alors une réponse qui DÉCRIT le code sans
-    l'avoir réellement poussé sur GitHub. github_edit_file reste préférable pour une correction
-    CIBLÉE (quelques lignes) sur un seul fichier déjà existant et volumineux.
+    l'avoir réellement poussé sur GitHub.
     L'écriture directe sur 'main'/'master' est refusée : crée d'abord une branche avec github_create_branch.
     Arguments:
         owner (str), repo (str): repository cible.
@@ -272,6 +310,33 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
         if f["path"] in paths_seen:
             return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans files_json, chaque chemin doit être unique."
         paths_seen.add(f["path"])
+
+    # Filtre les fichiers dont le contenu échoue check_syntax_content (garde-fou contre une
+    # troncature silencieuse du contenu produit par diagnostic_task, voir _reject_invalid_syntax
+    # plus haut) AVANT tout appel réseau — un lot entièrement invalide ne touche alors jamais
+    # l'API GitHub. Commit PARTIEL (pas tout-ou-rien) volontaire : le reste de ce pipeline traite
+    # déjà la livraison partielle avec rapport explicite comme mode dégradé normal (budget épuisé
+    # -> committer un sous-ensemble cohérent, lister le reste comme non réalisé, voir
+    # tasksquestion.yaml) — un mode tout-ou-rien pénaliserait N-1 fichiers valides à cause d'un
+    # seul fichier à risque.
+    valid_files, rejected = [], []
+    for f in files:
+        issue = _reject_invalid_syntax(f["path"], f["content"])
+        (rejected.append((f["path"], issue)) if issue else valid_files.append(f))
+
+    if not valid_files:
+        lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)
+        return (
+            f"ERREUR : les {len(rejected)} fichier(s) de ce lot ont TOUS échoué la vérification "
+            f"syntaxique avant commit, rien n'a été écrit sur GitHub :\n{lines}\n"
+            "Ne retente pas cet appel avec le même contenu (tu n'as aucun moyen de le corriger) : "
+            "signale ces fichiers comme non livrés dans ton rapport final, avec leur raison."
+        )
+    # Réassigné (pas une nouvelle variable) : tout le reste de cette fonction (tree_elements,
+    # la boucle _record_edit_success finale, et paths_seen recalculé juste en dessous) doit
+    # committer/couvrir EXCLUSIVEMENT ce sous-ensemble validé, jamais les fichiers rejetés.
+    files = valid_files
+    paths_seen = {f["path"] for f in files}
 
     try:
         gh_repo = _get_repo(owner, repo)
@@ -318,10 +383,19 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
         ref.edit(new_commit.sha)
         for f in files:
             _record_edit_success(owner, repo, f["path"], branch)
-        return (
+        message = (
             f"OK : {len(files)} fichier(s) écrit(s) en un seul commit ({new_commit.sha[:8]}) "
             f"sur la branche '{branch}'."
         )
+        if rejected:
+            lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)
+            message += (
+                f"\nREJETÉS ({len(rejected)}) — non committés, vérification syntaxique échouée "
+                f"avant tout envoi vers GitHub :\n{lines}\n"
+                "Ne retente PAS ces fichiers avec le même contenu (tu n'as aucun moyen de les "
+                "corriger) : signale-les comme non livrés dans ton rapport final, avec leur raison."
+            )
+        return message
     except GithubException as e:
         # "non fast-forward" (ref.edit rejeté) : CrewAI peut exécuter plusieurs appels d'outils de
         # cette même tâche en parallèle (voir _edit_failure_lock plus haut) — un autre appel
