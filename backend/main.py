@@ -818,15 +818,12 @@ async def execute_workflow(
     normalized_base_branch = (data.base_branch or "main") if has_repo_target else None
 
     work_branch = ""
-    # Vrai seulement si CE tour réutilise un work_branch trouvé dans l'historique DB de cette
-    # conversation (donc créé par un tour précédent) — jamais déduit du résumé texte
-    # {conversation_context}, potentiellement imprécis (voir tasksquestion.yaml, diagnostic_task) :
-    # ce booléen, lui, reflète directement ce que CE backend a réellement enregistré, pas ce qu'un
-    # LLM a choisi de mentionner dans un résumé. Utilisé plus bas pour dire à diagnostic_task, de
-    # façon fiable, si {work_branch} existe déjà sur GitHub (lisible directement) ou pas encore
-    # (sera créée par development_task, donc rien à y lire avant cela).
-    work_branch_reused = False
     if has_repo_target:
+        # Réutilise le NOM de branche d'un tour précédent quel que soit son statut (y compris
+        # "failed") : c'est ce qui permet à un "Recommence l'implémentation" après un échec de
+        # continuer sur la MÊME branche/PR plutôt que d'en ouvrir une nouvelle à chaque tentative.
+        # Ne PAS conditionner ceci à status=="success" (voir work_branch_reused ci-dessous pour la
+        # distinction) : ce serait un changement de comportement séparé, non désiré ici.
         for entry in reversed(prior_entries):
             if (
                 entry.work_branch
@@ -835,10 +832,33 @@ async def execute_workflow(
                 and entry.base_branch == normalized_base_branch
             ):
                 work_branch = entry.work_branch
-                work_branch_reused = True
                 break
         if not work_branch:
             work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
+
+    # Vrai seulement si CE {work_branch} (une fois déterminé ci-dessus, retenue ou neuve) a été
+    # RÉELLEMENT créée sur GitHub par un tour précédent — pas simplement mentionnée en base :
+    # db_entry.work_branch est écrit dès la création de la ligne, statut "running", AVANT même que
+    # le crew ne démarre, donc un tour resté "failed" avant le premier github_create_branch, ou un
+    # tour ANALYSE_ONLY qui hérite de ce même nom de branche sans jamais toucher à GitHub
+    # (design_task/architecture_task ne créent ni ne committent rien), porteraient ce même champ
+    # sans que la branche existe pour autant. status == "success" ET workflow != "ANALYSE_ONLY"
+    # ensemble donnent la même garantie que verify_github_delivery (plus haut dans ce fichier)
+    # donne déjà à un tour BUGFIX/FEATURE/DESIGN_AND_DEV "success" : la branche existe RÉELLEMENT
+    # sur GitHub. Jamais déduit du résumé texte {conversation_context}, potentiellement imprécis
+    # (voir tasksquestion.yaml, diagnostic_task). Utilisé plus bas pour dire à diagnostic_task, de
+    # façon fiable, si {work_branch} est lisible directement ou pas encore créée (sera créée par
+    # development_task, donc rien à y lire avant cela) — lire une branche qui n'existe pas encore
+    # gaspillerait son budget de lecture, volontairement serré (voir diagnostic_agent), sur des 404.
+    work_branch_reused = has_repo_target and any(
+        entry.work_branch == work_branch
+        and entry.repo_owner == data.repo_owner
+        and entry.repo_name == data.repo_name
+        and entry.base_branch == normalized_base_branch
+        and entry.status == "success"
+        and entry.workflow != "ANALYSE_ONLY"
+        for entry in prior_entries
+    )
 
     # Enregistrement immédiat (statut "running") pour garder une trace même en cas d'échec
     db_entry = ExecutionHistory(
