@@ -384,6 +384,7 @@ async def _execute_crew_and_persist(
     has_repo_target: bool,
     should_verify_github_delivery: bool,
     work_branch: str,
+    work_branch_reused: bool,
     normalized_base_branch: Optional[str],
     final_prompt: str,
     conversation_context: str,
@@ -409,7 +410,7 @@ async def _execute_crew_and_persist(
     async with _execution_semaphore:
         await _run_crew_and_persist(
             db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
-            work_branch, normalized_base_branch, final_prompt, conversation_context,
+            work_branch, work_branch_reused, normalized_base_branch, final_prompt, conversation_context,
         )
 
 async def _run_crew_and_persist(
@@ -419,6 +420,7 @@ async def _run_crew_and_persist(
     has_repo_target: bool,
     should_verify_github_delivery: bool,
     work_branch: str,
+    work_branch_reused: bool,
     normalized_base_branch: Optional[str],
     final_prompt: str,
     conversation_context: str,
@@ -872,7 +874,7 @@ async def execute_workflow(
     # pour ne pas risquer que le garbage collector ne l'interrompe en cours de route.
     task = asyncio.create_task(_execute_crew_and_persist(
         db_entry.id, conversation.id, data, has_repo_target, should_verify_github_delivery,
-        work_branch, normalized_base_branch, final_prompt, conversation_context,
+        work_branch, work_branch_reused, normalized_base_branch, final_prompt, conversation_context,
     ))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
