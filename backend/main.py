@@ -992,8 +992,13 @@ async def delete_history_entry(
     user: dict = Depends(get_current_user),
 ):
     """Supprime une exécution de l'historique de l'utilisateur courant."""
+    print(f"DELETE /api/history/{execution_id} appelé par {user.get('id')}", flush=True)
     entry = session.get(ExecutionHistory, execution_id)
-    if not entry or entry.user_id != user.get("id"):
+    if not entry:
+        print(f"  → Entrée {execution_id} introuvable en base", flush=True)
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    if entry.user_id != user.get("id"):
+        print(f"  → Accès refusé : entry.user_id={entry.user_id}, user.id={user.get('id')}", flush=True)
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
 
     # Bloqué sur status="running" : rien ici ne permet de distinguer une exécution VRAIMENT
@@ -1009,8 +1014,11 @@ async def delete_history_entry(
     # potentiellement déjà ouverte comprise. Un cas vraiment bloqué reste, lui, un correctif
     # manuel en base (limite acceptée, voir le commentaire cité plus haut).
     if entry.status == "running":
+        print(f"  → Suppression refusée : status=running", flush=True)
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
 
+    print(f"  → Suppression en cours : user_request={entry.user_request[:50]}", flush=True)
     session.delete(entry)
     session.commit()
+    print(f"  → Suppression confirmée en base", flush=True)
     return {"status": "deleted", "id": execution_id}
