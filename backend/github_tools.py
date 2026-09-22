@@ -33,8 +33,9 @@ def _reject_protected_branch(branch: str) -> str | None:
 
 
 def _reject_invalid_syntax(path: str, content: str) -> str | None:
-    """None si le contenu passe check_syntax_content (ou si son extension n'est pas couverte par
-    elle), sinon le message qu'elle renvoie, à faire remonter tel quel à l'agent appelant.
+    """None si le contenu passe la vérification EXACTE de check_syntax_content (Python/JSON/YAML)
+    ou si son extension n'y est pas soumise, sinon le message ERREUR_SYNTAXE qu'elle renvoie, à
+    faire remonter tel quel à l'agent appelant.
 
     Garde-fou avant commit (voir github_write_file/github_write_files) contre une troncature
     silencieuse du contenu produit par diagnostic_task (voir tasksquestion.yaml) : ni
@@ -44,19 +45,34 @@ def _reject_invalid_syntax(path: str, content: str) -> str | None:
     CrewAI invoqué séparément). Complémentaire à la consigne de prompt qui demande déjà à
     diagnostic_task de ne pas soumettre un fichier qu'elle craint de tronquer, pas un
     remplacement : les deux peuvent laisser passer des cas que l'autre aurait rattrapés.
+
+    Volontairement limité à ERREUR_SYNTAXE (Python/JSON/YAML, vrai parseur exact) : la sortie
+    PROBLÈME(S) DÉTECTÉ(S) (heuristique JS/TS/JSX/TSX de check_syntax_content) a un faux positif
+    connu sur toute apostrophe française en texte JSX hors commentaire (ex: "n'y", très fréquent
+    dans cette app en français — voir _check_balanced_delimiters, tools.py) : bloquer un commit
+    dessus rejetterait EN PERMANENCE des fichiers .tsx/.jsx par ailleurs valides, sans recours
+    possible pour developer_agent (aucun outil de lecture pour corriger ni retenter). check_syntax
+    reste disponible en usage manuel par l'agent (voir development_task, tasksquestion.yaml) pour
+    ces extensions, juste plus en verrou automatique ici.
     """
     try:
         result = check_syntax_content(content, path)
-    except Exception:
+    except Exception as e:
         # Défensif seulement : check_syntax_content ne lève normalement jamais elle-même (toutes
         # ses branches sont déjà protégées par try/except et renvoient une chaîne). Si cet appel
         # échoue quand même, ne pas bloquer un commit par ailleurs valide — ce garde-fou est un
         # filet SUPPLÉMENTAIRE, pas la seule protection contre une troncature (voir plus haut).
+        # print visible (pas juste avalé) : cette hypothèse pourrait un jour être invalidée par
+        # un futur changement de tools.py, et ce cas mérite d'être investigué même s'il ne
+        # bloque pas le commit.
+        print(
+            f"AVERTISSEMENT : check_syntax_content a levé une exception inattendue pour '{path}' "
+            f"({type(e).__name__}: {e}) — commit non bloqué (garde-fou best-effort), mais ce cas "
+            "devrait être investigué : voir _reject_invalid_syntax.",
+            flush=True,
+        )
         return None
-    # Les deux SEULS préfixes d'échec renvoyés par check_syntax_content (voir tools.py) —
-    # couplage volontairement étroit avec son format de sortie textuel, à garder synchronisé si
-    # ce fichier est retouché.
-    if result.startswith("ERREUR_SYNTAXE") or result.startswith("PROBLÈME(S) DÉTECTÉ(S)"):
+    if result.startswith("ERREUR_SYNTAXE"):
         return result
     return None
 
