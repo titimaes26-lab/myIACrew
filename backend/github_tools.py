@@ -651,23 +651,34 @@ def verify_github_delivery(
     # par numéro). Un premier essai qui répond SANS exception mais ne trouve rien peut donc
     # simplement être arrivé trop tôt, pas confirmer une absence réelle — vécu en pratique : une
     # PR créée ET mergée en ~10s a échappé au premier essai.
-    pr_check_confirmed = True
+    # pr_check_confirmed démarre à False et n'est mis à True QUE par un essai qui aboutit sans
+    # exception (peu importe lequel des deux, et jamais redescendu à False ensuite) : un essai
+    # réussi qui confirme déjà l'absence de PR (matched=False mais SANS exception) est une
+    # réponse définitive à part entière, que le second essai (déclenché quand même, voir plus
+    # bas) ne doit PAS pouvoir invalider s'il échoue lui-même sur un aléa transitoire — sinon une
+    # absence de PR déjà confirmée au 1er essai basculerait à tort en "non vérifiée" (et le
+    # message d'erreur orienterait à tort l'utilisateur vers GITHUB_TOKEN, voir main.py,
+    # likely_access_problem) simplement parce que ce second essai, purement optionnel à ce
+    # stade, a lui-même heurté un souci réseau.
+    pr_check_confirmed = False
     matched = False
     try:
         matched = _matching_pr_exists()
+        pr_check_confirmed = True
     except Exception:
-        pr_check_confirmed = False
+        pass
     if not matched:
         time.sleep(2)
         try:
             matched = _matching_pr_exists()
             pr_check_confirmed = True
         except Exception:
-            # Ne bloque pas la vérification sur un souci PERSISTANT de LISTE des PR : la branche
-            # existe bien et a été vérifiée juste au-dessus, c'est déjà la partie la plus
-            # importante. On traite prudemment comme "PR non confirmée" plutôt que de risquer un
-            # faux positif, et on continue vers les diagnostics ci-dessous plutôt que de conclure ici.
-            pr_check_confirmed = False
+            # Ne pas réinitialiser pr_check_confirmed à False ici : s'il valait déjà True (1er
+            # essai réussi), cette confirmation reste valable malgré l'échec de CE second essai.
+            # S'il valait encore False (1er essai déjà en échec), il reste False, comme avant —
+            # deux échecs persistants sur la LISTE des PR restent traités prudemment comme "PR
+            # non confirmée" plutôt que de risquer un faux positif.
+            pass
     if matched:
         return None
 
