@@ -74,7 +74,11 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
       </div>
       <div style={{ alignSelf: 'flex-start', maxWidth: '90%', backgroundColor: '#f8f9fa', border: '1px solid #e1e4e8', borderRadius: '2px 12px 12px 12px', padding: '12px 14px' }}>
         <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }} role="status" aria-live="polite">
-          {STATUS_LABEL[turn.status]}
+          {/* dismissedLocally (voir sa définition dans types.ts) : affiché comme "Annulé" bien
+              que turn.status reste 'running' en interne (le sondage de progression continue) —
+              purement pour ne pas afficher "En cours..." indéfiniment à l'utilisateur après son
+              clic sur "Annuler". */}
+          {turn.status === 'running' && turn.dismissedLocally ? '🚫 Annulé' : STATUS_LABEL[turn.status]}
           {turn.workflow ? ` · ${turn.workflow}` : ''}
           {` · ${formatTime(turn.createdAt)}`}
           {duration ? ` · ${duration}` : ''}
@@ -91,8 +95,15 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           </ul>
         )}
 
-        {turn.status === 'running' && (
+        {turn.status === 'running' && !turn.dismissedLocally && (
           <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} currentStepKey={turn.currentStep} />
+        )}
+
+        {turn.status === 'running' && turn.dismissedLocally && (
+          <p style={{ margin: 0, fontSize: '13px', color: '#666', fontStyle: 'italic' }}>
+            Annulé côté interface. L'exécution continue côté serveur : le résultat, une fois prêt,
+            sera visible dans l'historique de cette conversation.
+          </p>
         )}
 
         {turn.result && turn.status === 'failed' && failure && (

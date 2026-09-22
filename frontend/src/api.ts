@@ -1,19 +1,19 @@
 import type { ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
 
-export interface ExecuteResponse {
+// /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
+// fond côté backend, voir _execute_crew_and_persist dans main.py) : ce corps de réponse ne
+// contient donc plus jamais le résultat final, seulement de quoi rattacher ce tour à son id réel
+// en base. Le résultat proprement dit n'arrive que via le sondage de progression déjà existant
+// (useConversation.ts), qui détecte la fin de l'exécution en base indépendamment de cette
+// requête d'origine — nécessaire pour que le résultat reste consultable même si la connexion à
+// cette requête est coupée entretemps (écran verrouillé, onglet fermé).
+export interface ExecuteAcceptedResponse {
   status: string;
   id: number;
   conversation_id: number;
-  workflow: string;
-  result: string;
-  api_calls_count?: number | null;
-  rate_limit_hits?: number | null;
-  total_wait_time_seconds?: number | null;
 }
 
-export class ApiError extends Error {
-  conversationId?: number;
-}
+export class ApiError extends Error {}
 
 export interface ConversationProgress {
   id: number | null;
@@ -28,10 +28,7 @@ function authHeaders(accessToken: string): HeadersInit {
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    const err = new ApiError(errData.detail || `Erreur serveur (${res.status})`);
-    const conversationIdHeader = res.headers.get('X-Conversation-Id');
-    if (conversationIdHeader) err.conversationId = Number(conversationIdHeader);
-    throw err;
+    throw new ApiError(errData.detail || `Erreur serveur (${res.status})`);
   }
   return res.json();
 }
@@ -52,7 +49,7 @@ export function apiClient(apiUrl: string, accessToken: string) {
         headers: authHeaders(accessToken),
         body: JSON.stringify(payload),
         signal,
-      }).then((res) => parseJsonOrThrow<ExecuteResponse>(res)),
+      }).then((res) => parseJsonOrThrow<ExecuteAcceptedResponse>(res)),
 
     listHistory: () =>
       fetch(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })

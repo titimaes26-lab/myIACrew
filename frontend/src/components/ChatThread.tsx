@@ -24,10 +24,12 @@ export default function ChatThread({ turns, onRetry, retryDisabled }: ChatThread
   const stickToBottomRef = useRef(true);
   // basée sur createdAt (jamais réassigné après création d'un tour — voir pushRunningTurn dans
   // useConversation.ts), pas sur `id` : un tour envoyé dans cette session change d'id
-  // (temporaire -> réel) exactement au moment où il passe à "success" (voir
-  // applyExecuteSuccess), ce qui ferait alors classer à tort CETTE transition — la plus
-  // courante de toutes — comme "nouveau tour" plutôt que comme la simple croissance de contenu
-  // qu'elle est réellement.
+  // (temporaire -> réel) dès que /api/execute confirme l'avoir accepté (voir
+  // applyExecuteAccepted), un instant qui ne coïncide PLUS avec un changement de statut depuis
+  // que /api/execute répond dès le lancement de l'exécution plutôt qu'à sa fin — ce tour reste
+  // "running" encore un moment après ce changement d'id. Utiliser `id` comme clé (voir plus bas)
+  // ferait donc remonter/démonter son <ChatMessage> (et donc réinitialiser StepIndicator) en
+  // PLEIN milieu d'une progression suivie, sans rapport avec un vrai nouveau tour.
   //
   // useMemo : évite de refaire ce .map().join() sur un rendu de ce composant déclenché par
   // autre chose qu'un changement de `turns` (ex: Studio.tsx re-rendu par son propre state local,
@@ -113,7 +115,11 @@ export default function ChatThread({ turns, onRetry, retryDisabled }: ChatThread
   return (
     <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column' }}>
       {turns.map((turn) => (
-        <ChatMessage key={turn.id} turn={turn} onRetry={onRetry} retryDisabled={retryDisabled} />
+        // key={turn.createdAt} (pas turn.id) : voir identityKey plus haut, même raisonnement,
+        // même conséquence si turn.id était utilisé ici (démontage/remontage de ce <ChatMessage>,
+        // donc réinitialisation de son StepIndicator interne, en plein milieu d'une progression
+        // "running" suivie).
+        <ChatMessage key={turn.createdAt} turn={turn} onRetry={onRetry} retryDisabled={retryDisabled} />
       ))}
       <div ref={bottomRef} />
     </div>

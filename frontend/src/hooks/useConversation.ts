@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiClient, ApiError, type ExecuteResponse } from '../api';
+import { apiClient, type ExecuteAcceptedResponse } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, QualificationReport, RepoTarget } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
 
@@ -42,7 +42,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // loadConversation seulement quand il ne s'agit pas d'un no-op sur la conversation déjà
   // affichée) — PAS à chaque changement de conversationId : conversationId lui-même passe de
   // null à un id réel dès le premier envoi réussi d'une nouvelle conversation (voir
-  // applyExecuteSuccess), une transition de LA MÊME conversation, pas un changement de
+  // applyExecuteAccepted), une transition de LA MÊME conversation, pas un changement de
   // conversation. Destiné à servir de `key` React sur <ChatInput> (voir Studio.tsx) : un simple
   // remontage via key réinitialise tout l'état local de ce composant (repo cible préremplis
   // compris) bien plus simplement qu'un prop à comparer et resynchroniser à la main, mais
@@ -92,7 +92,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   const hasRunningTurn = turns.some((t) => t.status === 'running');
   // Un tour chargé depuis l'historique (loadConversation) a un id NUMÉRIQUE réel dès le départ ;
   // un tour envoyé DANS cette session en a un TEMPORAIRE (`temp-...`, une string) tant que
-  // sendMessage n'a pas lui-même reçu sa réponse (voir applyExecuteSuccess). Sert plus bas à
+  // sendMessage n'a pas lui-même reçu sa réponse (voir applyExecuteAccepted). Sert plus bas à
   // éviter un fetch de resynchronisation qui ne pourrait de toute façon jamais rien trouver pour
   // ce second cas : messages.find(m => m.id === turn.id) ne peut matcher qu'un id numérique.
   const runningTurnHasNumericId = turns.some((t) => t.status === 'running' && typeof t.id === 'number');
@@ -170,7 +170,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
           // repasserait jamais à false (le sondage tournerait alors indéfiniment, cette branche
           // répondant toujours "plus rien de 'running'"). À l'inverse, un tour encore sur son id
           // temporaire (envoyé DANS cette session, pas encore remplacé par son id réel — voir
-          // applyExecuteSuccess) ne peut par construction jamais être retrouvé par
+          // applyExecuteAccepted) ne peut par construction jamais être retrouvé par
           // messages.find(m => m.id === turn.id) plus bas (id numérique serveur vs "temp-...") :
           // inutile de payer le coût d'un fetch complet de l'historique à chaque tick pour lui,
           // sendMessage résoudra de toute façon très bientôt sa propre requête /api/execute.
@@ -185,10 +185,35 @@ export function useConversation(accessToken: string, apiUrl: string) {
               // contenir — sans cette vérification, matching resterait introuvable pour LUI
               // aussi et le repli plus bas le marquerait à tort "supprimé".
               if (myCycle !== pollCycleRef.current) return;
+              // Renseigné DANS l'updater ci-dessous (seul endroit qui voit encore le statut
+              // "running" ancien ET le statut final tout juste reçu), mais appliqué à l'état
+              // global APRÈS cet appel à setTurns, pas depuis l'intérieur de l'updater lui-même
+              // (un simple effet de bord y serait à la fois un anti-pattern React — l'updater
+              // peut être invoqué plusieurs fois en StrictMode — et retarderait ce setError
+              // derrière le prochain rendu déclenché par setTurns). Depuis que /api/execute
+              // répond avant la fin réelle de l'exécution, c'est le SEUL endroit qui détecte
+              // encore un échec découvert après coup par ce sondage plutôt que directement par
+              // la réponse de /api/execute (voir le catch de sendMessage, qui ne voit plus jamais
+              // ce genre d'échec) — sans ça, ce même échec n'afficherait plus la bannière
+              // d'erreur globale, seulement le badge "❌ Échec" sur la bulle de ce tour.
+              let failedMessage: string | null = null;
               setTurns((t) => t.map((turn) => {
                 if (turn.status !== 'running') return turn;
                 const matching = messages.find((m) => m.id === turn.id);
-                if (matching) return historyEntryToTurn(matching);
+                if (matching) {
+                  if (matching.status === 'failed') failedMessage = matching.result ?? 'Une erreur est survenue.';
+                  // createdAt du turn LOCAL conservé (pas celui, forcément différent, de
+                  // ExecutionHistory.created_at côté serveur — voir database.py, fixé au moment
+                  // du INSERT, donc toujours postérieur de quelques centaines de ms à l'appel
+                  // client à pushRunningTurn) : ChatThread.tsx s'appuie sur le fait que createdAt
+                  // ne change JAMAIS après la création d'un tour, aussi bien pour sa clé React
+                  // (key={turn.createdAt}, voir son commentaire) que pour identityKey (qui décide
+                  // s'il faut recoller au bas du fil). Écraser createdAt ici démonterait/
+                  // remonterait ce <ChatMessage> ET forcerait un recollage en bas au moment même
+                  // où cette exécution se termine — y compris si l'utilisateur était remonté lire
+                  // l'historique entretemps.
+                  return { ...historyEntryToTurn(matching), createdAt: turn.createdAt };
+                }
                 // Toujours introuvable dans l'historique de cette conversation : la ligne a
                 // disparu de la base (ex: nettoyage manuel direct en base d'une exécution restée
                 // bloquée à "running" pour toujours après un crash serveur — /api/history ne
@@ -203,6 +228,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
                   updatedAt: new Date().toISOString(),
                 };
               }));
+              if (failedMessage) setError(failedMessage);
             })
             .catch(() => {
               // Resynchronisation best-effort : un prochain tick de ce même intervalle (tant que
@@ -222,8 +248,50 @@ export function useConversation(accessToken: string, apiUrl: string) {
     return () => clearInterval(interval);
   }, [hasRunningTurn, runningTurnHasNumericId, conversationId, apiUrl, accessToken]);
 
-  const cancelSending = () => {
+  // Usage interne uniquement (startNewConversation/loadConversation ci-dessous) : abandonne
+  // juste la requête HTTP en vol, sans toucher à `turns`. Distinct de cancelSending (le bouton
+  // "Annuler" exposé plus bas) car ici l'appelant remplace de toute façon `turns` dans la foulée
+  // (fil vide ou historique rechargé) — y marquer un tour "cancelled" au passage n'aurait aucun
+  // sens : l'exécution abandonnée par cette navigation continue très bien côté serveur, ce n'est
+  // pas un choix explicite de l'utilisateur de l'annuler.
+  const abortInFlightRequest = () => {
     abortControllerRef.current?.abort();
+  };
+
+  // Exposé comme action du bouton "Annuler". Depuis que /api/execute répond immédiatement (voir
+  // applyExecuteAccepted), l'abandon de la requête HTTP elle-même ne suffit plus à grand-chose une
+  // fois cette réponse reçue : le tour est alors suivi par le sondage de progression (l'effet plus
+  // haut), pas par cette requête — l'annuler ne l'interromprait pas. D'où le marquage local direct
+  // de tout tour encore "running" via `dismissedLocally` (voir sa définition dans types.ts) plutôt
+  // que via `status` dans CE cas : l'exécution continue réellement côté serveur (son résultat sera
+  // de toute façon persisté en base), et /api/execute refuserait de toute façon un nouveau message
+  // tant qu'elle n'est pas terminée (garde de concurrence par conversation, backend/main.py) —
+  // repasser `status` à 'cancelled' libérerait donc à tort la zone de saisie pour un envoi voué à
+  // échouer avec un 409 "exécution déjà en cours".
+  //
+  // typeof turn.id === 'number' est la condition-clé de ce choix : ce n'est vrai QUE si
+  // applyExecuteAccepted a déjà tourné, c'est-à-dire que /api/execute a déjà répondu et que ce
+  // tour est donc bien suivi par un id réel que le sondage de progression peut retrouver plus tard
+  // via getConversationMessages. Si /api/execute est encore en vol (id encore le tempId local,
+  // une string) au moment de ce clic, dismissedLocally serait un piège bien pire que le 409
+  // ci-dessus : `status` resterait "running" à jamais SANS qu'aucun mécanisme ne puisse jamais le
+  // faire sortir de cet état (le sondage ne resynchronise que par id réel — voir
+  // runningTurnHasNumericId — et cet id-là n'arrivera justement jamais, puisque la promesse de
+  // api.execute() vient d'être abandonnée). Dans ce cas plus rare (fenêtre de quelques centaines
+  // de ms à quelques secondes), on accepte donc le risque, bien moindre, d'un 409 sur un envoi
+  // immédiatement suivant plutôt qu'une conversation bloquée pour de bon.
+  const cancelSending = () => {
+    abortInFlightRequest();
+    setTurns((t) => t.map((turn) => {
+      if (turn.status !== 'running') return turn;
+      if (typeof turn.id === 'number') return { ...turn, dismissedLocally: true };
+      return {
+        ...turn,
+        status: 'cancelled',
+        result: "Annulé avant la confirmation du lancement de l'exécution.",
+        updatedAt: new Date().toISOString(),
+      };
+    }));
   };
 
   // Chaque ouverture de l'interface démarre sur un fil vide ; une conversation passée peut
@@ -232,7 +300,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // Sans ça, une requête encore en vol pourrait se résoudre après coup et rattacher
     // ce nouveau fil (vide) au conversationId de l'ancienne requête via son propre
     // setConversationId(data.conversation_id) dans sendMessage.
-    cancelSending();
+    abortInFlightRequest();
     conversationGenerationRef.current += 1;
     setConversationId(null);
     setTurns([]);
@@ -252,12 +320,12 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // répondu, ou un tour "running" encore identifié par son tempId le temps que /api/execute
     // réponde) sont déjà à jour, alors que les recharger depuis le serveur les remplacerait par
     // un instantané qui leur correspond moins bien et casserait le rattachement par tempId
-    // qu'attend applyExecuteSuccess.
+    // qu'attend applyExecuteAccepted.
     if (id === conversationId) return;
     setError(null);
     // Annulé seulement en changeant RÉELLEMENT de conversation : annuler même en reprenant la
     // conversation déjà affichée romprait à tort son propre envoi en cours (déjà exclu ci-dessus).
-    cancelSending();
+    abortInFlightRequest();
     conversationGenerationRef.current += 1;
     // Idem `startNewConversation` : sans ce reset immédiat, la conversation qu'on quitte
     // afficherait encore brièvement la zone de saisie désactivée après son abandon.
@@ -280,28 +348,19 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  const cancelTurn = (turnId: ChatTurn['id'], message: string) => {
-    setTurns((t) => t.map((turn) => (turn.id === turnId
-      ? { ...turn, status: 'cancelled', result: message, updatedAt: new Date().toISOString() }
-      : turn)));
-  };
-
-  // Partagé entre les 3 chemins qui aboutissent à un /api/execute réussi (repli manuel,
+  // Partagé entre les 3 chemins qui aboutissent à un /api/execute accepté (repli manuel,
   // réponse à une clarification, exécution automatique) pour qu'ils ne puissent pas
   // diverger silencieusement en ne mettant à jour ce mapping que d'un seul côté.
-  const applyExecuteSuccess = (tempId: string, data: ExecuteResponse) => {
+  // /api/execute répond désormais dès que l'exécution est LANCÉE côté serveur (tâche de fond),
+  // pas quand elle est TERMINÉE (voir ExecuteAcceptedResponse dans api.ts) : ce tour reste donc
+  // "running" ici (déjà posé par pushRunningTurn) — seul son id passe du tempId local à l'id réel
+  // en base, pour que le sondage de progression (l'effet plus haut) puisse le suivre et, à terme,
+  // le resynchroniser avec son résultat final une fois l'exécution terminée côté serveur, même si
+  // cette requête d'origine a depuis été interrompue (écran verrouillé, onglet fermé).
+  const applyExecuteAccepted = (tempId: string, data: ExecuteAcceptedResponse) => {
     setConversationId(data.conversation_id);
     setTurns((t) => t.map((turn) => (turn.id === tempId
-      ? {
-          ...turn,
-          id: data.id,
-          status: 'success',
-          result: data.result,
-          updatedAt: new Date().toISOString(),
-          apiCallsCount: data.api_calls_count,
-          rateLimitHits: data.rate_limit_hits,
-          totalWaitTimeSeconds: data.total_wait_time_seconds,
-        }
+      ? { ...turn, id: data.id }
       : turn)));
   };
 
@@ -363,7 +422,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
         }, controller.signal);
         if (myGeneration !== conversationGenerationRef.current) return;
         setPendingClarification(null);
-        applyExecuteSuccess(tempId, data);
+        applyExecuteAccepted(tempId, data);
         return;
       }
 
@@ -378,7 +437,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
           target_workflow: workflowType,
         }, controller.signal);
         if (myGeneration !== conversationGenerationRef.current) return;
-        applyExecuteSuccess(tempId, data);
+        applyExecuteAccepted(tempId, data);
         return;
       }
 
@@ -406,7 +465,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
         target_workflow: report.request_type,
       }, controller.signal);
       if (myGeneration !== conversationGenerationRef.current) return;
-      applyExecuteSuccess(tempId, data);
+      applyExecuteAccepted(tempId, data);
     } catch (err: unknown) {
       // Idem : une erreur (y compris une annulation) rattachée à une conversation abandonnée
       // ne doit affecter ni son historique (de toute façon remplacé entretemps) ni, surtout,
@@ -416,10 +475,21 @@ export function useConversation(accessToken: string, apiUrl: string) {
         // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
         // réponse de clarification à la demande d'origine (désormais abandonnée).
         setPendingClarification(null);
-        cancelTurn(tempId, "Annulé côté interface. L'exécution peut continuer côté serveur si elle était déjà lancée : le résultat, s'il arrive, apparaîtra dans l'historique.");
+        // Toujours marqué 'cancelled' sans réserve ici (jamais dismissedLocally, voir
+        // cancelSending) : ce catch n'est atteint que si l'appel await api.execute() (ou
+        // api.qualify()) ci-dessus a lui-même été rejeté par cet abort, ce qui signifie par
+        // construction qu'applyExecuteAccepted n'a PAS pu tourner — ce tour est donc encore sur
+        // son tempId (une string), jamais l'id réel renvoyé par /api/execute. dismissedLocally
+        // suppose justement un id réel déjà connu (voir cancelSending) pour que le sondage de
+        // progression puisse un jour reconstituer ce tour par cet id ; sans lui, `status` resterait
+        // "running" à jamais, sans AUCUN mécanisme capable de l'en faire sortir — bien pire que le
+        // risque, ici accepté, d'un 409 "exécution déjà en cours" si l'utilisateur renvoie un
+        // message avant que l'exécution éventuellement déjà lancée côté serveur ne soit terminée.
+        setTurns((t) => t.map((turn) => (turn.id === tempId
+          ? { ...turn, status: 'cancelled', result: "Annulé côté interface avant confirmation du serveur.", updatedAt: new Date().toISOString() }
+          : turn)));
         return;
       }
-      if (err instanceof ApiError && err.conversationId) setConversationId(err.conversationId);
       const message = err instanceof Error ? err.message : 'Une erreur est survenue.';
       setTurns((t) => t.map((turn) => (turn.id === tempId
         ? { ...turn, status: 'failed', result: message, updatedAt: new Date().toISOString() }

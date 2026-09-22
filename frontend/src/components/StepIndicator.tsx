@@ -25,7 +25,15 @@ interface StepIndicatorProps {
 
 export default function StepIndicator({ workflow, since, currentStepKey }: StepIndicatorProps) {
   const steps = (workflow && WORKFLOW_STEPS[workflow]) || DEFAULT_STEPS;
-  const realIndex = currentStepKey ? steps.findIndex((step) => step.key === currentStepKey) : -1;
+  // Signal réel distinct des vraies étapes du workflow (jamais une clé de WORKFLOW_STEPS, voir
+  // constants/workflowSteps.ts) : persisté côté backend (_execute_crew_and_persist, main.py) tant
+  // que cette exécution attend son tour derrière _execution_semaphore (au plus 2 exécutions de
+  // crew en vol simultanément, toutes conversations confondues — voir sa définition). Sans ce
+  // signal dédié, l'estimation par temps ci-dessous ferait défiler puis "terminer" toutes les
+  // étapes en quelques dizaines de secondes alors qu'aucune n'a même commencé, l'exécution étant
+  // encore purement en attente d'un emplacement.
+  const isQueued = currentStepKey === 'queued';
+  const realIndex = currentStepKey && !isQueued ? steps.findIndex((step) => step.key === currentStepKey) : -1;
   const hasRealProgress = realIndex >= 0;
 
   const [estimatedIndex, setEstimatedIndex] = useState(0);
@@ -49,7 +57,11 @@ export default function StepIndicator({ workflow, since, currentStepKey }: StepI
     // secondes). Et une fois hadRealProgress vrai, cet avancement ne doit plus JAMAIS reprendre
     // (même pendant isPausedForRetry) : afficher une progression par temps après en avoir eu une
     // réelle laisserait croire à tort que l'exécution continue normalement pendant une pause.
-    if (hasRealProgress || hadRealProgress) return () => clearInterval(tickTimer);
+    // isQueued (voir sa définition) : ce signal réel n'est justement PAS une progression, donc ne
+    // doit pas non plus déclencher l'avancement par temps — sans quoi une simple attente de
+    // quelques dizaines de secondes derrière _execution_semaphore suffirait à afficher toutes les
+    // étapes comme "terminées" avant même que le crew n'ait été instancié.
+    if (hasRealProgress || hadRealProgress || isQueued) return () => clearInterval(tickTimer);
     const stepTimer = setInterval(() => {
       setEstimatedIndex((i) => Math.min(i + 1, steps.length - 1));
     }, STEP_ADVANCE_MS);
@@ -57,12 +69,14 @@ export default function StepIndicator({ workflow, since, currentStepKey }: StepI
       clearInterval(stepTimer);
       clearInterval(tickTimer);
     };
-  }, [steps.length, since, hasRealProgress, hadRealProgress]);
+  }, [steps.length, since, hasRealProgress, hadRealProgress, isQueued]);
 
   // Pendant une pause, retryDelay recommence réellement à la toute première étape (voir
   // crewquestion.py : selected_tasks est entièrement reconstruit à chaque nouvelle tentative) —
   // afficher 0 ici est donc FIDÈLE à ce qui va se passer, pas une régression à masquer.
-  const activeIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : estimatedIndex;
+  // isQueued : -1 (aucune étape "courante"), pour que toutes s'affichent comme pas encore
+  // commencées (⏳) — fidèle elle aussi, puisque le crew n'a justement pas encore été instancié.
+  const activeIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : isQueued ? -1 : estimatedIndex;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px 0' }}>
@@ -105,7 +119,9 @@ export default function StepIndicator({ workflow, since, currentStepKey }: StepI
             // une nouvelle tentative sur limite de quota (voir crewquestion.py, qui efface
             // current_step sur TOUTE exception, retentée ou non).
             ? "En pause — nouvelle tentative éventuelle en cours. Si l'exécution reprend, ce sera depuis la toute première étape."
-            : `En cours depuis ${formatSeconds(elapsed)} — progression estimée, l'étape réellement en cours côté serveur peut différer.`}
+            : isQueued
+              ? "En file d'attente — d'autres exécutions occupent déjà ce service. Celle-ci démarrera automatiquement dès qu'un emplacement se libère."
+              : `En cours depuis ${formatSeconds(elapsed)} — progression estimée, l'étape réellement en cours côté serveur peut différer.`}
       </p>
     </div>
   );
