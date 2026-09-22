@@ -101,7 +101,13 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
           // dans un second mécanisme de synchronisation manuel.
           key={conversationResetSignal}
           disabled={busy}
-          cancellable={sending}
+          // `busy` (pas seulement `sending`) : depuis que /api/execute répond dès que
+          // l'exécution est LANCÉE côté serveur plutôt qu'une fois TERMINÉE, `sending` retombe
+          // à false après quelques secondes alors que le tour reste "running" (suivi par le
+          // sondage de progression, voir hasRunningTurn). Sans ça, "Annuler" disparaîtrait
+          // presque aussitôt, bien avant la fin réelle de l'exécution qu'il est censé permettre
+          // de cesser de suivre.
+          cancellable={busy}
           onCancel={cancelSending}
           apiUrl={API_URL}
           accessToken={accessToken}

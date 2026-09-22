@@ -62,4 +62,13 @@ export interface ChatTurn {
   // conversation, où conversationId n'est connu qu'une fois /api/execute résolu), auquel
   // cas StepIndicator retombe sur l'estimation par temps.
   currentStep?: string | null;
+  // Vrai après un clic sur "Annuler" (cancelSending, useConversation.ts) pendant que ce tour
+  // est encore "running" : contrairement à status === 'cancelled', ne change PAS `status` lui-
+  // même, précisément pour que hasRunningTurn/busy et le sondage de progression restent actifs
+  // (l'exécution continue réellement côté serveur, et /api/execute refuserait de toute façon un
+  // nouveau message tant qu'elle n'est pas terminée — voir la garde de concurrence par
+  // conversation côté backend). Purement un drapeau d'AFFICHAGE local : remplacé sans action
+  // particulière dès que le sondage détecte la fin réelle de l'exécution (historyEntryToTurn
+  // reconstruit alors ce tour depuis zéro, sans ce champ).
+  dismissedLocally?: boolean;
 }

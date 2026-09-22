@@ -18,12 +18,14 @@ const SECTION_LABEL_STYLE = { margin: 0, fontSize: '11px', fontWeight: 600, colo
 
 interface ChatInputProps {
   disabled: boolean;
-  // Distinct de `disabled` : `disabled` couvre aussi le cas d'une conversation reprise dont
-  // l'exécution tourne encore côté serveur sans que CETTE session l'ait elle-même envoyée (voir
-  // Studio.tsx, busy = sending || hasRunningTurn), auquel cas onCancel n'aurait rien à annuler
-  // (abortControllerRef.current est null : rien n'a été fetché depuis cette session). Cancellable
-  // décide donc si le bouton affiché pendant `disabled` est un vrai "Annuler" fonctionnel ou un
-  // simple indicateur d'attente.
+  // Distinct de `disabled` dans l'API de ce composant (même si Studio.tsx leur passe
+  // actuellement la même valeur, `busy`) : onCancel (cancelSending, useConversation.ts) marque
+  // localement tout tour "running" comme "cancelled", y compris un tour repris depuis
+  // l'Historique dont l'exécution tourne encore côté serveur sans que CETTE session l'ait
+  // elle-même envoyée — cela n'arrête PAS réellement l'exécution serveur (son résultat, une fois
+  // prêt, reste consultable en rechargeant la conversation), seulement le suivi local affiché.
+  // Cancellable reste donc un knob distinct pour un appelant qui voudrait un jour afficher un
+  // simple indicateur d'attente sans bouton "Annuler" fonctionnel.
   cancellable: boolean;
   onCancel: () => void;
   apiUrl: string;
