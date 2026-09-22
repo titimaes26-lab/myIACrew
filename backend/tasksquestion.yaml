@@ -132,9 +132,19 @@ diagnostic_task:
     ligne pour chacun, puis pour CHACUN un titre "### Fichier : <chemin>" suivi d'un bloc de code
     contenant l'intégralité de son contenu — pas un extrait, pas un résumé — pour que la tâche
     suivante puisse le committer sans la moindre ambiguïté sur quel contenu va dans quel fichier.
+    ATTENTION pour un fichier déjà volumineux dont tu ne changes qu'une petite partie : la tâche
+    suivante n'a AUCUN moyen de vérifier ou compléter ce que tu écris ici — ni de lire le fichier
+    original, ni d'appliquer une modification partielle — elle committe tel quel, intégralement,
+    exactement ce que tu lui fournis. Si tu risques de ne pas pouvoir réécrire ce fichier EN ENTIER
+    sans le tronquer, N'INCLUS PAS de bloc de code pour lui : committer une version coupée (donc
+    corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
+    ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
+    ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
   expected_output: >
-    Le plan (liste des fichiers prévus et leur justification), puis pour chacun un titre "### Fichier
-    : <chemin>" suivi du code source COMPLET et directement utilisable de ce fichier.
+    Le plan (liste des fichiers prévus et leur justification, avec un signalement explicite pour
+    tout fichier où le contenu complet n'a pas pu être fourni sans risque de troncature), puis pour
+    chacun un titre "### Fichier : <chemin>" suivi du code source COMPLET et directement utilisable
+    de ce fichier.
   agent: diagnostic_agent
 
 development_task:

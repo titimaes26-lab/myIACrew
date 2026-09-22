@@ -384,7 +384,6 @@ async def _execute_crew_and_persist(
     has_repo_target: bool,
     should_verify_github_delivery: bool,
     work_branch: str,
-    work_branch_reused: bool,
     normalized_base_branch: Optional[str],
     final_prompt: str,
     conversation_context: str,
@@ -410,7 +409,7 @@ async def _execute_crew_and_persist(
     async with _execution_semaphore:
         await _run_crew_and_persist(
             db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
-            work_branch, work_branch_reused, normalized_base_branch, final_prompt, conversation_context,
+            work_branch, normalized_base_branch, final_prompt, conversation_context,
         )
 
 async def _run_crew_and_persist(
@@ -420,7 +419,6 @@ async def _run_crew_and_persist(
     has_repo_target: bool,
     should_verify_github_delivery: bool,
     work_branch: str,
-    work_branch_reused: bool,
     normalized_base_branch: Optional[str],
     final_prompt: str,
     conversation_context: str,
@@ -553,14 +551,23 @@ async def _run_crew_and_persist(
                                     f"Branche de base : {normalized_base_branch}\n"
                                     f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}\n"
                                     + (
-                                        # Signal FIABLE (basé sur l'historique DB de cette conversation,
-                                        # jamais sur le résumé {conversation_context}) pour diagnostic_task :
-                                        # sur quelle branche lire AVANT que development_task ne crée
-                                        # {work_branch} (voir tasksquestion.yaml, diagnostic_task).
+                                        # Signal FIABLE pour diagnostic_task (sur quelle branche lire AVANT
+                                        # que development_task ne crée {work_branch}, voir tasksquestion.yaml,
+                                        # diagnostic_task) : repo_branch_sha_before vient d'un appel API
+                                        # GitHub LIVE (get_branch_head_sha, juste au-dessus), pas d'une
+                                        # déduction depuis le statut DB d'un tour précédent — un tour marqué
+                                        # "failed" alors que la branche ET ses commits étaient réels (ex:
+                                        # seule l'ouverture de la PR a échoué, voir verify_github_delivery)
+                                        # aurait fait dire à tort à une déduction DB que la branche n'existe
+                                        # pas encore. None ici couvre aussi bien "branche confirmée absente"
+                                        # que "vérification indisponible" (souci transitoire) : dans les deux
+                                        # cas, lire {base_branch} en attendant reste le choix le moins risqué
+                                        # (même compromis "best-effort" que verify_github_delivery accepte
+                                        # déjà pour ce même repère, voir sa docstring).
                                         f"Cette branche de travail EXISTE DÉJÀ sur GitHub (réutilisée d'un "
                                         f"tour précédent de cette conversation) : pour toute lecture, lis-la "
                                         f"directement avec branch={work_branch}."
-                                        if work_branch_reused
+                                        if repo_branch_sha_before is not None
                                         else f"Cette branche de travail N'EXISTE PAS ENCORE sur GitHub (sera "
                                         f"créée par la tâche de commit qui suit) : pour toute lecture, lis "
                                         f"sur branch={normalized_base_branch} en attendant."
@@ -822,8 +829,12 @@ async def execute_workflow(
         # Réutilise le NOM de branche d'un tour précédent quel que soit son statut (y compris
         # "failed") : c'est ce qui permet à un "Recommence l'implémentation" après un échec de
         # continuer sur la MÊME branche/PR plutôt que d'en ouvrir une nouvelle à chaque tentative.
-        # Ne PAS conditionner ceci à status=="success" (voir work_branch_reused ci-dessous pour la
-        # distinction) : ce serait un changement de comportement séparé, non désiré ici.
+        # Savoir si cette branche existe RÉELLEMENT sur GitHub à cet instant (utile à
+        # diagnostic_task, voir tasksquestion.yaml) n'est PAS déduit ici du statut DB de ce tour
+        # précédent (un tour "failed" peut avoir réellement poussé des commits, ex: si seule
+        # l'ouverture de la PR a échoué — voir verify_github_delivery) : _run_crew_and_persist
+        # interroge directement l'API GitHub (repo_branch_sha_before, live) pour ce signal, plus
+        # fiable qu'une heuristique basée sur ce champ.
         for entry in reversed(prior_entries):
             if (
                 entry.work_branch
@@ -835,30 +846,6 @@ async def execute_workflow(
                 break
         if not work_branch:
             work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
-
-    # Vrai seulement si CE {work_branch} (une fois déterminé ci-dessus, retenue ou neuve) a été
-    # RÉELLEMENT créée sur GitHub par un tour précédent — pas simplement mentionnée en base :
-    # db_entry.work_branch est écrit dès la création de la ligne, statut "running", AVANT même que
-    # le crew ne démarre, donc un tour resté "failed" avant le premier github_create_branch, ou un
-    # tour ANALYSE_ONLY qui hérite de ce même nom de branche sans jamais toucher à GitHub
-    # (design_task/architecture_task ne créent ni ne committent rien), porteraient ce même champ
-    # sans que la branche existe pour autant. status == "success" ET workflow != "ANALYSE_ONLY"
-    # ensemble donnent la même garantie que verify_github_delivery (plus haut dans ce fichier)
-    # donne déjà à un tour BUGFIX/FEATURE/DESIGN_AND_DEV "success" : la branche existe RÉELLEMENT
-    # sur GitHub. Jamais déduit du résumé texte {conversation_context}, potentiellement imprécis
-    # (voir tasksquestion.yaml, diagnostic_task). Utilisé plus bas pour dire à diagnostic_task, de
-    # façon fiable, si {work_branch} est lisible directement ou pas encore créée (sera créée par
-    # development_task, donc rien à y lire avant cela) — lire une branche qui n'existe pas encore
-    # gaspillerait son budget de lecture, volontairement serré (voir diagnostic_agent), sur des 404.
-    work_branch_reused = has_repo_target and any(
-        entry.work_branch == work_branch
-        and entry.repo_owner == data.repo_owner
-        and entry.repo_name == data.repo_name
-        and entry.base_branch == normalized_base_branch
-        and entry.status == "success"
-        and entry.workflow != "ANALYSE_ONLY"
-        for entry in prior_entries
-    )
 
     # Enregistrement immédiat (statut "running") pour garder une trace même en cas d'échec
     db_entry = ExecutionHistory(
@@ -894,7 +881,7 @@ async def execute_workflow(
     # pour ne pas risquer que le garbage collector ne l'interrompe en cours de route.
     task = asyncio.create_task(_execute_crew_and_persist(
         db_entry.id, conversation.id, data, has_repo_target, should_verify_github_delivery,
-        work_branch, work_branch_reused, normalized_base_branch, final_prompt, conversation_context,
+        work_branch, normalized_base_branch, final_prompt, conversation_context,
     ))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)

@@ -11,7 +11,10 @@ const ARCHITECTURE_STEP: WorkflowStep = { key: 'architecture', label: 'Architect
 // deux tâches CrewAI avec des budgets d'itérations distincts, pour qu'un diagnostic long ne
 // puisse jamais épuiser le budget réservé au commit.
 const DIAGNOSTIC_STEP: WorkflowStep = { key: 'diagnostic', label: 'Diagnostic & rédaction du code', icon: '🔎' };
-const DEVELOPMENT_STEP: WorkflowStep = { key: 'development', label: 'Commit GitHub', icon: '💻' };
+// Label volontairement neutre (pas "Commit GitHub") : cette étape écrit aussi sur disque local,
+// sans aucune interaction GitHub, quand aucun repository cible n'est configuré (voir
+// development_task dans backend/tasksquestion.yaml, branche "Sans repository cible").
+const DEVELOPMENT_STEP: WorkflowStep = { key: 'development', label: 'Écriture du code', icon: '💻' };
 const QA_STEP: WorkflowStep = { key: 'qa', label: 'Revue QA', icon: '🔍' };
 
 export const WORKFLOW_STEPS: Record<string, WorkflowStep[]> = {
