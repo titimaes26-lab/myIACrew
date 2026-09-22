@@ -2,7 +2,7 @@ import asyncio
 import traceback
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -651,8 +651,8 @@ async def _run_crew_and_persist(
                 db_entry.api_calls_count = run_metrics.api_calls_count
                 db_entry.rate_limit_hits = run_metrics.rate_limit_hits
                 db_entry.total_wait_time_seconds = run_metrics.total_wait_time
-                db_entry.updated_at = datetime.utcnow()
-                conversation.updated_at = datetime.utcnow()
+                db_entry.updated_at = datetime.now(timezone.utc)
+                conversation.updated_at = datetime.now(timezone.utc)
                 session.add(db_entry)
                 session.add(conversation)
                 session.commit()
@@ -682,8 +682,8 @@ async def _run_crew_and_persist(
                     db_entry.api_calls_count = run_metrics.api_calls_count
                     db_entry.rate_limit_hits = run_metrics.rate_limit_hits
                     db_entry.total_wait_time_seconds = run_metrics.total_wait_time
-                db_entry.updated_at = datetime.utcnow()
-                conversation.updated_at = datetime.utcnow()
+                db_entry.updated_at = datetime.now(timezone.utc)
+                conversation.updated_at = datetime.now(timezone.utc)
                 session.add(db_entry)
                 session.add(conversation)
                 session.commit()
@@ -713,7 +713,7 @@ async def _run_crew_and_persist(
                     db_entry.status = "failed"
                     db_entry.result = f"Erreur interne au démarrage de l'exécution en tâche de fond : {e}"
                     db_entry.current_step = None
-                    db_entry.updated_at = datetime.utcnow()
+                    db_entry.updated_at = datetime.now(timezone.utc)
                     session.add(db_entry)
                     session.commit()
         except Exception:

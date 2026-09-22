@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text
@@ -25,8 +25,8 @@ class Conversation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[str] = Field(default=None, index=True)  # id Supabase (auth.users) de l'auteur
     title: str = "Nouvelle conversation"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 # Table pour sauvegarder les demandes et rapports CrewAI (un "message" du fil)
 class ExecutionHistory(SQLModel, table=True):
@@ -56,8 +56,8 @@ class ExecutionHistory(SQLModel, table=True):
     api_calls_count: Optional[int] = None
     rate_limit_hits: Optional[int] = None
     total_wait_time_seconds: Optional[float] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 # SQLModel.metadata.create_all() ne modifie jamais le schéma d'une table déjà existante.
 # Ces instructions rattrapent les colonnes ajoutées après la création initiale de la table
