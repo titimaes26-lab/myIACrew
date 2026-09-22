@@ -549,7 +549,29 @@ async def _run_crew_and_persist(
                                 'repo_instructions': (
                                     f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
                                     f"Branche de base : {normalized_base_branch}\n"
-                                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}"
+                                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}\n"
+                                    + (
+                                        # Signal FIABLE pour diagnostic_task (sur quelle branche lire AVANT
+                                        # que development_task ne crée {work_branch}, voir tasksquestion.yaml,
+                                        # diagnostic_task) : repo_branch_sha_before vient d'un appel API
+                                        # GitHub LIVE (get_branch_head_sha, juste au-dessus), pas d'une
+                                        # déduction depuis le statut DB d'un tour précédent — un tour marqué
+                                        # "failed" alors que la branche ET ses commits étaient réels (ex:
+                                        # seule l'ouverture de la PR a échoué, voir verify_github_delivery)
+                                        # aurait fait dire à tort à une déduction DB que la branche n'existe
+                                        # pas encore. None ici couvre aussi bien "branche confirmée absente"
+                                        # que "vérification indisponible" (souci transitoire) : dans les deux
+                                        # cas, lire {base_branch} en attendant reste le choix le moins risqué
+                                        # (même compromis "best-effort" que verify_github_delivery accepte
+                                        # déjà pour ce même repère, voir sa docstring).
+                                        f"Cette branche de travail EXISTE DÉJÀ sur GitHub (réutilisée d'un "
+                                        f"tour précédent de cette conversation) : pour toute lecture, lis-la "
+                                        f"directement avec branch={work_branch}."
+                                        if repo_branch_sha_before is not None
+                                        else f"Cette branche de travail N'EXISTE PAS ENCORE sur GitHub (sera "
+                                        f"créée par la tâche de commit qui suit) : pour toute lecture, lis "
+                                        f"sur branch={normalized_base_branch} en attendant."
+                                    )
                                     if has_repo_target
                                     else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
                                 ),
@@ -804,6 +826,15 @@ async def execute_workflow(
 
     work_branch = ""
     if has_repo_target:
+        # Réutilise le NOM de branche d'un tour précédent quel que soit son statut (y compris
+        # "failed") : c'est ce qui permet à un "Recommence l'implémentation" après un échec de
+        # continuer sur la MÊME branche/PR plutôt que d'en ouvrir une nouvelle à chaque tentative.
+        # Savoir si cette branche existe RÉELLEMENT sur GitHub à cet instant (utile à
+        # diagnostic_task, voir tasksquestion.yaml) n'est PAS déduit ici du statut DB de ce tour
+        # précédent (un tour "failed" peut avoir réellement poussé des commits, ex: si seule
+        # l'ouverture de la PR a échoué — voir verify_github_delivery) : _run_crew_and_persist
+        # interroge directement l'API GitHub (repo_branch_sha_before, live) pour ce signal, plus
+        # fiable qu'une heuristique basée sur ce champ.
         for entry in reversed(prior_entries):
             if (
                 entry.work_branch

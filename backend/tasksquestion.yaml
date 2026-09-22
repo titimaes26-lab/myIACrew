@@ -74,7 +74,7 @@ architecture_task:
     L'arborescence complète du projet et l'interface TypeScript des principaux composants.
   agent: architect_agent
 
-development_task:
+diagnostic_task:
   description: >
     Demande initiale de l'utilisateur :
     ---
@@ -82,110 +82,113 @@ development_task:
     ---
     Base-toi sur cette demande (et, le cas échéant, sur les documents de spécifications/architecture
     produits par les tâches précédentes de ce workflow, disponibles dans ton contexte). Un workflow
-    BUGFIX ne comprend que cette tâche et la QA, sans tâche de conception/architecture avant : sans
-    la demande rappelée ci-dessus, tu n'aurais aucune information sur ce qui a été demandé, le
-    contexte de conversation plus bas ne couvrant que les tours PRÉCÉDENTS, jamais la demande en
-    cours.
+    BUGFIX ne comprend que cette tâche, le Développeur et la QA, sans tâche de conception/architecture
+    avant : sans la demande rappelée ci-dessus, tu n'aurais aucune information sur ce qui a été
+    demandé, le contexte de conversation plus bas ne couvrant que les tours PRÉCÉDENTS, jamais la
+    demande en cours.
 
-    Génère le code source complet ou apporte les corrections nécessaires sur les fichiers existants.
+    Détermine la cause réelle du bug (ou ce que la fonctionnalité demandée nécessite), puis rédige le
+    CODE SOURCE COMPLET des fichiers à créer ou modifier. Ce code sera committé TEL QUEL par la tâche
+    suivante (le Développeur), qui n'a lui-même AUCUN outil de lecture ni de raisonnement sur son
+    contenu — c'est un pur exécutant GitHub. Si tu laisses un extrait incomplet, une section "..." ou
+    une note "à compléter", elle sera committée ainsi sur GitHub sans que personne ne la complète.
+    Chaque fichier de ta sortie doit donc être entier et directement utilisable.
+
     Si la demande ci-dessus décrit spécifiquement un écran blanc ou une erreur de démarrage, ta
     correction doit porter sur le point d'entrée (`index.html`) et le point de montage React
-    (`src/main.tsx`) : lis-les avant de fournir ton correctif (voir plus bas comment lire un fichier
-    existant selon qu'un repository cible est fourni ou non — une seule et même procédure, pas
-    d'appel d'outil distinct à faire ici).
+    (`src/main.tsx`) : lis-les avant de fournir ton correctif.
     Pour tout autre BUGFIX, NE PRÉSUME JAMAIS qu'il s'agit d'un écran blanc simplement parce que la
     catégorie du workflow est "BUGFIX" : diagnostique la cause réelle à partir de ce que la demande
     ci-dessus décrit précisément (ex: un calcul faux, une validation de formulaire qui échoue, un
     comportement incorrect signalé par l'utilisateur), en lisant le code concerné.
-    Ce diagnostic doit rester COURT : au maximum 1 à 2 appels de lecture (`github_read_file` ou
-    `read_a_files_content`) avant de passer à l'écriture. Ton budget total d'appels d'outils pour
-    cette tâche est limité (voir plus bas la procédure GitHub complète : créer la branche, committer,
-    vérifier, ouvrir la Pull Request) — un diagnostic qui s'étend au-delà de 2 lectures consomme ce
-    budget au détriment du commit lui-même, qui est la seule partie de ton travail qui compte
-    réellement (voir plus bas : un rapport qui DÉCRIT un correctif jamais commité est rejeté dans son
-    intégralité par une vérification automatique après coup, quelle que soit la qualité de ton
-    diagnostic). Si après 2 lectures la cause exacte reste incertaine, corrige la cause la PLUS
-    PROBABLE à partir de ce que tu as déjà lu plutôt que de continuer à investiguer.
+    Ce diagnostic doit rester raisonnable : au maximum 2-3 appels de lecture (`github_read_file` ou
+    `read_a_files_content`) avant de conclure et de rédiger le code. Si après ce budget la cause
+    exacte reste incertaine, corrige la cause la PLUS PROBABLE à partir de ce que tu as déjà lu
+    plutôt que de continuer à investiguer : un correctif imparfait mais rédigé vaut toujours mieux
+    qu'une analyse jamais conclue, qui laisserait la tâche suivante sans rien à committer.
 
-    Avant d'écrire quoi que ce soit, énonce dans ta sortie finale (avant le code) la liste des
-    fichiers que tu comptes créer ou modifier et une justification d'une ligne pour chacun : ce
-    plan doit rester visible pour que la QA et l'utilisateur puissent suivre ton raisonnement,
-    pas seulement constater le résultat final.
-
-    Contexte de la conversation (tours précédents de cet utilisateur, notamment la
-    branche de travail éventuellement déjà utilisée) :
+    Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
-    Ce contexte est un RÉSUMÉ potentiellement imprécis ou incomplet rédigé à un tour précédent,
-    pas une preuve de l'état réel du code. Si un repository cible est fourni et que ce résumé
-    mentionne une branche de travail déjà utilisée, relis l'état RÉEL des fichiers concernés avec
-    `github_read_file` (branch={work_branch}) avant de t'appuyer dessus : ne présume jamais qu'un
-    fichier existe, a tel contenu, ou qu'une action a réussi uniquement parce que le résumé
-    l'affirme.
+    Ce contexte est un RÉSUMÉ potentiellement imprécis ou incomplet rédigé à un tour précédent, pas
+    une preuve de l'état réel du code : ne présume jamais qu'un fichier existe, a tel contenu, ou
+    qu'une action a réussi uniquement parce que ce résumé l'affirme. Pour savoir SUR QUELLE BRANCHE
+    lire, fie-toi exclusivement à ce que dit "Contexte repository" ci-dessous (calculé de façon
+    fiable par le système, pas résumé par un LLM), jamais à ce résumé de conversation.
 
     Contexte repository :
     {repo_instructions}
-    Si un repository GitHub cible est fourni (owner={repo_owner}, repo={repo_name}), applique STRICTEMENT
-    cette procédure au lieu d'écrire sur le disque local :
-    RÈGLE D'OR, avant toute autre considération : ton objectif n°1 est d'avoir committé au moins une
-    version du correctif AVANT la moitié de ton budget d'appels d'outils, même imparfaite. Un
-    correctif committé avec une imperfection mineure (que la QA repérera) vaut toujours mieux qu'un
-    correctif parfaitement pensé mais jamais committé : dans ce second cas, la TOTALITÉ de ton
-    travail sera rejetée automatiquement (voir plus bas), la QA ne verra jamais rien à évaluer, et
-    ton plan/raisonnement, aussi juste soit-il, ne comptera pour rien. En cas de doute entre continuer
-    à analyser/lire et committer maintenant ce que tu as déjà déterminé : committe.
-    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch}
-       (un seul appel pour toute cette tâche, y compris pour toute lecture diagnostique d'un fichier
-       existant à l'étape 2).
-    2. DÈS QUE PLUS DE 2-3 FICHIERS doivent être créés ou intégralement réécrits (nouveau projet,
-       fonctionnalité touchant de nombreux composants...), utilise `github_write_files` : il
-       committe TOUS ces fichiers EN UN SEUL appel d'outil, quel que soit leur nombre. C'est
-       CRITIQUE — appeler `github_write_file` séparément pour chacun consomme ton budget total
-       d'appels d'outils un par un, et un projet de plusieurs dizaines de fichiers l'épuiserait
-       bien avant la fin : tu produirais alors une réponse qui DÉCRIT le code sans l'avoir
-       réellement poussé sur GitHub, ce qui sera détecté et rejeté (voir plus bas et qa_task).
-       Pour un fichier isolé (1-2 fichiers seulement), `github_write_file` reste suffisant.
-       Pour lire le contexte utile avant d'écrire, ou pour lire un fichier déjà existant
-       (diagnostic d'un bug, ou avant une correction ciblée), utilise `github_read_file` sur
-       {work_branch} — jamais {base_branch}, qui ne refléterait pas un correctif déjà commité à un
-       tour précédent sur cette même branche de travail réutilisée.
-       Pour une correction ciblée sur UN SEUL fichier déjà existant et volumineux, préfère
-       `github_edit_file` (extrait exact à remplacer) à `github_write_file`/`github_write_files` :
-       c'est plus rapide et ça évite de faire disparaître du contenu en régénérant tout le
-       fichier. Si `github_edit_file` t'indique explicitement un ÉCHEC RÉPÉTÉ sur ce même fichier,
-       n'insiste pas avec une nouvelle tentative : bascule sur `github_write_file` avec son
-       contenu complet déjà corrigé, plutôt que de risquer d'épuiser ton budget d'appels
-       d'outils sur un seul fichier sans jamais committer de correctif. Toujours un
-       commit_message clair.
-    3. Vérification de syntaxe avec `check_syntax` (statique, sans exécution), AVANT de committer
-       un fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx :
-       - Pour 1 à quelques fichiers via `github_write_file`/`github_edit_file` : vérifie chaque
-         fichier et corrige tout problème signalé avant de continuer.
-       - Pour un LOT via `github_write_files` (le cas visé par l'étape 2 ci-dessus) : NE vérifie
-         PAS chaque fichier un par un avant de committer — qa_task (la tâche suivante) revérifie
-         après coup avec ce même outil autant de fichiers que SON PROPRE budget le permet (pas
-         nécessairement la totalité d'un très gros lot) et signale explicitement ceux qu'elle n'a
-         pas pu vérifier. Committer via
-         `github_write_files` est ta PRIORITÉ ABSOLUE : ne la retarde jamais en épuisant ton
-         budget d'appels d'outils sur des `check_syntax` un par un avant d'avoir committé quoi que
-         ce soit — un lot jamais committé (0 fichier réellement présent sur GitHub) est bien pire
-         qu'un lot committé avec une erreur de syntaxe mineure que la QA détectera ensuite. S'il
-         te reste du budget après le commit, vérifie après coup les fichiers qui te semblent les
-         plus à risque et corrige-les avec `github_edit_file` si besoin.
-    4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
-       (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant les changements.
-    Ne modifie jamais directement la branche {base_branch}.
+    Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
+    (owner={repo_owner}, repo={repo_name}) pour lire le code existant pertinent, sur la branche que
+    "Contexte repository" ci-dessus indique (jamais une autre : lire {work_branch} alors qu'il
+    n'existe pas encore produirait une erreur inutile ; lire {base_branch} alors que {work_branch}
+    existe déjà ignorerait un correctif commité à un tour précédent sur cette même branche). Tu n'as
+    accès à aucun outil d'écriture GitHub : ce n'est pas ton rôle de committer, seulement de produire
+    le code — n'invente JAMAIS d'action GitHub réalisée (commit, branche créée, Pull Request ouverte)
+    ni d'identifiants qui auraient l'air réels, rien de tout cela ne s'est produit à ce stade.
     Sans repository cible (travail sur disque local), utilise `read_a_files_content` pour toute
-    lecture, y compris diagnostique.
+    lecture.
 
-    Si tu approches de la limite d'appels d'outils disponibles avant d'avoir terminé tous les
-    fichiers prévus dans ton plan, priorise la livraison d'un sous-ensemble cohérent et
-    fonctionnel (jamais un fichier à moitié écrit ni une branche sans commit) plutôt que de tout
-    laisser incomplet, et indique EXPLICITEMENT dans ton rapport final la liste des éléments du
-    plan qui n'ont pas pu être réalisés.
+    Énonce d'abord la liste des fichiers que tu comptes créer ou modifier et une justification d'une
+    ligne pour chacun, puis pour CHACUN un titre "### Fichier : <chemin>" suivi d'un bloc de code
+    contenant l'intégralité de son contenu — pas un extrait, pas un résumé — pour que la tâche
+    suivante puisse le committer sans la moindre ambiguïté sur quel contenu va dans quel fichier.
+    ATTENTION pour un fichier déjà volumineux dont tu ne changes qu'une petite partie : la tâche
+    suivante n'a AUCUN moyen de vérifier ou compléter ce que tu écris ici — ni de lire le fichier
+    original, ni d'appliquer une modification partielle — elle committe tel quel, intégralement,
+    exactement ce que tu lui fournis. Si tu risques de ne pas pouvoir réécrire ce fichier EN ENTIER
+    sans le tronquer, N'INCLUS PAS de bloc de code pour lui : committer une version coupée (donc
+    corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
+    ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
+    ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
   expected_output: >
-    D'abord le plan (liste des fichiers prévus et leur justification), puis le code source complet
-    des fichiers créés ou modifiés, la liste explicite de tout élément du plan resté incomplet le
-    cas échéant, et si un repository cible était fourni, l'URL de la Pull Request créée.
+    Le plan (liste des fichiers prévus et leur justification, avec un signalement explicite pour
+    tout fichier où le contenu complet n'a pas pu être fourni sans risque de troncature), puis pour
+    chacun un titre "### Fichier : <chemin>" suivi du code source COMPLET et directement utilisable
+    de ce fichier.
+  agent: diagnostic_agent
+
+development_task:
+  description: >
+    L'Analyste Diagnostic Technique (tâche précédente, disponible dans ton contexte) a déjà déterminé
+    la cause du problème et rédigé le code source complet, fichier par fichier, de ce qu'il faut
+    créer ou modifier. Ce N'EST PAS ton rôle de le revérifier, le redériver ou le questionner —
+    utilise-le TEL QUEL, fichier par fichier. Ta seule responsabilité est de le committer fidèlement
+    selon la procédure ci-dessous : tu n'as toi-même aucun outil de lecture, tu ne peux donc de toute
+    façon pas le réanalyser.
+
+    Contexte repository :
+    {repo_instructions}
+    Si un repository GitHub cible est fourni (owner={repo_owner}, repo={repo_name}), applique
+    STRICTEMENT cette procédure au lieu d'écrire sur le disque local :
+    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch} (un
+       seul appel, idempotent : si la branche existe déjà, l'outil te le confirme sans erreur, tu
+       peux l'utiliser directement).
+    2. DÈS QUE PLUS DE 2-3 FICHIERS doivent être créés ou intégralement réécrits, utilise
+       `github_write_files` : il committe TOUS ces fichiers EN UN SEUL appel d'outil, quel que soit
+       leur nombre — c'est TA PRIORITÉ ABSOLUE, avant tout `check_syntax`. Un lot jamais committé (0
+       fichier réellement présent sur GitHub) est bien pire qu'un lot committé avec une imperfection
+       mineure que la QA détectera ensuite. Pour un fichier isolé (1-2 fichiers seulement),
+       `github_write_file` reste suffisant. Tu n'as PAS accès à `github_edit_file` (aucune édition
+       partielle) : l'Analyste t'a fourni le contenu COMPLET de chaque fichier, écris-le tel quel,
+       intégralement, avec `github_write_file`/`github_write_files` — jamais un extrait.
+    3. S'il te reste du budget après le commit, vérifie avec `check_syntax` les fichiers qui te
+       semblent les plus à risque. En cas de problème, recommitte le fichier concerné en entier
+       avec `github_write_file` (jamais un extrait) — mais NE retarde jamais l'étape 2 pour ça :
+       qa_task (la tâche suivante) revérifie de toute façon après coup.
+    4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
+       (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant
+       les changements (reprends le plan de l'Analyste).
+    Ne modifie jamais directement la branche {base_branch}.
+    Sans repository cible (travail sur disque local), utilise `file_write_tool` pour écrire chaque
+    fichier fourni par l'Analyste, sans en modifier le contenu.
+
+    Si tu approches de la limite d'appels d'outils disponibles avant d'avoir committé tous les
+    fichiers fournis par l'Analyste, priorise un sous-ensemble cohérent et fonctionnel (jamais un
+    fichier à moitié écrit ni une branche sans commit) plutôt que de tout laisser incomplet, et
+    indique EXPLICITEMENT dans ton rapport final la liste des fichiers non committés.
+  expected_output: >
+    La confirmation, fichier par fichier, de ce qui a été committé (ou non, avec la raison), et si un
+    repository cible était fourni, l'URL de la Pull Request créée.
   agent: developer_agent
 
 qa_task:
@@ -214,14 +217,15 @@ qa_task:
     résultat exact) de ce que tu n'as évalué qu'en lisant le code : n'affirme jamais une
     absence de bug que tu n'as pas réellement vérifiée avec l'outil.
 
-    Ne fais JAMAIS confiance au rapport du Développeur sur la seule foi de ses affirmations.
-    Pour chaque fichier qu'il prétend avoir créé ou modifié (voir son plan et sa liste de
-    fichiers dans son rapport), confirme sa présence ET son contenu réels : si un repository
-    cible est fourni, avec `github_read_file` sur la branche de travail ({work_branch}) — utilise
+    Ne fais JAMAIS confiance aux rapports de l'Analyste et du Développeur sur la seule foi de leurs
+    affirmations. Pour chaque fichier annoncé (voir le plan de l'Analyste et la confirmation de
+    commit du Développeur), confirme sa présence ET son contenu réels : si un repository cible est
+    fourni, avec `github_read_file` sur la branche de travail ({work_branch}) — utilise
     `github_list_directory` seulement pour repérer les fichiers présents, jamais pour juger de
     leur contenu, qu'il ne renvoie pas ; sinon (travail sur disque local), avec
     `read_a_files_content`. Un fichier annoncé mais absent, ou dont le contenu diverge de ce qui
-    est décrit, est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Sur un
+    est décrit (par exemple si le Développeur a committé un contenu différent de celui rédigé par
+    l'Analyste), est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Sur un
     TRÈS GROS lot (voir plus haut) où confirmer chaque fichier un par un dépasserait ton propre
     budget d'appels d'outils, applique la même priorisation que pour `check_syntax` : commence par
     `github_list_directory` pour au moins confirmer que les fichiers annoncés sont bien présents
@@ -230,18 +234,16 @@ qa_task:
     contenu. Si un repository cible est fourni,
     tu n'as pas d'outil pour vérifier toi-même qu'une Pull Request a réellement été ouverte :
     dis-le clairement dans ton rapport plutôt que de confirmer une affirmation que tu ne peux pas
-    contrôler. Si le Développeur a lui-même signalé, dans son rapport, des éléments de son plan
-    restés incomplets, reflète-le explicitement dans ta conclusion : ne recommande jamais la mise
-    en production d'un travail
-    que le Développeur a lui-même qualifié d'incomplet.
+    contrôler. Si le Développeur a lui-même signalé, dans son rapport, des fichiers non committés,
+    reflète-le explicitement dans ta conclusion : ne recommande jamais la mise en production d'un
+    travail que le Développeur a lui-même qualifié d'incomplet.
 
-    Au-delà de la syntaxe et de la véracité des affirmations du Développeur, compare aussi le
-    résultat livré à la demande initiale rappelée en haut de cette tâche : un code syntaxiquement
-    valide et fidèlement décrit par le Développeur peut quand même ne PAS répondre à ce que
-    l'utilisateur a réellement demandé (ex: un correctif qui traite un symptôme différent du bug
-    décrit, une fonctionnalité qui ne couvre qu'une partie de ce qui était demandé). Si tu identifies
-    un tel écart, signale-le explicitement dans ta conclusion, même si tout le reste (syntaxe,
-    fichiers réellement présents) est correct.
+    Au-delà de la syntaxe et de la véracité de ces rapports, compare aussi le résultat livré à la
+    demande initiale rappelée en haut de cette tâche : un code syntaxiquement valide et fidèlement
+    committé peut quand même ne PAS répondre à ce que l'utilisateur a réellement demandé (ex: un
+    correctif qui traite un symptôme différent du bug décrit, une fonctionnalité qui ne couvre
+    qu'une partie de ce qui était demandé). Si tu identifies un tel écart, signale-le explicitement
+    dans ta conclusion, même si tout le reste (syntaxe, fichiers réellement présents) est correct.
 
     Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}

@@ -15,6 +15,7 @@ const KNOWN_AGENT_ROLES = [
   'Senior Product Owner / Specialist en Qualification',
   'Lead Product / Game Designer',
   'Architecte Logiciel React / TypeScript',
+  'Analyste Diagnostic Technique',
   'Développeur Fullstack React / TypeScript',
   'QA Engineer / Automated Tester',
   'Agent',

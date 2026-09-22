@@ -35,7 +35,6 @@ from github_tools import (
     github_create_branch,
     github_write_file,
     github_write_files,
-    github_edit_file,
     github_open_pull_request,
     track_edit_failures,
 )
@@ -429,29 +428,52 @@ class AppDevelopmentCrew():
         )
 
     @agent
+    def diagnostic_agent(self) -> Agent:
+        return Agent(
+            config=self.agents_config['diagnostic_agent'],
+            # Lecture SEULE, volontairement : aucun outil d'écriture (ni GitHub ni disque local),
+            # pour qu'il soit STRUCTURELLEMENT impossible que cet agent committe quoi que ce soit,
+            # même halluciné — contrairement à une simple consigne de prompt, un outil absent ne
+            # peut pas être "oublié" par le LLM. Voir developer_agent plus bas : la séparation
+            # entre lecture/diagnostic (ici) et écriture (là-bas) donne à CHACUNE un budget
+            # d'itérations qui lui est propre, qu'aucune des deux ne peut faire empiéter sur
+            # l'autre (auparavant une seule tâche/agent partageait un budget unique entre les
+            # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
+            # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
+            tools=[read_a_files_content, github_read_file, github_list_directory],
+            llm=gemini_llm, max_iter=5, verbose=True,
+        )
+
+    @agent
     def developer_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['developer_agent'],
+            # Écriture SEULE, volontairement : aucun outil de lecture (ni github_read_file ni
+            # read_a_files_content), pour qu'il soit STRUCTURELLEMENT impossible que cet agent
+            # "redécouvre" un diagnostic ou relise indéfiniment au lieu de committer — le
+            # diagnostic et le code complet lui arrivent déjà tout prêts via le contexte de
+            # diagnostic_task (process séquentiel CrewAI). Voir diagnostic_agent ci-dessus pour
+            # le raisonnement complet de cette séparation.
+            # Pas de github_edit_file ici, volontairement : cet outil remplace un extrait exact
+            # (old_string/new_string) et, sur échec (occurrences 0 ou >1), son propre message
+            # d'erreur (voir github_tools.py, _record_edit_failure) instruit l'agent appelant de
+            # RELIRE le fichier avec github_read_file avant de retenter — un outil que cet agent
+            # n'a justement plus (voir plus haut). diagnostic_task ne produit d'ailleurs jamais de
+            # old_string/new_string, seulement le contenu complet de chaque fichier : github_write_file/
+            # github_write_files (qui n'ont besoin d'aucune lecture préalable) couvrent donc tous les
+            # cas réels de cette tâche.
             tools=[
-                read_a_files_content, file_write_tool, check_syntax,
-                github_read_file, github_list_directory,
+                file_write_tool, check_syntax,
                 github_create_branch, github_write_file, github_write_files,
-                github_edit_file, github_open_pull_request,
+                github_open_pull_request,
             ],
-            # 8 et non 5 : le flux GitHub complet pour un BUGFIX d'écran blanc (create_branch,
-            # 2 lectures diagnostiques index.html+main.tsx, write/edit_file, check_syntax,
-            # open_pull_request) atteint déjà 6 appels d'outils pour un seul fichier corrigé, et
-            # la stratégie de repli sur échec répété de github_edit_file (voir github_tools.py,
-            # _record_edit_failure) ajoute encore une relecture avant la réécriture complète
-            # (create_branch, 2 tentatives github_edit_file, github_read_file, github_write_file,
-            # check_syntax, open_pull_request = 7 appels sans même compter un diagnostic écran
-            # blanc) ; max_iter=5 coupait déjà la tâche avant l'ouverture de la PR pour le premier
-            # cas, max_iter=7 laissait trop peu de marge pour le second. Ce budget reste
-            # volontairement bas malgré github_write_files (commit de plusieurs fichiers en un
-            # seul appel, voir github_tools.py) : c'est justement ce nouvel outil qui absorbe la
-            # variation du NOMBRE de fichiers à écrire (un projet de 5 fichiers ou de 50 coûte le
-            # même unique appel), donc max_iter n'a plus besoin de suivre cette taille.
-            llm=gemini_llm, max_iter=8, verbose=True,
+            # 6 (pas 8) : depuis la séparation avec diagnostic_agent (voir ci-dessus), cette tâche
+            # n'a plus AUCUN diagnostic à faire, seulement à committer un code déjà rédigé — le
+            # flux GitHub complet pour un BUGFIX (create_branch, write_file(s), check_syntax,
+            # open_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
+            # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
+            # entier dans le même budget.
+            llm=gemini_llm, max_iter=6, verbose=True,
         )
 
     @agent
@@ -481,6 +503,10 @@ class AppDevelopmentCrew():
     @task
     def architecture_task(self) -> Task:
         return Task(config=self.tasks_config['architecture_task'], agent=self.architect_agent(), output_file='docs/architecture_spec.md')
+
+    @task
+    def diagnostic_task(self) -> Task:
+        return Task(config=self.tasks_config['diagnostic_task'], agent=self.diagnostic_agent(), output_file='docs/diagnostic_plan.md')
 
     @task
     def development_task(self) -> Task:
@@ -535,16 +561,21 @@ class AppDevelopmentCrew():
     async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
-        # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 4 valeurs
+        # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
         # pour faire correspondre la progression réelle à l'étape affichée dans StepIndicator.
+        # 'diagnostic' précède toujours 'development' (jamais l'inverse) : diagnostic_task
+        # (lecture seule, voir diagnostic_agent) produit le code complet que development_task
+        # (écriture seule, voir developer_agent) committe ensuite tel quel — process séquentiel
+        # CrewAI, donc development_task reçoit automatiquement la sortie de diagnostic_task en
+        # contexte sans câblage explicite supplémentaire ici.
         if request_type == "ANALYSE_ONLY":
             selected = [('design', self.design_task()), ('architecture', self.architecture_task())]
         elif request_type == "BUGFIX":
-            selected = [('development', self.development_task()), ('qa', self.qa_task())]
+            selected = [('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
         elif request_type == "FEATURE":
-            selected = [('architecture', self.architecture_task()), ('development', self.development_task()), ('qa', self.qa_task())]
+            selected = [('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
         else:
-            selected = [('design', self.design_task()), ('architecture', self.architecture_task()), ('development', self.development_task()), ('qa', self.qa_task())]
+            selected = [('design', self.design_task()), ('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]
