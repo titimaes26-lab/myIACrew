@@ -642,21 +642,34 @@ def verify_github_delivery(
     # depuis que le succès peut désormais dépendre de CET appel, pas seulement de get_branch_head_sha
     # ci-dessus) : cette vérification arrive juste après la rafale d'appels github_* du Développeur,
     # le moment le plus probable pour heurter un rate-limit secondaire transitoire côté GitHub.
+    #
+    # Le second essai n'est PAS conditionné à une exception (contrairement à get_branch_head_sha
+    # plus haut) : get_pulls() est un endpoint de LISTE, avec un délai de cohérence éventuelle
+    # connu côté GitHub (une PR tout juste créée — a fortiori déjà fusionnée, comme sur un repo
+    # avec auto-merge activé — peut mettre quelques secondes à apparaître dans ses résultats,
+    # alors qu'elle existe déjà bel et bien et serait immédiatement visible via un accès direct
+    # par numéro). Un premier essai qui répond SANS exception mais ne trouve rien peut donc
+    # simplement être arrivé trop tôt, pas confirmer une absence réelle — vécu en pratique : une
+    # PR créée ET mergée en ~10s a échappé au premier essai.
     pr_check_confirmed = True
+    matched = False
     try:
-        if _matching_pr_exists():
-            return None
+        matched = _matching_pr_exists()
     except Exception:
+        pr_check_confirmed = False
+    if not matched:
         time.sleep(2)
         try:
-            if _matching_pr_exists():
-                return None
+            matched = _matching_pr_exists()
+            pr_check_confirmed = True
         except Exception:
             # Ne bloque pas la vérification sur un souci PERSISTANT de LISTE des PR : la branche
             # existe bien et a été vérifiée juste au-dessus, c'est déjà la partie la plus
             # importante. On traite prudemment comme "PR non confirmée" plutôt que de risquer un
             # faux positif, et on continue vers les diagnostics ci-dessous plutôt que de conclure ici.
             pr_check_confirmed = False
+    if matched:
+        return None
 
     # Phrase UNIQUE, réutilisée dans les deux DeliveryIssue ci-dessous plutôt que reformulée deux
     # fois séparément : les deux messages ne peuvent alors plus décrire pr_check_confirmed de
