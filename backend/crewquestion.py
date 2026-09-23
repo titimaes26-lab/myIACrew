@@ -28,7 +28,7 @@ from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tools import tool
-from tools import read_a_files_content, check_syntax
+from tools import check_syntax
 from github_tools import (
     github_read_file,
     github_list_directory,
@@ -265,8 +265,14 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
         # Absente ou illisible = incertaine (0.5), pas 1.0 : un JSON récupéré à la main
         # depuis une sortie mal formée ne mérite pas d'être cru sur parole.
         confidence = 0.5
-    if confidence > 1:
+    # Le prompt demande 0 à 1 ; les écarts courants sont une note sur 10 ou un pourcentage.
+    # Au-delà, la valeur n'a pas de sens : traitée comme inconnue (0.5).
+    if 1 < confidence <= 10:
+        confidence /= 10
+    elif 10 < confidence <= 100:
         confidence /= 100
+    elif confidence > 100:
+        confidence = 0.5
     questions = data.get("questions") or []
     return AnalysisReport(
         summary=str(data.get("summary") or "Analyse effectuée."),
@@ -517,24 +523,31 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
 
 # Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
 # de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
-# cours d'exécution. Toute écriture ET toute relecture locale (Développeur, QA) y est confinée.
+# cours d'exécution. Chaque conversation a son propre sous-dossier (dérivé de sa branche de
+# travail, stable d'un tour à l'autre) : deux conversations ne s'écrasent jamais, et un tour de
+# suivi ("corrige ça") relit bien ce que le tour précédent a livré.
 BACKEND_DIR = Path(__file__).resolve().parent
 LOCAL_WORKSPACE_DIR = Path(os.getenv("LOCAL_WORKSPACE_DIR") or BACKEND_DIR / "workspace").resolve()
 
-def _local_target(path: str) -> Path | None:
-    """Chemin absolu dans LOCAL_WORKSPACE_DIR, ou None s'il en sortirait (absolu, "..")."""
+def _conversation_workspace(work_branch: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", work_branch or "").strip(".-") or "sans-branche"
+    return LOCAL_WORKSPACE_DIR / safe
+
+def _local_target(workspace: Path, path: str) -> Path | None:
+    """Chemin absolu dans `workspace`, ou None s'il en sortirait (absolu, "..")."""
     if normalize_path(path) != path:
         return None
-    target = (LOCAL_WORKSPACE_DIR / path).resolve()
-    return target if LOCAL_WORKSPACE_DIR in target.parents else None
+    root = workspace.resolve()
+    target = (root / path).resolve()
+    return target if root in target.parents else None
 
-def _write_files_locally(files: list[dict], rejected_sink: dict[str, str]) -> str:
+def _write_files_locally(workspace: Path, files: list[dict], rejected_sink: dict[str, str]) -> str:
     """Pendant disque local de write_files_to_branch (mode sans repository cible), confiné à
-    LOCAL_WORKSPACE_DIR. Les fichiers NON écrits sont ajoutés à rejected_sink ({chemin: raison})."""
+    `workspace`. Les fichiers NON écrits sont ajoutés à rejected_sink ({chemin: raison})."""
     written = []
     for f in files:
         path, content = f["path"], f["content"]
-        target = _local_target(path)
+        target = _local_target(workspace, path)
         if target is None:
             rejected_sink[path] = "chemin hors de l'espace de travail local refusé"
             continue
@@ -548,7 +561,7 @@ def _write_files_locally(files: list[dict], rejected_sink: dict[str, str]) -> st
             written.append(path)
         except Exception as e:
             rejected_sink[path] = f"{type(e).__name__}: {e}"
-    message = f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local ({LOCAL_WORKSPACE_DIR})."
+    message = f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local."
     refused = {p: r for p, r in rejected_sink.items() if p in {f["path"] for f in files}}
     if refused:
         message += f"\nREJETÉS ({len(refused)}) — non écrits :\n" + "\n".join(
@@ -556,8 +569,8 @@ def _write_files_locally(files: list[dict], rejected_sink: dict[str, str]) -> st
         )
     return message
 
-def _read_local_file(path: str) -> tuple[str | None, str | None]:
-    target = _local_target(path)
+def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None]:
+    target = _local_target(workspace, path)
     if target is None:
         return None, "chemin hors de l'espace de travail local"
     try:
@@ -571,11 +584,21 @@ def _read_local_file(path: str) -> tuple[str | None, str | None]:
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
-# Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO",
-# "Verdict : ✅ GO", "Verdict : GO avec réserves".
-# ... ou "## Verdict" en titre, suivi de "**GO**" sur une ligne suivante.
+# Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
+# "Verdict : ✅ GO", "Verdict : GO avec réserves", "Verdict : NON GO", ou "## Verdict" en
+# titre suivi de "**GO**" sur une ligne suivante.
+MAX_RETRY_CONTEXT_CHARS = 4000
+
+def _is_withdrawn(text: str, path: str) -> bool:
+    """Vrai si une ligne de `text` mentionne `path` puis "NON réalisé" (retrait explicite)."""
+    # "(?!s?\s*:)" : "Fichiers a.ts, b.ts — NON réalisés : aucun" n'est pas un retrait.
+    pattern = re.compile(re.escape(path) + r"\b.{0,80}?non\s+r[ée]alis[ée](?!e?s?\s*:)", re.IGNORECASE)
+    return any(pattern.search(line) for line in text.splitlines())
+
 QA_VERDICT = re.compile(
-    r"verdict[^:\n]{0,60}(?::|[ \t*]*\n)\s*\W{0,8}(GO[ _]AVEC[ _]R[ÉE]SERVES|NO[ _-]?GO|GO)\b", re.IGNORECASE
+    r"verdict[^:\n—–=-]{0,60}(?:[:—–=-]|[ \t*]*\n)\s*\W{0,8}"
+    r"(GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO)\b",
+    re.IGNORECASE,
 )
 
 def _qa_verdict_guardrail(task_output):
@@ -606,7 +629,7 @@ class AppDevelopmentCrew():
             config=self.agents_config['product_designer_agent'],
             # Sans file_write_tool : son livrable est le texte de sa réponse (sauvegardé via
             # output_file), un outil d'écriture ne faisait que le distraire de son raisonnement.
-            tools=[read_a_files_content, github_read_file, github_list_directory],
+            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
             llm=designer_llm, max_iter=3, verbose=True,
         )
 
@@ -614,7 +637,7 @@ class AppDevelopmentCrew():
     def architect_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['architect_agent'],
-            tools=[read_a_files_content, github_read_file, github_list_directory],
+            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
             llm=architect_llm, max_iter=3, verbose=True,
         )
 
@@ -631,7 +654,7 @@ class AppDevelopmentCrew():
             # l'autre (auparavant une seule tâche/agent partageait un budget unique entre les
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
-            tools=[read_a_files_content, github_read_file, github_list_directory],
+            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
             llm=diagnostic_llm, max_iter=5, verbose=True,
             # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus
             # critique du pipeline, dont tout le code livré dépend. Une seule passe de plan
@@ -687,7 +710,7 @@ class AppDevelopmentCrew():
             # exact, check_syntax), ce qui libère le budget pour la conformité fonctionnelle.
             tools=[
                 self._build_qa_verify_tool(),
-                read_a_files_content, check_syntax, github_read_file, github_list_directory,
+                self._build_local_read_tool(), check_syntax, github_read_file, github_list_directory,
             ],
             # 10 et non 5 : lire un fichier PUIS le vérifier avec check_syntax est déjà 2 appels
             # par fichier modifié, avant même le rapport final — 5 ne couvrait donc que ~2
@@ -739,7 +762,14 @@ class AppDevelopmentCrew():
     # partagent jamais ces fichiers. Pas de ContextVar non plus : CrewAI peut exécuter les
     # outils dans un pool de threads qui ne recopie pas le contexte courant.
 
-    def _reset_execution_state(self) -> None:
+    def _reset_execution_state(self, inputs: Optional[dict] = None) -> None:
+        inputs = inputs or {}
+        owner, repo = inputs.get("repo_owner") or "", inputs.get("repo_name") or ""
+        # Cible FIXÉE par l'exécution (jamais par les arguments que le LLM passe aux outils) :
+        # un owner vide passé par erreur ne doit jamais détourner un run GitHub vers le disque.
+        self._work_branch = inputs.get("work_branch") or ""
+        self._repo_target = (owner, repo) if owner and repo else None
+        self._workspace = _conversation_workspace(self._work_branch)
         # Fichiers committables, fusionnés au fil des tentatives de l'Analyste (voir le guardrail).
         self._analyst_files = []
         # {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables
@@ -750,6 +780,19 @@ class AppDevelopmentCrew():
         self._write_rejections = {}
         self._diagnostic_guardrail_failures = 0
 
+    def _diagnostic_retry_context(self) -> str:
+        """Specs/architecture reçues par diagnostic_task : CrewAI ne les repasse PAS à l'agent
+        quand un guardrail le fait recommencer (seuls l'erreur et sa réponse précédente le sont),
+        alors qu'une réécriture complète doit rester alignée dessus."""
+        parts = []
+        context = self.diagnostic_task().context
+        # Hors run_dynamic_crew, CrewAI laisse ici une sentinelle "non spécifié", non itérable.
+        for context_task in context if isinstance(context, list) else []:
+            raw = getattr(getattr(context_task, "output", None), "raw", "") or ""
+            if raw:
+                parts.append(raw[:MAX_RETRY_CONTEXT_CHARS])
+        return ("\n\nRappel du contexte reçu (specs/architecture) :\n" + "\n---\n".join(parts)) if parts else ""
+
     def _diagnostic_guardrail(self, task_output):
         """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun fichier, balise de fin
         manquante, commentaires de type "// ... reste du code") pour qu'il la corrige ; à la 2e
@@ -757,12 +800,17 @@ class AppDevelopmentCrew():
         (CrewAI lève une exception quand un guardrail échoue au-delà de guardrail_max_retries).
 
         Les fichiers sains sont FUSIONNÉS d'une tentative à l'autre : une réponse corrigée qui ne
-        reprend que les fichiers fautifs ne fait pas perdre les fichiers sains de la première.
+        reprend que les fichiers fautifs ne fait pas perdre les fichiers sains de la première —
+        sauf ceux qu'elle retire explicitement (chemin suivi de "NON réalisé").
         """
         raw = getattr(task_output, "raw", "") or ""
         files, issue, faulty_paths, broken = review_diagnostic_output(raw)
         merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
         not_extracted = dict(getattr(self, "_not_extracted", {}))
+        for path in list(merged):
+            if _is_withdrawn(raw, path):
+                merged.pop(path)
+                not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
         for f in files:
             if f["path"] not in faulty_paths:
                 merged[f["path"]] = f
@@ -781,7 +829,7 @@ class AppDevelopmentCrew():
         if self._diagnostic_guardrail_failures <= 1:
             return False, (
                 f"{issue}\n\nRenvoie ta réponse COMPLÈTE, avec TOUS les fichiers entre balises "
-                "(y compris ceux qui étaient déjà corrects)."
+                f"(y compris ceux qui étaient déjà corrects).{self._diagnostic_retry_context()}"
             )
         excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
         return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
@@ -790,18 +838,16 @@ class AppDevelopmentCrew():
         crew_self = self
 
         @tool("github_commit_analyst_files")
-        def github_commit_analyst_files(owner: str, repo: str, branch: str, commit_message: str) -> str:
+        def github_commit_analyst_files(commit_message: str) -> str:
             """
             Committe EN UN SEUL APPEL tous les fichiers rédigés par l'Analyste Diagnostic Technique,
             extraits automatiquement de sa réponse (balises <<<FICHIER: ...>>>) : tu n'as
             PAS à recopier leur contenu. À utiliser EN PRIORITÉ, après github_create_branch.
+            Le repository, la branche de travail (ou, sans repository cible, l'espace de travail
+            local) sont ceux de l'exécution en cours : tu n'as pas à les fournir.
             Mêmes garde-fous que github_write_files (branche principale refusée, fichiers
             Python/JSON/YAML invalides rejetés et listés dans une section REJETÉS).
-            Sans repository cible (owner/repo vides), écrit les fichiers dans l'espace de travail
-            local dédié.
             Arguments:
-                owner (str), repo (str): repository cible (chaînes vides si travail local).
-                branch (str): branche de travail (jamais main/master).
                 commit_message (str): message de commit.
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
@@ -821,10 +867,12 @@ class AppDevelopmentCrew():
                 )
             manifest = format_manifest(files)
             rejections: dict[str, str] = {}
-            if not owner or not repo:
-                result = _write_files_locally(files, rejections)
+            target = getattr(crew_self, "_repo_target", None)
+            if target is None:
+                result = _write_files_locally(crew_self._workspace, files, rejections)
             else:
-                result = write_files_to_branch(owner, repo, branch, commit_message, files, rejections)
+                owner, repo = target
+                result = write_files_to_branch(owner, repo, crew_self._work_branch, commit_message, files, rejections)
                 if not result.startswith("OK"):
                     # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
                     for f in files:
@@ -842,19 +890,21 @@ class AppDevelopmentCrew():
         crew_self = self
 
         @tool("qa_verify_delivered_files")
-        def qa_verify_delivered_files(owner: str, repo: str, branch: str) -> str:
+        def qa_verify_delivered_files() -> str:
             """
             Vérifie EN UN SEUL APPEL chaque fichier rédigé par l'Analyste : présence réelle sur la
-            branche, comparaison EXACTE (diff) avec la version de l'Analyste, et check_syntax sur
-            le contenu réellement présent — ainsi que les fichiers annoncés mais jamais committables.
-            Chaque résultat est une preuve outillée [vérifié outil].
-            Sans repository cible (owner/repo vides), lit l'espace de travail local.
-            Arguments:
-                owner (str), repo (str): repository cible (chaînes vides si travail local).
-                branch (str): branche de travail à inspecter.
+            branche de travail (ou dans l'espace de travail local), comparaison EXACTE (diff) avec
+            la version de l'Analyste, et check_syntax sur le contenu réellement présent — ainsi que
+            les fichiers annoncés mais jamais committables. Chaque résultat est une preuve outillée
+            [vérifié outil]. Aucun argument : la cible est celle de l'exécution en cours.
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
-            fetch = _read_local_file if not owner or not repo else make_file_fetcher(owner, repo, branch)
+            target = getattr(crew_self, "_repo_target", None)
+            if target is None:
+                workspace = crew_self._workspace
+                fetch = lambda path: _read_local_file(workspace, path)  # noqa: E731
+            else:
+                fetch = make_file_fetcher(target[0], target[1], crew_self._work_branch)
             return build_delivery_report(
                 files, fetch,
                 write_rejections=dict(getattr(crew_self, "_write_rejections", {}) or {}),
@@ -862,6 +912,32 @@ class AppDevelopmentCrew():
             )
 
         return qa_verify_delivered_files
+
+    def _build_local_read_tool(self):
+        crew_self = self
+
+        @tool("read_a_files_content")
+        def read_a_files_content(file_path: str) -> str:
+            """
+            Lit le contenu d'un fichier de l'espace de travail LOCAL de cette conversation (mode
+            sans repository GitHub cible). Avec un repository cible, utilise github_read_file.
+            Arguments:
+                file_path (str): chemin relatif du fichier (ex: 'src/App.tsx' ou 'index.html').
+            """
+            if getattr(crew_self, "_repo_target", None) is not None:
+                return (
+                    "INFO : un repository GitHub cible est défini pour cette exécution : lis ses "
+                    "fichiers avec github_read_file, pas sur le disque local."
+                )
+            content, error = _read_local_file(crew_self._workspace, file_path)
+            if content is None:
+                return (
+                    f"ERREUR_FICHIER_INEXISTANT : {error}. Inutile de réessayer la lecture de ce "
+                    "fichier exact : note cette absence dans ton rapport et poursuis ton analyse."
+                )
+            return content if content.strip() else f"INFO : Le fichier '{file_path}' est vide."
+
+        return read_a_files_content
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
     async def analyze_user_request(self, user_prompt: str, conversation_context: str = "") -> QualificationResult:
@@ -955,7 +1031,7 @@ class AppDevelopmentCrew():
         for key, task_obj in selected:
             wanted = [tasks_by_key[k] for k in context_plan.get(key, []) if k in tasks_by_key]
             task_obj.context = wanted if wanted else None
-        self._reset_execution_state()
+        self._reset_execution_state(inputs)
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]

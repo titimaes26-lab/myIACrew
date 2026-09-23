@@ -178,3 +178,13 @@ def test_marker_variants_do_not_produce_bogus_paths():
         "<<<FICHIER: <src/b.ts>>>>\ny\n<<<FIN FICHIER>>>\n"
     )
     assert [f["path"] for f in parse_file_blocks(text)] == ["src/App.tsx", "src/b.ts"]
+
+
+def test_closing_fence_after_end_marker_is_not_committed():
+    text = "<<<FICHIER: src/a.ts>>>\n```ts\nconst a = 1;\n<<<FIN_FICHIER>>>\n```\n"
+    assert parse_file_blocks(text) == [{"path": "src/a.ts", "content": "const a = 1;\n"}]
+
+
+def test_bracketed_shortcut_comments_are_detected():
+    files = [{"path": "a.ts", "content": "// (reste du code inchangé)\n// [...]\n// … (code existant)\n// ...(args) forwarded\n"}]
+    assert [n for _, n, _ in find_placeholders(files)] == [1, 2, 3]

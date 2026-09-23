@@ -499,7 +499,7 @@ def write_files_to_branch(
             return (
                 f"{message} La branche '{branch}' a été mise à jour par un autre appel entretemps : "
                 "aucun fichier de CET appel n'a été perdu, il n'a simplement pas encore été appliqué. "
-                "Retente ce même appel github_write_files tel quel."
+                "Retente ce même appel tel quel."
             )
         return message
     except Exception as e:

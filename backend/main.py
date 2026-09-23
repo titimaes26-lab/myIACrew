@@ -12,7 +12,7 @@ from typing import List, NamedTuple, Optional
 from sqlmodel import Session, func, select
 
 from crewquestion import (
-    AppDevelopmentCrew, CrewStepError, LOCAL_WORKSPACE_DIR, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
+    AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
     build_conversation_context, track_execution_metrics,
 )
 from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
@@ -578,11 +578,11 @@ async def _run_crew_and_persist(
                                     )
                                     if has_repo_target
                                     else (
-                                        "Aucun repository GitHub cible fourni : travaille uniquement en local, "
-                                        f"dans l'espace de travail {LOCAL_WORKSPACE_DIR} (les chemins de fichiers "
-                                        "restent relatifs à ce dossier). N'utilise aucun outil github_* SAUF "
-                                        "github_commit_analyst_files et qa_verify_delivered_files, à appeler avec "
-                                        "owner et repo vides : ils agissent alors sur cet espace de travail."
+                                        "Aucun repository GitHub cible fourni : travaille uniquement dans "
+                                        "l'espace de travail local de cette conversation (chemins de fichiers "
+                                        "relatifs, lus avec read_a_files_content). N'utilise aucun outil github_* "
+                                        "SAUF github_commit_analyst_files et qa_verify_delivered_files, qui "
+                                        "agissent alors sur cet espace de travail."
                                     )
                                 ),
                             },

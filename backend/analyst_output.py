@@ -105,9 +105,15 @@ def _strip_outer_fence(body: list[str], prose: bool) -> list[str]:
     if first is None or first == last:
         return body
     opening = FENCE_LINE.match(body[first].strip())
-    closing = body[last].strip()
-    if not (opening and set(closing) == {opening.group(1)[0]} and len(closing) >= len(opening.group(1))):
+    if not opening:
         return body
+    closing = body[last].strip()
+    if not (set(closing) == {opening.group(1)[0]} and len(closing) >= len(opening.group(1))):
+        # Ouverture sans clôture en fin de contenu : la clôture a été écrite APRÈS la balise
+        # <<<FIN_FICHIER>>>. Pour du code, la ligne ```lang n'en fait jamais partie ; pour du
+        # texte, seulement si le reste est bien formé sans elle.
+        rest = body[first + 1:]
+        return rest if not prose or _fences_are_balanced(rest) else body
     inner = body[first + 1:last]
     # Un fichier de code ne commence jamais par une ligne ``` : c'est forcément l'enveloppe, même
     # si le code contient lui-même un ``` isolé (template literal). Un fichier de texte (README),
@@ -191,7 +197,9 @@ def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
             marker = COMMENT_MARKER.match(line)
             if not marker or (marker.group(1) == "#" and not hash_is_comment):
                 continue
-            body = line[marker.end():].strip()
+            # "(reste du code inchangé)", "[...]" : les parenthèses et crochets autour de la
+            # formule ne changent rien à sa nature.
+            body = re.sub(r"\s+", " ", re.sub(r"[()\[\]]", " ", line[marker.end():])).strip()
             if LEADING_ELLIPSIS.match(body) or SHORTCUT_ONLY.match(body):
                 issues.append((f["path"], n, line.strip()[:120]))
     return issues

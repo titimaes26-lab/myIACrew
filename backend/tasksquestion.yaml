@@ -221,8 +221,9 @@ development_task:
     1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch} (un
        seul appel, idempotent : si la branche existe déjà, l'outil te le confirme sans erreur, tu
        peux l'utiliser directement).
-    2. Appelle `github_commit_analyst_files` (owner={repo_owner}, repo={repo_name},
-       branch={work_branch}) : il committe EN UN SEUL APPEL tous les fichiers de l'Analyste, extraits
+    2. Appelle `github_commit_analyst_files` (un seul argument : commit_message ; le repository
+       et la branche {work_branch} sont fixés par l'exécution) : il committe EN UN SEUL APPEL tous
+       les fichiers de l'Analyste, extraits
        automatiquement de sa réponse — tu n'as RIEN à recopier, donc aucun risque de troncature. Sa
        réponse liste les fichiers committés (et les éventuels REJETÉS) : c'est ta source de vérité
        pour ton rapport. Ne passe aux outils ci-dessous QUE si cet outil indique qu'aucun fichier
@@ -256,8 +257,8 @@ development_task:
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant
        les changements (reprends le plan de l'Analyste).
     Ne modifie jamais directement la branche {base_branch}.
-    Sans repository cible (travail local), appelle `github_commit_analyst_files` avec owner et
-    repo vides : il écrit les fichiers de l'Analyste dans l'espace de travail local dédié. C'est
+    Sans repository cible (travail local), appelle aussi `github_commit_analyst_files` : il écrit
+    alors les fichiers de l'Analyste dans l'espace de travail local de la conversation. C'est
     le SEUL moyen d'écrire en local : si l'outil n'a rien pu extraire, indique-le dans ton rapport.
 
     Réaction aux réponses des outils (ne jamais improviser autre chose) :
@@ -285,8 +286,8 @@ qa_task:
     {user_request}
     ---
 
-    PREMIÈRE ACTION : appelle `qa_verify_delivered_files` (owner={repo_owner}, repo={repo_name},
-    branch={work_branch} ; owner et repo vides sans repository cible). En UN appel, il vérifie
+    PREMIÈRE ACTION : appelle `qa_verify_delivered_files` (sans argument : il inspecte la branche
+    {work_branch}, ou l'espace de travail local sans repository cible). En UN appel, il vérifie
     pour CHAQUE fichier de l'Analyste sa présence réelle, l'identité exacte (diff) avec la version
     de l'Analyste et check_syntax — ce qui couvre les vérifications 1 et 2 ci-dessous pour ces
     fichiers sans relecture. Ne relis ensuite individuellement (github_read_file) QUE les fichiers
