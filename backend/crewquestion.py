@@ -29,7 +29,7 @@ from crewai.project import CrewBase, agent, crew, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tools import tool
 from crewai_tools import FileWriterTool
-from tools import read_a_files_content, check_syntax, check_syntax_content
+from tools import read_a_files_content, check_syntax
 from github_tools import (
     github_read_file,
     github_list_directory,
@@ -37,6 +37,7 @@ from github_tools import (
     github_write_file,
     github_write_files,
     github_open_pull_request,
+    _reject_invalid_syntax,
     read_file_or_error,
     track_edit_failures,
     write_files_to_branch,
@@ -471,9 +472,9 @@ def _write_files_locally(files: list[dict]) -> str:
         if not _is_safe_local_path(path):
             rejected.append(f"- '{path}' : chemin absolu ou hors du dossier de travail refusé")
             continue
-        syntax = check_syntax_content(content, path)
-        if syntax.startswith("ERREUR_SYNTAXE"):
-            rejected.append(f"- '{path}' : {syntax}")
+        syntax_issue = _reject_invalid_syntax(path, content)
+        if syntax_issue:
+            rejected.append(f"- '{path}' : {syntax_issue}")
             continue
         try:
             target = Path(path)
@@ -497,7 +498,10 @@ def _read_local_file(path: str) -> tuple[str | None, str | None]:
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
-QA_VERDICT = re.compile(r"verdict\s*\**\s*:\s*\**\s*`?(GO_AVEC_R[ÉE]SERVES|NO_GO|GO)\b", re.IGNORECASE)
+# Tolère "Verdict final : GO", "**Verdict** : NO GO", "Verdict : GO avec réserves".
+QA_VERDICT = re.compile(
+    r"verdict[^:\n]{0,20}:\s*[*`_]*\s*(GO[ _]AVEC[ _]R[ÉE]SERVES|NO[ _-]?GO|GO)\b", re.IGNORECASE
+)
 
 def _qa_verdict_guardrail(task_output):
     """Garantit un verdict QA lisible sans relancer l'agent (une relance QA coûterait jusqu'à
@@ -667,14 +671,18 @@ class AppDevelopmentCrew():
         accepte en signalant le problème plutôt que de faire échouer tout le crew (CrewAI lève
         une exception quand un guardrail échoue au-delà de guardrail_max_retries)."""
         raw = getattr(task_output, "raw", "") or ""
-        files, issue = review_diagnostic_output(raw)
-        self._analyst_files = files
+        files, issue, faulty_paths = review_diagnostic_output(raw)
+        # Jamais de fichier à raccourci ("// ... reste du code") dans ce que le Développeur
+        # committera : même accepté en dernier recours, il écraserait le vrai fichier par une
+        # version tronquée. Les fichiers sains du lot restent committables.
+        self._analyst_files = [f for f in files if f["path"] not in faulty_paths]
         if issue is None:
             return True, task_output
         self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1
         if self._diagnostic_guardrail_failures <= 1:
             return False, issue
-        return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}"
+        excluded = "".join(f"\n- {p} : NON réalisé (contenu incomplet, exclu du commit)" for p in sorted(faulty_paths))
+        return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
 
     def _build_commit_analyst_files_tool(self):
         crew_self = self

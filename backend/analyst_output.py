@@ -14,25 +14,35 @@ toutes, pour que :
 """
 import difflib
 import re
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import PurePosixPath
 from typing import Callable
 
 from tools import check_syntax_content
 
-FILE_HEADING = re.compile(r"^#{2,4}\s*Fichier\s*:\s*`?([^`\n]+?)`?\s*$", re.IGNORECASE)
-FENCE_OPEN = re.compile(r"^(`{3,}|~{3,})[^`\n]*$")
+# Tolère les variantes de titre qu'un LLM produit en pratique : "### Fichier : x",
+# "**Fichier : `x`**", "Fichier : x (modifié)". LOOSE_FILE_HEADING sert seulement à
+# détecter qu'un titre de fichier était VISÉ, même si son bloc n'a pas pu être extrait.
+FILE_HEADING = re.compile(r"^(?:#{2,4}\s*)?\**\s*Fichier\s*:\s*(.+?)\s*$", re.IGNORECASE)
+LOOSE_FILE_HEADING = re.compile(r"^\W{0,6}Fichier\s*:", re.IGNORECASE | re.MULTILINE)
+FENCE_LINE = re.compile(r"^(`{3,}|~{3,})\s*([^`\s]*)")
 
-# Seules les lignes de COMMENTAIRE sont inspectées : un "..." ou le mot "existant" peuvent
-# apparaître légitimement dans du code (spread JS `...props`, texte d'interface), alors
-# qu'un commentaire "// ... reste du code inchangé" ne l'est jamais dans un fichier complet.
-COMMENT_LINE = re.compile(r"^\s*(//|#|/\*|\*|\{/\*|<!--)")
+# Seules les lignes de COMMENTAIRE sont inspectées : un "..." peut apparaître légitimement
+# dans du code (spread JS `...props`, texte d'interface), alors qu'un commentaire
+# "// ... reste du code inchangé" ne l'est jamais dans un fichier complet. "#" n'est un
+# commentaire que pour certaines extensions (ailleurs, c'est un titre Markdown, un sélecteur
+# CSS d'id...) et les fichiers de texte libre ne sont pas inspectés du tout.
+SLASH_COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*|<!--)")
+HASH_COMMENT = re.compile(r"^\s*#")
+HASH_COMMENT_EXTENSIONS = {"py", "yaml", "yml", "sh", "toml", "rb"}
+PROSE_EXTENSIONS = {"md", "mdx", "txt", "rst"}
 PLACEHOLDER_IN_COMMENT = re.compile(
     r"(^\s*(//|#|/\*|\*|\{/\*|<!--)\s*(\.{3}|…)\s*($|\*/|\*/\}|-->|[a-zà-ÿ(\[]))"
     r"|reste du (code|fichier|composant)"
-    r"|code (existant|inchangé|inchange)"
-    r"|(inchangé|inchange)s?\s*(\.{3}|…)"
+    r"|code inchang[ée]"
     r"|à compléter|a completer"
     r"|rest of (the )?(code|file|component)"
-    r"|existing code|unchanged code",
+    r"|(existing|unchanged) code",
     re.IGNORECASE,
 )
 
@@ -42,84 +52,144 @@ PLACEHOLDER_IN_COMMENT = re.compile(
 NOT_DELIVERED_MARKER = re.compile(r"non\s+r[ée]alis[ée]", re.IGNORECASE)
 
 MAX_DIFF_LINES_PER_FILE = 40
+MAX_PARALLEL_FETCHES = 8
 
 
-def parse_file_blocks(text: str) -> list[dict]:
-    """Liste ordonnée de {"path", "content"} extraite des sections "### Fichier : <chemin>".
+def normalize_path(raw: str) -> str | None:
+    """Chemin relatif propre tiré d'un titre, ou None s'il est inutilisable (vide, hors dépôt).
 
-    La clôture d'un bloc doit reprendre EXACTEMENT la même clôture (même caractère, au moins
-    autant de répétitions) que son ouverture : un fichier Markdown qui contient lui-même des
-    blocs ``` peut ainsi être encadré par ```` sans être coupé à son premier bloc interne.
-    En cas de chemin dupliqué, la DERNIÈRE version gagne (l'Analyste corrige parfois un
-    fichier plus bas dans sa réponse).
+    Retire la mise en forme Markdown (``, **), une note finale entre parenthèses
+    ("src/App.tsx (modifié)") et un préfixe "./" ou "/" : un chemin commençant par "/" est
+    refusé par l'API GitHub, et un chemin décoré créerait un fichier au nom fantaisiste.
+    """
+    path = raw.strip().strip("*`'\" ")
+    path = re.sub(r"\s+\([^)]*\)$", "", path).strip("*`'\" ")
+    path = path.lstrip("/")
+    while path.startswith("./"):
+        path = path[2:]
+    if not path or " " in path or ".." in PurePosixPath(path).parts:
+        return None
+    return path
+
+
+def _extension(path: str) -> str:
+    return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+
+
+def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
+    """(fichiers extraits, chemins annoncés dont le bloc est inexploitable).
+
+    Un bloc ouvert par ``` se ferme sur une ligne composée uniquement du même caractère, au
+    moins aussi longue. Les blocs IMBRIQUÉS sont suivis : une ligne ```bash (avec un langage)
+    à l'intérieur ouvre un sous-bloc, fermé par le ``` suivant — un README encadré par ```
+    au lieu de ```` n'est donc pas coupé à son premier exemple de commande. Un bloc jamais
+    fermé (réponse coupée par la limite de tokens) est signalé, jamais committé à moitié.
+    En cas de chemin dupliqué, la DERNIÈRE version gagne.
     """
     if not text:
-        return []
+        return [], []
     lines = text.splitlines()
     files: dict[str, str] = {}
+    broken: list[str] = []
     i = 0
     while i < len(lines):
         heading = FILE_HEADING.match(lines[i].strip())
         if not heading:
             i += 1
             continue
-        path = heading.group(1).strip().strip("'\"")
+        path = normalize_path(heading.group(1))
         j = i + 1
         while j < len(lines) and not lines[j].strip():
             j += 1
-        fence = FENCE_OPEN.match(lines[j].strip()) if j < len(lines) else None
+        fence = FENCE_LINE.match(lines[j].strip()) if j < len(lines) else None
         if not fence:
+            # Un titre sans bloc annoncé lui-même "NON réalisé" est un choix documenté.
+            if path and not NOT_DELIVERED_MARKER.search(lines[i]):
+                broken.append(f"{path} (titre sans bloc de code juste en dessous)")
             i += 1
             continue
         fence_str = fence.group(1)
         body: list[str] = []
+        depth = 0
         k = j + 1
         closed = False
         while k < len(lines):
             stripped = lines[k].strip()
-            if stripped and set(stripped) == {fence_str[0]} and len(stripped) >= len(fence_str):
-                closed = True
-                break
+            inner = FENCE_LINE.match(stripped)
+            if inner and inner.group(1)[0] == fence_str[0]:
+                is_bare = set(stripped) == {fence_str[0]}
+                if is_bare and depth == 0 and len(stripped) >= len(fence_str):
+                    closed = True
+                    break
+                if is_bare:
+                    depth = max(depth - 1, 0)
+                elif inner.group(2):
+                    depth += 1
             body.append(lines[k])
             k += 1
-        if closed and path:
+        if not path:
+            broken.append(f"{heading.group(1).strip()} (chemin invalide)")
+        elif not closed:
+            broken.append(f"{path} (bloc de code jamais fermé : contenu probablement tronqué)")
+        else:
             content = "\n".join(body)
             files[path] = content + "\n" if content and not content.endswith("\n") else content
         i = k + 1
-    return [{"path": p, "content": c} for p, c in files.items()]
+    broken = [b for b in broken if b.split(" ", 1)[0] not in files]
+    return [{"path": p, "content": c} for p, c in files.items()], broken
+
+
+def parse_file_blocks(text: str) -> list[dict]:
+    return parse_file_sections(text)[0]
 
 
 def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
     """(chemin, numéro de ligne, ligne) pour chaque commentaire trahissant un fichier incomplet."""
     issues = []
     for f in files:
+        ext = _extension(f["path"])
+        if ext in PROSE_EXTENSIONS:
+            continue
+        hash_is_comment = ext in HASH_COMMENT_EXTENSIONS
         for n, line in enumerate(f["content"].splitlines(), start=1):
-            if COMMENT_LINE.match(line) and PLACEHOLDER_IN_COMMENT.search(line):
+            is_comment = SLASH_COMMENT.match(line) or (hash_is_comment and HASH_COMMENT.match(line))
+            if is_comment and PLACEHOLDER_IN_COMMENT.search(line):
                 issues.append((f["path"], n, line.strip()[:120]))
     return issues
 
 
-def review_diagnostic_output(text: str) -> tuple[list[dict], str | None]:
-    """(fichiers extraits, problème bloquant éventuel à renvoyer à l'Analyste pour correction)."""
-    files = parse_file_blocks(text)
-    if not files:
-        if NOT_DELIVERED_MARKER.search(text or ""):
-            return [], None
-        return [], (
-            "Aucun fichier exploitable trouvé : chaque fichier doit être introduit par une ligne "
-            "'### Fichier : <chemin>' suivie IMMÉDIATEMENT d'un bloc de code (```) contenant son "
-            "contenu COMPLET. Si tu ne peux livrer aucun fichier, dis-le explicitement en le "
-            "marquant 'NON réalisé' avec la raison."
+def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str]]:
+    """(fichiers extraits, problème à renvoyer à l'Analyste, chemins des fichiers fautifs).
+
+    Les chemins fautifs sont ceux qui ne doivent JAMAIS être committés tels quels, même si
+    l'Analyste ne corrige pas sa réponse (voir _diagnostic_guardrail, crewquestion.py).
+    """
+    files, broken = parse_file_sections(text)
+    problems: list[str] = []
+    if broken:
+        problems.append(
+            "Fichiers annoncés mais inexploitables (ils ne seront PAS committés) :\n"
+            + "\n".join(f"- {b}" for b in broken)
         )
+    if not files and not broken:
+        if LOOSE_FILE_HEADING.search(text or "") or not NOT_DELIVERED_MARKER.search(text or ""):
+            problems.append(
+                "Aucun fichier exploitable trouvé : chaque fichier doit être introduit par une ligne "
+                "'### Fichier : <chemin>' suivie IMMÉDIATEMENT d'un bloc de code (```) contenant son "
+                "contenu COMPLET. Si tu ne peux livrer aucun fichier, dis-le explicitement en le "
+                "marquant 'NON réalisé' avec la raison."
+            )
     placeholders = find_placeholders(files)
     if placeholders:
         listing = "\n".join(f"- {p} ligne {n} : {line}" for p, n, line in placeholders[:10])
-        return files, (
+        problems.append(
             "Contenu incomplet détecté (commentaires de remplacement qui seraient committés tels "
             f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
             "retire leur bloc et liste-les comme 'NON réalisé' dans ton plan."
         )
-    return files, None
+    if not problems:
+        return files, None, set()
+    return files, "\n\n".join(problems), {p for p, _, _ in placeholders}
 
 
 def format_manifest(files: list[dict]) -> str:
@@ -143,10 +213,13 @@ def build_delivery_report(
             "INFO : l'Analyste n'a fourni aucun fichier exploitable pour cette exécution : rien "
             "à comparer. Vérifie le code avec github_read_file/check_syntax si nécessaire."
         )
+    # Lectures en parallèle (une par fichier) : sur un gros lot, des allers-retours GitHub
+    # séquentiels ajouteraient des dizaines de secondes à un seul appel d'outil de la QA.
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as pool:
+        fetched = list(pool.map(lambda f: fetch(f["path"]), files))
     rows = []
-    for f in files:
+    for f, (actual, error) in zip(files, fetched):
         path, expected = f["path"], f["content"]
-        actual, error = fetch(path)
         if actual is None:
             rows.append(f"### {path}\n- Présence : ABSENT [vérifié outil] — {error or 'introuvable'}")
             continue

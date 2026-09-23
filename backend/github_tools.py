@@ -314,10 +314,6 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             "path" (chemin dans le repo) et "content" (contenu complet du fichier). Exemple :
             '[{"path": "src/App.tsx", "content": "..."}, {"path": "package.json", "content": "..."}]'
     """
-    rejection = _reject_protected_branch(branch)
-    if rejection:
-        return rejection
-
     try:
         files = json.loads(files_json)
     except json.JSONDecodeError as e:

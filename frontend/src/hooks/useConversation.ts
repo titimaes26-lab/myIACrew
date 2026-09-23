@@ -407,13 +407,27 @@ export function useConversation(accessToken: string, apiUrl: string) {
         // une toute nouvelle demande qui ferait perdre le contexte déjà donné par
         // l'utilisateur. Le tour "❓ Précisions nécessaires" n'a donc pas besoin d'être
         // annulé : il est répondu, comme dans le flux AUTO normal (reste en historique).
-        const effectiveWorkflow = workflowType === 'AUTO' ? pendingClarification.workflow : workflowType;
         // Combine la demande d'origine et la réponse plutôt que d'afficher seulement `text` (la
         // réponse) : ce tour n'a alors plus l'air de "Relancer" (Studio.tsx, via handleRetry, qui
         // préremplit la zone de saisie avec turn.userMessage) une demande tronquée réduite à sa
         // seule réponse de clarification — un agent avec accès en écriture GitHub recevrait sinon
         // un fragment hors contexte comme s'il s'agissait de la demande complète.
-        pushRunningTurn(effectiveWorkflow, `${pendingClarification.originalRequest}\n\nPrécisions apportées : ${text}`);
+        const clarifiedRequest = `${pendingClarification.originalRequest}\n\nPrécisions apportées : ${text}`;
+        let effectiveWorkflow: QualificationReport['request_type'] = pendingClarification.workflow;
+        if (workflowType !== 'AUTO') {
+          effectiveWorkflow = workflowType;
+          pushRunningTurn(effectiveWorkflow, clarifiedRequest);
+        } else {
+          // En AUTO, la réponse sert souvent justement à trancher la catégorie (la question
+          // posée est du type "X ou Y ?" quand la confiance était trop basse) : on requalifie
+          // la demande précisée au lieu de réutiliser le type provisoire. Pas de nouvelle
+          // clarification ici (is_clear ignoré), pour ne jamais boucler sur des questions.
+          pushRunningTurn(undefined, clarifiedRequest);
+          const report = await api.qualify(clarifiedRequest, conversationId, controller.signal);
+          if (myGeneration !== conversationGenerationRef.current) return;
+          effectiveWorkflow = report.request_type;
+          setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: effectiveWorkflow } : turn)));
+        }
         const data = await api.execute({
           ...executePayload,
           user_request: pendingClarification.originalRequest,
