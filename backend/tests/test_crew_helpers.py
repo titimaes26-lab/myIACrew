@@ -255,16 +255,17 @@ def test_local_reads_normalize_dot_slash_but_stay_confined(monkeypatch, tmp_path
     assert cq._read_local_file(crew._workspace, "../x")[0] is None
 
 
-def test_commit_and_qa_tools_are_never_cached(monkeypatch):
+def test_only_successful_commits_are_cached_and_errors_explain_how_to_retry(monkeypatch):
     crew = new_crew(owner="o", repo="r")
     crew._analyst_files = [{"path": "src/a.ts", "content": "export {};\n"}]
     commit, qa = crew._build_commit_analyst_files_tool(), crew._build_qa_verify_tool()
-    assert commit.cache_function() is False and qa.cache_function() is False
-    calls = []
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: calls.append(1) or "ERREUR : non fast-forward")
-    commit.run(commit_message="m")
-    commit.run(commit_message="m")
-    assert len(calls) == 2
+    assert commit.cache_function(None, "OK : 1 fichier") is True
+    assert commit.cache_function(None, "ERREUR : non fast-forward") is False
+    assert qa.cache_function() is False
+    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "ERREUR : non fast-forward")
+    assert "commit_message légèrement différent" in commit.run(commit_message="m")
+    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "OK : 1 fichier(s)")
+    assert "légèrement différent" not in commit.run(commit_message="m (2e essai)")
 
 
 def test_local_mode_without_extracted_files_never_suggests_github():
@@ -279,13 +280,13 @@ def test_local_write_with_every_file_rejected_is_an_error(tmp_path):
     assert message.startswith("ERREUR")
 
 
-def test_file_withdrawn_in_the_same_response_is_not_committed():
+def test_file_both_delivered_and_withdrawn_is_sent_back_then_delivered_content_wins():
     crew = new_crew()
-    ok, _ = crew._diagnostic_guardrail(output(
-        "- src/App.tsx — NON réalisé (trop volumineux)\n"
-        "<<<FICHIER: src/App.tsx>>>\nexport const partial = 1;\n<<<FIN_FICHIER>>>\n"
-        "<<<FICHIER: src/b.ts>>>\nexport const b = 1;\n<<<FIN_FICHIER>>>\n"
-    ))
-    assert ok
-    assert [f["path"] for f in crew._analyst_files] == ["src/b.ts"]
-    assert "src/App.tsx" in crew._not_extracted
+    raw = output(
+        "- src/App.tsx : ajout du bouton d'export qui était NON réalisé dans la version précédente\n"
+        "<<<FICHIER: src/App.tsx>>>\nexport const App = 1;\n<<<FIN_FICHIER>>>\n"
+    )
+    ok, message = crew._diagnostic_guardrail(raw)
+    assert not ok and "src/App.tsx" in message
+    ok, _ = crew._diagnostic_guardrail(raw)
+    assert ok and [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]

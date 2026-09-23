@@ -599,6 +599,16 @@ MAX_RETRY_CONTEXT_CHARS = 4000
 def _never_cache(_args: Any = None, _result: Any = None) -> bool:
     return False
 
+def _cache_success_only(_args: Any = None, result: Any = None) -> bool:
+    return str(result or "").startswith("OK")
+
+# CrewAI refuse d'exécuter deux fois de suite un appel d'outil IDENTIQUE (mode ReAct), cache ou
+# non : pour réessayer après une erreur transitoire, les arguments doivent changer.
+_RETRY_HINT = (
+    "\nPour réessayer après une erreur transitoire, rappelle cet outil avec un commit_message "
+    "légèrement différent (ex: ajoute « (2e essai) ») : un appel identique serait refusé."
+)
+
 _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
 # Mention POSITIVE ("src/a.ts réalisé, src/b.ts NON réalisé") : ce qui la précède appartient à
 # une autre proposition. Plus fiable qu'une ponctuation (",", "|" d'un tableau Markdown...).
@@ -847,14 +857,26 @@ class AppDevelopmentCrew():
         files, issue, faulty_paths, broken = review_diagnostic_output(raw)
         merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
         not_extracted = dict(getattr(self, "_not_extracted", {}))
-        # Retraits vérifiés sur les fichiers précédents ET ceux de cette réponse : un fichier
-        # déclaré "NON réalisé" mais tout de même placé entre balises n'est jamais committé.
-        withdrawn = _withdrawn_paths(raw, list(merged) + [f["path"] for f in files])
-        for path in withdrawn:
+        delivered_now = {f["path"] for f in files}
+        withdrawn = _withdrawn_paths(raw, list(merged) + sorted(delivered_now))
+        # Fichier d'une tentative PRÉCÉDENTE déclaré "NON réalisé" : retrait explicite.
+        for path in withdrawn - delivered_now:
             merged.pop(path, None)
             not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
+        # Fichier livré DANS cette réponse ET déclaré "NON réalisé" : ambigu ("NON réalisé" peut
+        # décrire autre chose que le fichier). On ne tranche pas en silence : l'Analyste est
+        # invité à clarifier ; s'il ne le fait pas, le contenu livré en entier fait foi.
+        ambiguous = sorted(withdrawn & delivered_now)
+        if ambiguous:
+            clarification = (
+                "Fichier(s) à la fois livré(s) entre balises ET déclaré(s) 'NON réalisé' : "
+                + ", ".join(ambiguous)
+                + ". Retire leurs balises s'ils ne sont vraiment pas réalisés, ou reformule la ligne "
+                "du plan qui les mentionne."
+            )
+            issue = f"{issue}\n\n{clarification}" if issue else clarification
         for f in files:
-            if f["path"] not in faulty_paths and f["path"] not in withdrawn:
+            if f["path"] not in faulty_paths:
                 merged[f["path"]] = f
                 not_extracted.pop(f["path"], None)
         # Jamais de fichier à raccourci ou tronqué dans ce que le Développeur committera : il
@@ -931,11 +953,12 @@ class AppDevelopmentCrew():
             for f in files:
                 crew_self._write_rejections.pop(f["path"], None)
             crew_self._write_rejections.update(rejections)
-            return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}"
+            retry_hint = "" if result.startswith("OK") else _RETRY_HINT
+            return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}{retry_hint}"
 
-        # Sans cache : CrewAI resservirait sinon le résultat du 1er appel (même commit_message)
-        # sans rappeler GitHub, rendant inopérant le "retente une fois" après une erreur transitoire.
-        github_commit_analyst_files.cache_function = _never_cache
+        # Seul un SUCCÈS est mis en cache : un 2e appel après un "OK" ne réécrit pas tous les
+        # fichiers, mais une erreur n'est jamais resservie (voir aussi _RETRY_HINT).
+        github_commit_analyst_files.cache_function = _cache_success_only
         return github_commit_analyst_files
 
     def _build_qa_verify_tool(self):

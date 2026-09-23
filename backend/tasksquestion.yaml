@@ -266,7 +266,8 @@ development_task:
     - "INFO : la branche ... existe déjà" : continue avec cette branche.
     - Fichier REJETÉ ou "ERREUR : écriture refusée" : ne retente pas, note-le comme non livré avec
       la raison exacte, passe au suivant.
-    - Erreur réseau/GitHub transitoire ou "non fast-forward" : retente UNE seule fois le même appel.
+    - Erreur réseau/GitHub transitoire ou "non fast-forward" : retente UNE seule fois, avec un
+      commit_message légèrement différent (un appel strictement identique serait refusé).
     - Toute autre erreur : note-la telle quelle dans ton rapport et continue avec le reste.
 
     Si tu approches de la limite d'appels d'outils disponibles avant d'avoir committé tous les

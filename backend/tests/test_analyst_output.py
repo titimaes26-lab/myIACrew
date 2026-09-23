@@ -265,3 +265,19 @@ def test_indented_markers_do_not_shift_file_content():
     files, broken = parse_file_sections(text)
     assert broken == {}
     assert files == [{"path": "app.py", "content": "import os\nif True:\n    x = 1\n"}]
+
+
+def test_marker_only_indentation_keeps_content_as_written():
+    text = "  <<<FICHIER: c.yaml>>>\na:\n  b: 1\n  c: 2\n  <<<FIN_FICHIER>>>\n"
+    assert parse_file_sections(text)[0] == [{"path": "c.yaml", "content": "a:\n  b: 1\n  c: 2\n"}]
+
+
+def test_tab_indented_marker_with_space_indented_content_is_dedented():
+    text = "\t<<<FICHIER: app.py>>>\n    def f():\n        return 1\n\t<<<FIN_FICHIER>>>\n"
+    assert parse_file_sections(text)[0] == [{"path": "app.py", "content": "def f():\n    return 1\n"}]
+
+
+def test_withdrawal_mentions_inside_indented_file_bodies_are_ignored():
+    from analyst_output import FILE_BLOCKS
+    text = "   <<<FICHIER: README.md>>>\n   - src/b.ts : NON réalisé (suivi)\n   <<<FIN_FICHIER>>>\n"
+    assert "NON réalisé" not in FILE_BLOCKS.sub("", text)
