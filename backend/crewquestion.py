@@ -523,15 +523,15 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
 
 # Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
 # de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
-# cours d'exécution. Chaque conversation a son propre sous-dossier (dérivé de sa branche de
-# travail, stable d'un tour à l'autre) : deux conversations ne s'écrasent jamais, et un tour de
-# suivi ("corrige ça") relit bien ce que le tour précédent a livré.
+# cours d'exécution. Chaque conversation a son propre sous-dossier (dérivé de son id, stable d'un
+# tour à l'autre) : deux conversations ne s'écrasent jamais, et un tour de suivi ("corrige ça")
+# relit bien ce que le tour précédent a livré.
 BACKEND_DIR = Path(__file__).resolve().parent
 LOCAL_WORKSPACE_DIR = Path(os.getenv("LOCAL_WORKSPACE_DIR") or BACKEND_DIR / "workspace").resolve()
 
-def _conversation_workspace(work_branch: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", work_branch or "").strip(".-") or "sans-branche"
-    return LOCAL_WORKSPACE_DIR / safe
+def _conversation_workspace(conversation_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", conversation_id or "").strip(".-")
+    return LOCAL_WORKSPACE_DIR / (f"conversation-{safe}" if safe else "sans-conversation")
 
 def _local_target(workspace: Path, path: str) -> Path | None:
     """Chemin absolu dans `workspace`, ou None s'il en sortirait (absolu, "..")."""
@@ -769,7 +769,8 @@ class AppDevelopmentCrew():
         # un owner vide passé par erreur ne doit jamais détourner un run GitHub vers le disque.
         self._work_branch = inputs.get("work_branch") or ""
         self._repo_target = (owner, repo) if owner and repo else None
-        self._workspace = _conversation_workspace(self._work_branch)
+        # Par conversation (et non par branche : en mode local, work_branch est toujours vide).
+        self._workspace = _conversation_workspace(str(inputs.get("conversation_id") or ""))
         # Fichiers committables, fusionnés au fil des tentatives de l'Analyste (voir le guardrail).
         self._analyst_files = []
         # {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables

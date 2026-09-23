@@ -90,7 +90,7 @@ def test_local_writes_are_confined_to_workspace(tmp_path):
 
 def test_each_conversation_has_its_own_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
-    a, b = cq._conversation_workspace("claude/conv-1"), cq._conversation_workspace("claude/conv-2")
+    a, b = cq._conversation_workspace("1"), cq._conversation_workspace("2")
     assert a != b and tmp_path in a.parents and tmp_path in b.parents
 
 
@@ -194,3 +194,11 @@ def test_github_rejections_are_tracked_per_latest_commit(monkeypatch):
     monkeypatch.setattr(cq, "write_files_to_branch", partial_success)
     tool.run(commit_message="m")
     assert crew._write_rejections == {"package.json": "ERREUR_SYNTAXE : JSON invalide"}
+
+
+def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tmp_path):
+    monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
+    a, b = cq.AppDevelopmentCrew(), cq.AppDevelopmentCrew()
+    a._reset_execution_state({"work_branch": "", "conversation_id": "1"})
+    b._reset_execution_state({"work_branch": "", "conversation_id": "2"})
+    assert a._workspace != b._workspace

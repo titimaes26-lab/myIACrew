@@ -166,6 +166,16 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
     """
     try:
         gh_repo = _get_repo(owner, repo)
+    except GithubException as e:
+        error = (
+            f"ERREUR : le repository {owner}/{repo} est introuvable ou inaccessible avec ce jeton"
+            if e.status == 404 else _github_error(e)
+        )
+        return lambda path: (None, error)
+    except Exception as e:
+        error = f"ERREUR : {e}"
+        return lambda path: (None, error)
+    try:
         # Branche vérifiée d'abord : sans elle, chaque lecture renverrait 404 et TOUS les fichiers
         # passeraient pour absents, alors que c'est la branche qui manque (non vérifiable).
         gh_repo.get_branch(branch)

@@ -188,3 +188,19 @@ def test_closing_fence_after_end_marker_is_not_committed():
 def test_bracketed_shortcut_comments_are_detected():
     files = [{"path": "a.ts", "content": "// (reste du code inchangé)\n// [...]\n// … (code existant)\n// ...(args) forwarded\n"}]
     assert [n for _, n, _ in find_placeholders(files)] == [1, 2, 3]
+
+
+def test_marker_with_trailing_text_and_malformed_markers_are_never_silent():
+    text = (
+        "<<<FICHIER: src/a.ts>>> (nouveau)\nexport const a = 1;\n<<<FIN_FICHIER>>>\n"
+        "<<<FICHER: src/b.ts>>>\nexport const b = 1;\n<<<FIN_FICHIER>>>\n"
+    )
+    files, issue, _, broken = review_diagnostic_output(text)
+    assert [f["path"] for f in files] == ["src/a.ts"]
+    assert issue is not None and any("orpheline" in k or "FICHER" in k for k in broken)
+
+
+def test_note_after_closing_fence_is_flagged_not_committed():
+    text = "<<<FICHIER: a.py>>>\n```python\nx = 1\n```\n\nNote : ok\n<<<FIN_FICHIER>>>\n"
+    files, broken = parse_file_sections(text)
+    assert files == [] and "a.py" in broken

@@ -550,6 +550,9 @@ async def _run_crew_and_persist(
                                 # et les tâches interpolent toujours {base_branch} même dans ce cas.
                                 'base_branch': normalized_base_branch or 'main',
                                 'work_branch': work_branch,
+                                # Isole l'espace de travail LOCAL de chaque conversation (mode sans
+                                # repository cible, où work_branch est vide) — voir _reset_execution_state.
+                                'conversation_id': str(conversation_id),
                                 'repo_instructions': (
                                     f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
                                     f"Branche de base : {normalized_base_branch}\n"

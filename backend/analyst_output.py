@@ -22,7 +22,10 @@ from typing import Callable
 
 from tools import check_syntax_content
 
-FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}$", re.IGNORECASE)
+# Le texte éventuel après ">>>" ("(nouveau)") est ignoré plutôt que de faire rater la balise.
+FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
+# Toute ligne qui RESSEMBLE à une balise sans être reconnue est signalée, jamais ignorée en silence.
+MARKER_LIKE = re.compile(r"^<<<.*FICHIER", re.IGNORECASE)
 # FIN_FICHIER avec un "_" : "<FIN FICHIER>" serait lu comme une balise HTML par le rendu Markdown
 # de l'interface (et masqué). La variante avec espace reste acceptée si le modèle l'écrit.
 FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*>>>$", re.IGNORECASE)
@@ -96,30 +99,40 @@ def _extension(path: str) -> str:
     return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
 
 
-def _strip_outer_fence(body: list[str], prose: bool) -> list[str]:
-    """Retire le bloc ``` qui encadre le contenu (utile à l'affichage Markdown du rapport), s'il
-    l'encadre ENTIÈREMENT : ouverture en première ligne, clôture en dernière. Les blocs ```
-    intérieurs (README, template literal) font partie du fichier et restent intacts."""
+def _strip_outer_fence(body: list[str], prose: bool) -> tuple[list[str], str | None]:
+    """(contenu, problème éventuel) : retire le bloc ``` qui encadre le contenu (utile à
+    l'affichage Markdown du rapport), s'il l'encadre ENTIÈREMENT : ouverture en première ligne,
+    clôture en dernière. Les blocs ``` intérieurs (README, template literal) font partie du
+    fichier et restent intacts."""
     first = next((n for n, line in enumerate(body) if line.strip()), None)
     last = next((n for n in range(len(body) - 1, -1, -1) if body[n].strip()), None)
     if first is None or first == last:
-        return body
+        return body, None
     opening = FENCE_LINE.match(body[first].strip())
     if not opening:
-        return body
-    closing = body[last].strip()
-    if not (set(closing) == {opening.group(1)[0]} and len(closing) >= len(opening.group(1))):
-        # Ouverture sans clôture en fin de contenu : la clôture a été écrite APRÈS la balise
-        # <<<FIN_FICHIER>>>. Pour du code, la ligne ```lang n'en fait jamais partie ; pour du
-        # texte, seulement si le reste est bien formé sans elle.
+        return body, None
+
+    def is_closing(line: str) -> bool:
+        stripped = line.strip()
+        return bool(stripped) and set(stripped) == {opening.group(1)[0]} and len(stripped) >= len(opening.group(1))
+
+    if not is_closing(body[last]):
+        if not prose and any(is_closing(line) for line in body[first + 1:]):
+            # Une clôture existe, mais du texte la suit avant <<<FIN_FICHIER>>> (une note de
+            # l'Analyste ?) : impossible de savoir s'il fait partie du fichier — on le signale
+            # plutôt que de committer une note dans le code, ou de couper du vrai code.
+            return body, "texte après la clôture ``` du bloc de code : place la note hors des balises"
+        # Ouverture sans clôture : la clôture a été écrite APRÈS la balise <<<FIN_FICHIER>>>.
+        # Pour du code, la ligne ```lang n'en fait jamais partie ; pour du texte, seulement si
+        # le reste est bien formé sans elle.
         rest = body[first + 1:]
-        return rest if not prose or _fences_are_balanced(rest) else body
+        return (rest if not prose or _fences_are_balanced(rest) else body), None
     inner = body[first + 1:last]
     # Un fichier de code ne commence jamais par une ligne ``` : c'est forcément l'enveloppe, même
     # si le code contient lui-même un ``` isolé (template literal). Un fichier de texte (README),
     # si : l'enveloppe n'est retirée que si l'intérieur reste une suite de blocs bien formée —
     # un README qui commence par ```bash et finit par ``` n'est PAS encadré.
-    return inner if not prose or _fences_are_balanced(inner) else body
+    return (inner if not prose or _fences_are_balanced(inner) else body), None
 
 
 def _fences_are_balanced(lines: list[str]) -> bool:
@@ -171,12 +184,21 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
             continue
         if FILE_END.match(stripped):
             if current_path:
-                content = "\n".join(_strip_outer_fence(body, _extension(current_path) in PROSE_EXTENSIONS))
-                files[current_path] = content + "\n" if content and not content.endswith("\n") else content
-                broken.pop(current_path, None)
+                lines, problem = _strip_outer_fence(body, _extension(current_path) in PROSE_EXTENSIONS)
+                if problem:
+                    mark_broken(current_path, current_raw, problem)
+                else:
+                    content = "\n".join(lines)
+                    files[current_path] = content + "\n" if content and not content.endswith("\n") else content
+                    broken.pop(current_path, None)
             elif current_raw:
                 mark_broken(None, current_raw, "chemin invalide")
+            else:
+                mark_broken(None, "(balise orpheline)", "<<<FIN_FICHIER>>> sans balise <<<FICHIER: ...>>> d'ouverture")
             current_path, current_raw, body = None, "", []
+            continue
+        if MARKER_LIKE.match(stripped):
+            mark_broken(None, stripped[:80], "balise mal formée, attendu : <<<FICHIER: chemin/du/fichier>>>")
             continue
         if current_raw or current_path:
             body.append(line)
