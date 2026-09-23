@@ -547,15 +547,26 @@ class DeliveryIssue(NamedTuple):
     likely_access_problem: bool
 
 
+class DeliveredPullRequest(NamedTuple):
+    """Info de la Pull Request confirmée par verify_github_delivery en cas de succès (voir plus
+    bas), pour que main.py puisse l'ajouter de façon DÉTERMINISTE (URL réellement observée sur
+    GitHub) au résumé de l'exécution, plutôt que de compter sur le rapport — non vérifié — du
+    Développeur pour la mentionner (voir tasksquestion.yaml, qa_task : "tu n'as pas d'outil pour
+    vérifier toi-même qu'une Pull Request a réellement été ouverte").
+    """
+    html_url: str
+    merged: bool
+
+
 def verify_github_delivery(
     owner: str, repo: str, branch: str, base_branch: str, sha_before: str | None
-) -> DeliveryIssue | None:
+) -> tuple[DeliveredPullRequest | None, DeliveryIssue | None]:
     """Vérifie après coup, directement via l'API GitHub, qu'une Pull Request OUVERTE ou MERGÉE
     existe pour {branch} -> {base_branch} et pointe vers le commit ACTUEL de {branch} — que ce
     commit date de cette exécution (sha_before, capturé avant le lancement du crew — voir
     get_branch_head_sha, différent du HEAD actuel) ou d'une exécution précédente sur ce même
-    work_branch réutilisé (voir plus bas). Renvoie None si confirmé, sinon un DeliveryIssue
-    expliquant ce qui manque.
+    work_branch réutilisé (voir plus bas). Renvoie (DeliveredPullRequest, None) si confirmé,
+    sinon (None, DeliveryIssue) expliquant ce qui manque — jamais les deux à la fois.
 
     Appelée par main.py une fois le crew terminé, jamais en se fiant au texte produit par l'agent
     développeur : qa_task (tasksquestion.yaml) le dit elle-même explicitement, la QA n'a aucun
@@ -604,10 +615,10 @@ def verify_github_delivery(
         try:
             sha_after = get_branch_head_sha(owner, repo, branch)
         except GitHubVerificationUnavailable as e:
-            return DeliveryIssue(f"impossible de vérifier la branche '{branch}' ({e}).", True)
+            return None, DeliveryIssue(f"impossible de vérifier la branche '{branch}' ({e}).", True)
 
     if sha_after is None:
-        return DeliveryIssue(
+        return None, DeliveryIssue(
             f"aucune branche '{branch}' n'existe sur {owner}/{repo} : aucune modification n'a "
             "été poussée sur GitHub malgré le repository cible configuré.",
             True,
@@ -627,13 +638,18 @@ def verify_github_delivery(
     # cette distinction, les deux messages d'échec plus bas affirmeraient à tort qu'aucune PR ne
     # correspond, alors que ce second cas signifie seulement que la vérification n'a pas pu se
     # faire (ex: rate-limit transitoire juste après la rafale d'appels github_* du Développeur).
-    def _matching_pr_exists() -> bool:
+    def _find_matching_pr():
+        """None si aucune PR ne correspond, sinon l'objet PullRequest trouvé (utilisé aussi bien
+        pour la confirmation booléenne que pour son .html_url, voir DeliveredPullRequest)."""
         gh_repo = _get_repo(owner, repo)
         pulls = gh_repo.get_pulls(state="all", head=f"{owner}:{branch}", base=base_branch)
         # merged_at (déjà présent dans la réponse de get_pulls) plutôt que p.merged : cette
         # dernière propriété PyGithub se complète paresseusement par un appel réseau SUPPLÉMENTAIRE
         # si elle n'est pas déjà dans la charge utile listée, inutile alors qu'on a déjà l'info.
-        return any(p.head.sha == sha_after and (p.state == "open" or p.merged_at is not None) for p in pulls)
+        for p in pulls:
+            if p.head.sha == sha_after and (p.state == "open" or p.merged_at is not None):
+                return p
+        return None
 
     # pr_check_confirmed distingue "on a réellement listé les PR et aucune ne correspond" de "la
     # liste elle-même a échoué (deux tentatives), donc on ne SAIT PAS s'il en existe une" — sans
@@ -661,16 +677,16 @@ def verify_github_delivery(
     # likely_access_problem) simplement parce que ce second essai, purement optionnel à ce
     # stade, a lui-même heurté un souci réseau.
     pr_check_confirmed = False
-    matched = False
+    matched_pr = None
     try:
-        matched = _matching_pr_exists()
+        matched_pr = _find_matching_pr()
         pr_check_confirmed = True
     except Exception:
         pass
-    if not matched:
+    if matched_pr is None:
         time.sleep(2)
         try:
-            matched = _matching_pr_exists()
+            matched_pr = _find_matching_pr()
             pr_check_confirmed = True
         except Exception:
             # Ne pas réinitialiser pr_check_confirmed à False ici : s'il valait déjà True (1er
@@ -679,8 +695,8 @@ def verify_github_delivery(
             # deux échecs persistants sur la LISTE des PR restent traités prudemment comme "PR
             # non confirmée" plutôt que de risquer un faux positif.
             pass
-    if matched:
-        return None
+    if matched_pr is not None:
+        return DeliveredPullRequest(matched_pr.html_url, matched_pr.merged_at is not None), None
 
     # Phrase UNIQUE, réutilisée dans les deux DeliveryIssue ci-dessous plutôt que reformulée deux
     # fois séparément : les deux messages ne peuvent alors plus décrire pr_check_confirmed de
@@ -705,7 +721,7 @@ def verify_github_delivery(
             else "il est possible qu'aucun changement n'ait été livré, mais la vérification n'a "
             "pas pu le confirmer avec certitude"
         )
-        return DeliveryIssue(
+        return None, DeliveryIssue(
             f"la branche '{branch}' existe sur {owner}/{repo} mais pointe toujours sur le même "
             f"commit qu'avant le lancement de cette exécution, et {pr_status_phrase} : {conclusion}.",
             # not pr_check_confirmed : la vérification de PR a échoué deux fois de suite (API
@@ -719,7 +735,7 @@ def verify_github_delivery(
     # sha_before est None (branche neuve avant cette exécution, ou repère indisponible — voir la
     # docstring), on ne peut rien affirmer de plus que "la branche existe".
     commit_note = " (nouveaux commits confirmés)" if sha_before is not None else ""
-    return DeliveryIssue(
+    return None, DeliveryIssue(
         f"la branche '{branch}' existe bien sur {owner}/{repo}{commit_note} mais {pr_status_phrase}.",
         not pr_check_confirmed,
     )

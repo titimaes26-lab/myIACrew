@@ -612,12 +612,15 @@ async def _run_crew_and_persist(
                 # design_task/architecture_task, en lecture seule — voir run_dynamic_crew) : sans cela,
                 # cette vérification échouerait toujours à tort sur ce workflow, qui n'a jamais eu
                 # l'intention de créer de branche ou de PR.
+                # None tant que should_verify_github_delivery est False (ANALYSE_ONLY, ou pas de
+                # repository cible) : rien à ajouter au résumé dans ce cas, voir plus bas.
+                delivered_pr = None
                 if should_verify_github_delivery:
                     # await asyncio.to_thread(...) : verify_github_delivery fait des appels HTTP
                     # bloquants (PyGithub) — comme pour crew_for_this_execution plus haut, un appel
                     # direct bloquerait la boucle asyncio, donc toutes les autres requêtes concurrentes,
                     # le temps de l'aller-retour réseau vers l'API GitHub.
-                    delivery_issue = await asyncio.to_thread(
+                    delivered_pr, delivery_issue = await asyncio.to_thread(
                         verify_github_delivery, data.repo_owner, data.repo_name, work_branch,
                         normalized_base_branch, repo_branch_sha_before,
                     )
@@ -659,6 +662,18 @@ async def _run_crew_and_persist(
                             "--- Rapport de l'agent (non vérifié sur GitHub) ---\n"
                             f"{raw_result[:3000]}"
                         )
+
+                # Ajouté à la SUITE de raw_result (déjà terminé par la section "## Résumé", voir
+                # crewquestion.py/run_dynamic_crew et SUMMARY_SENTINEL) sans nouveau séparateur
+                # "\n\n---\n\n## " : parseCrewResult.ts (frontend) ne découpe que sur cette frontière
+                # précise, donc cette ligne reste rattachée à cette DERNIÈRE section — celle ouverte
+                # par défaut dans l'interface — plutôt que de finir dans une section à part qu'il
+                # faudrait déplier. URL/statut de fusion réellement observés sur GitHub par
+                # verify_github_delivery ci-dessus, pas une affirmation non vérifiée du Développeur
+                # (voir tasksquestion.yaml, qa_task : la QA elle-même n'a aucun outil pour ça).
+                if delivered_pr is not None:
+                    pr_line = "fusionnée" if delivered_pr.merged else "ouverte"
+                    raw_result = f"{raw_result}\n\n**Pull Request {pr_line} :** {delivered_pr.html_url}"
 
                 _safe_refresh(session, db_entry, "succès")
 
