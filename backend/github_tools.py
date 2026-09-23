@@ -153,6 +153,22 @@ def _record_edit_success(owner: str, repo: str, path: str, branch: str) -> None:
             counts.pop((owner, repo, path, branch), None)
 
 
+def read_file_or_error(owner: str, repo: str, path: str, branch: str) -> tuple[str | None, str | None]:
+    """(contenu, None) si le fichier existe, sinon (None, raison). Pour un usage Python interne
+    (voir qa_verify_delivered_files, crewquestion.py), sans passer par l'objet Tool crewai."""
+    try:
+        content_file = _get_repo(owner, repo).get_contents(path, ref=branch)
+        if isinstance(content_file, list):
+            return None, f"'{path}' est un dossier, pas un fichier"
+        return content_file.decoded_content.decode("utf-8"), None
+    except GithubException as e:
+        if e.status == 404:
+            return None, f"'{path}' n'existe pas sur la branche '{branch}'"
+        return None, _github_error(e)
+    except Exception as e:
+        return None, f"ERREUR : {e}"
+
+
 @tool("github_read_file")
 def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> str:
     """
@@ -311,6 +327,17 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             "Si cette erreur se reproduit (contenu difficile à échapper correctement en JSON), "
             "n'insiste pas : bascule sur des appels séparés à github_write_file, un par fichier."
         )
+    return write_files_to_branch(owner, repo, branch, commit_message, files)
+
+
+def write_files_to_branch(owner: str, repo: str, branch: str, commit_message: str, files) -> str:
+    """Implémentation de github_write_files, factorée en fonction Python pure pour être aussi
+    appelée par github_commit_analyst_files (crewquestion.py) avec les fichiers extraits en
+    Python de la sortie de diagnostic_task — mêmes garde-fous (branche protégée, syntaxe,
+    collision avec un dossier), sans passer par un JSON rédigé par le LLM."""
+    rejection = _reject_protected_branch(branch)
+    if rejection:
+        return rejection
     if not isinstance(files, list) or not files:
         return 'ERREUR : files_json doit être une liste JSON non vide de {"path": ..., "content": ...}.'
 

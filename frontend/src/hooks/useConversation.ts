@@ -442,7 +442,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       }
 
       pushRunningTurn();
-      const report = await api.qualify(text, controller.signal);
+      const report = await api.qualify(text, conversationId, controller.signal);
       // Abandonné si une navigation vers une autre conversation a eu lieu pendant cet await :
       // sans ce garde-fou, la suite (setPendingClarification notamment, état global non
       // propre à une conversation) modifierait à tort l'état de la conversation désormais

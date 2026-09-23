@@ -175,6 +175,7 @@ crew_instance = AppDevelopmentCrew()
 
 class UserRequestInput(BaseModel):
     user_request: str
+    conversation_id: Optional[int] = None
 
 class WorkflowExecutionInput(BaseModel):
     user_request: str
@@ -762,10 +763,27 @@ def read_root():
     return {"status": "API CrewAI opérationnelle"}
 
 @app.post("/api/qualify", response_model=AnalysisReport)
-async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):
+async def qualify_request(
+    data: UserRequestInput,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
     """Étape 1 : Qualification du besoin"""
+    # Tours précédents de la conversation : sans eux, un message de suivi ("corrige ça",
+    # "ajoute aussi Y") est qualifié hors contexte, souvent en DESIGN_AND_DEV par défaut.
+    conversation_context = ""
+    if data.conversation_id is not None:
+        conversation = session.get(Conversation, data.conversation_id)
+        if not conversation or conversation.user_id != user.get("id"):
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+        prior_entries = session.exec(
+            select(ExecutionHistory)
+            .where(ExecutionHistory.conversation_id == conversation.id)
+            .order_by(ExecutionHistory.created_at.asc())
+        ).all()
+        conversation_context = build_conversation_context(prior_entries)
     try:
-        report = await crew_instance.analyze_user_request(data.user_request)
+        report = await crew_instance.analyze_user_request(data.user_request, conversation_context)
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:

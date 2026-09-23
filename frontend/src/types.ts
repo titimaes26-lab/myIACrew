@@ -1,7 +1,12 @@
 export interface QualificationReport {
   summary: string;
-  is_clear: boolean;
+  // Justification rédigée AVANT le verdict (voir AnalysisReport, backend/crewquestion.py).
+  reasoning?: string;
+  alternative_type?: QualificationReport['request_type'] | null;
   request_type: 'ANALYSE_ONLY' | 'BUGFIX' | 'FEATURE' | 'DESIGN_AND_DEV';
+  // 0 à 1 : sous le seuil du backend, is_clear est forcé à false (questions posées).
+  confidence?: number;
+  is_clear: boolean;
   questions: string[];
 }
 

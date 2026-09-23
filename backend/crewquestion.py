@@ -27,8 +27,9 @@ os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.project.utils import cache as _crewai_memoize_cache
+from crewai.tools import tool
 from crewai_tools import FileWriterTool
-from tools import read_a_files_content, check_syntax
+from tools import read_a_files_content, check_syntax, check_syntax_content
 from github_tools import (
     github_read_file,
     github_list_directory,
@@ -36,8 +37,11 @@ from github_tools import (
     github_write_file,
     github_write_files,
     github_open_pull_request,
+    read_file_or_error,
     track_edit_failures,
+    write_files_to_branch,
 )
+from analyst_output import build_delivery_report, format_manifest, review_diagnostic_output
 
 # --- MÉTRIQUES & PAUSES ---
 class ExecutionMetrics:
@@ -168,16 +172,70 @@ def _format_crew_result(result) -> str:
     return "\n\n---\n\n".join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
+RequestType = Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"]
+
 class AnalysisReport(BaseModel):
+    # Ordre des champs volontaire : le modèle remplit le JSON dans cet ordre, donc il rédige sa
+    # justification (reasoning) et envisage une alternative AVANT de trancher request_type, puis
+    # évalue sa confiance APRÈS — plutôt que de choisir d'abord et de rationaliser ensuite.
     summary: str = Field(description="Résumé en 2-3 phrases de ce que l'agent a compris de la demande.")
-    is_clear: bool = Field(description="Vrai si la demande est claire, Faux si des ambiguïtés existent.")
-    request_type: Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"] = Field(
-        description="Type de workflow à déclencher."
+    reasoning: str = Field(
+        default="",
+        description="Indices relevés dans la demande (et le contexte) et règle de la grille de décision appliquée.",
     )
+    alternative_type: Optional[RequestType] = Field(
+        default=None, description="Deuxième catégorie la plus plausible, ou null si aucune."
+    )
+    request_type: RequestType = Field(description="Type de workflow à déclencher.")
+    confidence: float = Field(
+        default=1.0, ge=0.0, le=1.0,
+        description="Confiance dans request_type, de 0 à 1 (sous 0.6 : la demande doit être clarifiée).",
+    )
+    is_clear: bool = Field(description="Vrai si la demande est claire, Faux si des ambiguïtés existent.")
     questions: List[str] = Field(default_factory=list, description="Liste de 2 à 4 questions si la demande est floue.")
 
+# Sous ce seuil, la qualification est jugée trop incertaine pour lancer un workflow coûteux
+# (jusqu'à 5 agents) sur une catégorie peut-être fausse : on pose plutôt des questions.
+QUALIFICATION_CONFIDENCE_THRESHOLD = 0.6
+
+_WORKFLOW_LABELS = {
+    "ANALYSE_ONLY": "une analyse/des spécifications sans code",
+    "BUGFIX": "la correction d'un bug",
+    "FEATURE": "l'ajout d'une fonctionnalité à un projet existant",
+    "DESIGN_AND_DEV": "la conception et le développement complets d'un nouveau produit",
+}
+
+def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
+    """Force une clarification quand le modèle n'est pas assez sûr de sa catégorie, et garantit
+    qu'une demande jugée floue s'accompagne toujours d'au moins une question à poser."""
+    if report.confidence < QUALIFICATION_CONFIDENCE_THRESHOLD:
+        report.is_clear = False
+    if not report.is_clear and not report.questions:
+        alternative = report.alternative_type if report.alternative_type != report.request_type else None
+        if alternative:
+            report.questions = [
+                f"Attends-tu plutôt {_WORKFLOW_LABELS[report.request_type]} ou "
+                f"{_WORKFLOW_LABELS[alternative]} ?"
+            ]
+        else:
+            report.questions = [
+                "Peux-tu préciser le résultat attendu : " + ", ".join(_WORKFLOW_LABELS.values()) + " ?"
+            ]
+    return report
+
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
-gemini_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.7, request_timeout=120)
+
+def _make_llm(temperature: float) -> LLM:
+    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=120)
+
+# Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
+# vérifier demande de la constance ; seule la conception fonctionnelle gagne à rester créative.
+qualification_llm = _make_llm(0.1)
+designer_llm = _make_llm(0.5)
+architect_llm = _make_llm(0.3)
+diagnostic_llm = _make_llm(0.2)
+developer_llm = _make_llm(0.0)
+qa_llm = _make_llm(0.2)
 file_write_tool = FileWriterTool()
 
 # Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
@@ -401,6 +459,58 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
         # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
         print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}", flush=True)
 
+def _is_safe_local_path(path: str) -> bool:
+    candidate = Path(path)
+    return not candidate.is_absolute() and ".." not in candidate.parts
+
+def _write_files_locally(files: list[dict]) -> str:
+    """Pendant disque local de write_files_to_branch (mode sans repository cible)."""
+    written, rejected = [], []
+    for f in files:
+        path, content = f["path"], f["content"]
+        if not _is_safe_local_path(path):
+            rejected.append(f"- '{path}' : chemin absolu ou hors du dossier de travail refusé")
+            continue
+        syntax = check_syntax_content(content, path)
+        if syntax.startswith("ERREUR_SYNTAXE"):
+            rejected.append(f"- '{path}' : {syntax}")
+            continue
+        try:
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            written.append(path)
+        except Exception as e:
+            rejected.append(f"- '{path}' : {type(e).__name__}: {e}")
+    message = f"OK : {len(written)} fichier(s) écrit(s) sur le disque local."
+    if rejected:
+        message += f"\nREJETÉS ({len(rejected)}) — non écrits :\n" + "\n".join(rejected)
+    return message
+
+def _read_local_file(path: str) -> tuple[str | None, str | None]:
+    if not _is_safe_local_path(path):
+        return None, "chemin absolu ou hors du dossier de travail"
+    try:
+        return Path(path).read_text(encoding="utf-8"), None
+    except FileNotFoundError:
+        return None, f"'{path}' n'existe pas sur le disque local"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+QA_VERDICT = re.compile(r"verdict\s*\**\s*:\s*\**\s*`?(GO_AVEC_R[ÉE]SERVES|NO_GO|GO)\b", re.IGNORECASE)
+
+def _qa_verdict_guardrail(task_output):
+    """Garantit un verdict QA lisible sans relancer l'agent (une relance QA coûterait jusqu'à
+    10 appels d'outils) : sans verdict explicite, on l'ajoute comme NON FOURNI, à traiter en
+    NO_GO, plutôt que de laisser l'utilisateur deviner la conclusion."""
+    raw = getattr(task_output, "raw", "") or ""
+    if QA_VERDICT.search(raw):
+        return True, task_output
+    return True, (
+        f"{raw}\n\n**Verdict : NON FOURNI** — la QA n'a pas conclu explicitement : à considérer "
+        "comme NO_GO tant qu'une vérification humaine n'a pas eu lieu."
+    )
+
 # --- CREW BASE ---
 @CrewBase
 class AppDevelopmentCrew():
@@ -409,22 +519,24 @@ class AppDevelopmentCrew():
 
     @agent
     def qualification_agent(self) -> Agent:
-        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=gemini_llm, max_iter=2, verbose=True)
+        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=qualification_llm, max_iter=2, verbose=True)
 
     @agent
     def product_designer_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['product_designer_agent'],
-            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=3, verbose=True,
+            # Sans file_write_tool : son livrable est le texte de sa réponse (sauvegardé via
+            # output_file), un outil d'écriture ne faisait que le distraire de son raisonnement.
+            tools=[read_a_files_content, github_read_file, github_list_directory],
+            llm=designer_llm, max_iter=3, verbose=True,
         )
 
     @agent
     def architect_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['architect_agent'],
-            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=3, verbose=True,
+            tools=[read_a_files_content, github_read_file, github_list_directory],
+            llm=architect_llm, max_iter=3, verbose=True,
         )
 
     @agent
@@ -441,7 +553,11 @@ class AppDevelopmentCrew():
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
             tools=[read_a_files_content, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=5, verbose=True,
+            llm=diagnostic_llm, max_iter=5, verbose=True,
+            # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus
+            # critique du pipeline, dont tout le code livré dépend. Une seule passe de plan
+            # (max_reasoning_attempts=1) pour rester raisonnable face au quota Gemini.
+            reasoning=True, max_reasoning_attempts=1,
         )
 
     @agent
@@ -462,7 +578,11 @@ class AppDevelopmentCrew():
             # old_string/new_string, seulement le contenu complet de chaque fichier : github_write_file/
             # github_write_files (qui n'ont besoin d'aucune lecture préalable) couvrent donc tous les
             # cas réels de cette tâche.
+            # github_commit_analyst_files en premier : il committe les fichiers déjà extraits
+            # en Python de la sortie de l'Analyste (voir _build_commit_analyst_files_tool), sans
+            # que le LLM ait à recopier leur contenu — github_write_file(s) restent le repli.
             tools=[
+                self._build_commit_analyst_files_tool(),
                 file_write_tool, check_syntax,
                 github_create_branch, github_write_file, github_write_files,
                 github_open_pull_request,
@@ -473,14 +593,20 @@ class AppDevelopmentCrew():
             # open_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
             # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
             # entier dans le même budget.
-            llm=gemini_llm, max_iter=6, verbose=True,
+            llm=developer_llm, max_iter=6, verbose=True,
         )
 
     @agent
     def qa_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['qa_agent'],
-            tools=[read_a_files_content, file_write_tool, check_syntax, github_read_file, github_list_directory],
+            # Sans file_write_tool : la QA vérifie, elle n'écrit jamais. qa_verify_delivered_files
+            # compare en un seul appel chaque fichier de l'Analyste à la branche (présence, diff
+            # exact, check_syntax), ce qui libère le budget pour la conformité fonctionnelle.
+            tools=[
+                self._build_qa_verify_tool(),
+                read_a_files_content, check_syntax, github_read_file, github_list_directory,
+            ],
             # 10 et non 5 : lire un fichier PUIS le vérifier avec check_syntax est déjà 2 appels
             # par fichier modifié, avant même le rapport final — 5 ne couvrait donc que ~2
             # fichiers. Depuis github_write_files (voir developer_agent), development_task peut
@@ -489,7 +615,7 @@ class AppDevelopmentCrew():
             # (elle doit alors signaler explicitement lesquels restent non vérifiés, voir
             # tasksquestion.yaml), donc ce budget n'a pas besoin de suivre la taille du lot — juste
             # d'en couvrir davantage qu'avant sans pour autant viser l'exhaustivité.
-            llm=gemini_llm, max_iter=10, verbose=True,
+            llm=qa_llm, max_iter=10, verbose=True,
         )
 
     @task
@@ -506,7 +632,11 @@ class AppDevelopmentCrew():
 
     @task
     def diagnostic_task(self) -> Task:
-        return Task(config=self.tasks_config['diagnostic_task'], agent=self.diagnostic_agent(), output_file='docs/diagnostic_plan.md')
+        return Task(
+            config=self.tasks_config['diagnostic_task'], agent=self.diagnostic_agent(),
+            output_file='docs/diagnostic_plan.md',
+            guardrail=self._diagnostic_guardrail, guardrail_max_retries=1,
+        )
 
     @task
     def development_task(self) -> Task:
@@ -514,15 +644,110 @@ class AppDevelopmentCrew():
 
     @task
     def qa_task(self) -> Task:
-        return Task(config=self.tasks_config['qa_task'], agent=self.qa_agent(), output_file='tests/reports/qa_report.md')
+        return Task(
+            config=self.tasks_config['qa_task'], agent=self.qa_agent(),
+            output_file='tests/reports/qa_report.md',
+            guardrail=_qa_verdict_guardrail,
+        )
+
+    # --- Outils et guardrails propres à UNE exécution ---
+    # Ils lisent self._analyst_files, rempli par _diagnostic_guardrail et remis à zéro au début
+    # de chaque run_dynamic_crew. Portée par instance (et non un global) : main.py crée un
+    # AppDevelopmentCrew() dédié à chaque exécution, donc deux conversations concurrentes ne
+    # partagent jamais ces fichiers. Pas de ContextVar non plus : CrewAI peut exécuter les
+    # outils dans un pool de threads qui ne recopie pas le contexte courant.
+
+    def _reset_execution_state(self) -> None:
+        self._analyst_files = []
+        self._diagnostic_guardrail_failures = 0
+
+    def _diagnostic_guardrail(self, task_output):
+        """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun bloc de fichier, ou
+        commentaires de type "// ... reste du code") pour qu'il la corrige ; à la 2e tentative,
+        accepte en signalant le problème plutôt que de faire échouer tout le crew (CrewAI lève
+        une exception quand un guardrail échoue au-delà de guardrail_max_retries)."""
+        raw = getattr(task_output, "raw", "") or ""
+        files, issue = review_diagnostic_output(raw)
+        self._analyst_files = files
+        if issue is None:
+            return True, task_output
+        self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1
+        if self._diagnostic_guardrail_failures <= 1:
+            return False, issue
+        return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}"
+
+    def _build_commit_analyst_files_tool(self):
+        crew_self = self
+
+        @tool("github_commit_analyst_files")
+        def github_commit_analyst_files(owner: str, repo: str, branch: str, commit_message: str) -> str:
+            """
+            Committe EN UN SEUL APPEL tous les fichiers rédigés par l'Analyste Diagnostic Technique,
+            extraits automatiquement de sa réponse (sections "### Fichier : <chemin>") : tu n'as
+            PAS à recopier leur contenu. À utiliser EN PRIORITÉ, après github_create_branch.
+            Mêmes garde-fous que github_write_files (branche principale refusée, fichiers
+            Python/JSON/YAML invalides rejetés et listés dans une section REJETÉS).
+            Sans repository cible (owner/repo vides), écrit les fichiers sur le disque local.
+            Arguments:
+                owner (str), repo (str): repository cible (chaînes vides si travail local).
+                branch (str): branche de travail (jamais main/master).
+                commit_message (str): message de commit.
+            """
+            files = list(getattr(crew_self, "_analyst_files", []) or [])
+            if not files:
+                return (
+                    "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
+                    "l'Analyste. Si elle contient quand même du code, committe-le avec "
+                    "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
+                )
+            manifest = format_manifest(files)
+            if not owner or not repo:
+                return f"{_write_files_locally(files)}\nFichiers concernés :\n{manifest}"
+            result = write_files_to_branch(owner, repo, branch, commit_message, files)
+            return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}"
+
+        return github_commit_analyst_files
+
+    def _build_qa_verify_tool(self):
+        crew_self = self
+
+        @tool("qa_verify_delivered_files")
+        def qa_verify_delivered_files(owner: str, repo: str, branch: str) -> str:
+            """
+            Vérifie EN UN SEUL APPEL chaque fichier rédigé par l'Analyste : présence réelle sur la
+            branche, comparaison EXACTE (diff) avec la version de l'Analyste, et check_syntax sur
+            le contenu réellement présent. Chaque résultat est une preuve outillée [vérifié outil].
+            Sans repository cible (owner/repo vides), lit les fichiers sur le disque local.
+            Arguments:
+                owner (str), repo (str): repository cible (chaînes vides si travail local).
+                branch (str): branche de travail à inspecter.
+            """
+            files = list(getattr(crew_self, "_analyst_files", []) or [])
+            if not owner or not repo:
+                return build_delivery_report(files, _read_local_file)
+            return build_delivery_report(files, lambda path: read_file_or_error(owner, repo, path, branch))
+
+        return qa_verify_delivered_files
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
-    async def analyze_user_request(self, user_prompt: str) -> AnalysisReport:
+    async def analyze_user_request(self, user_prompt: str, conversation_context: str = "") -> AnalysisReport:
         qualif_agent = self.qualification_agent()
         task_prompt = f"""
         Tu es le Spécialiste en Qualification / Senior Product Owner.
-        Voici la demande : "{user_prompt}"
-        Remplis le rapport JSON structuré : summary, is_clear, request_type, questions.
+        Voici la demande actuelle : "{user_prompt}"
+
+        Tours précédents de cette conversation (pour interpréter un message de suivi comme
+        "corrige ça" ou "ajoute aussi Y" ; ne décide JAMAIS sur ce seul contexte si la demande
+        actuelle dit autre chose) :
+        {conversation_context or "Aucun échange précédent."}
+
+        Applique la grille de décision de ta fiche, dans cet ordre :
+        1. summary : ce que tu as compris.
+        2. reasoning : les indices précis relevés dans la demande et la règle appliquée.
+        3. alternative_type : la 2e catégorie la plus plausible (ou null).
+        4. request_type : ta décision.
+        5. confidence : de 0 à 1. Sous {QUALIFICATION_CONFIDENCE_THRESHOLD}, is_clear doit être false.
+        6. is_clear, puis questions (2 à 4, fermées si possible) si is_clear est false.
         """
         analysis_task = Task(description=task_prompt, expected_output="Schéma JSON AnalysisReport.", agent=qualif_agent, output_pydantic=AnalysisReport)
         analysis_crew = Crew(agents=[qualif_agent], tasks=[analysis_task], process=Process.sequential, verbose=False)
@@ -532,23 +757,31 @@ class AppDevelopmentCrew():
         quota_mgr.last_execution_time = time.time()
 
         if hasattr(result, 'pydantic') and result.pydantic is not None:
-            return result.pydantic
+            return _enforce_confidence_threshold(result.pydantic)
 
         raw_output = str(result.raw) if hasattr(result, 'raw') else str(result)
         try:
             match = re.search(r'\{.*\}', raw_output, re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
-                return AnalysisReport(
-                    summary=data.get("summary", "Analyse effectuée."),
-                    is_clear=bool(data.get("is_clear", True)),
-                    request_type=data.get("request_type", "DESIGN_AND_DEV"),
-                    questions=data.get("questions", [])
-                )
+                # confidence absente = incertaine (0.5), pas 1.0 : un JSON récupéré à la main
+                # depuis une sortie mal formée ne mérite pas d'être cru sur parole.
+                data.setdefault("confidence", 0.5)
+                data.setdefault("summary", "Analyse effectuée.")
+                data.setdefault("is_clear", False)
+                return _enforce_confidence_threshold(AnalysisReport.model_validate(data))
         except Exception:
             pass
 
-        return AnalysisReport(summary=f"Analyse : {user_prompt}", is_clear=True, request_type="DESIGN_AND_DEV", questions=[])
+        # Qualification impossible : on demande plutôt que de lancer au hasard le workflow le
+        # plus long (DESIGN_AND_DEV, 5 agents) sur une catégorie que rien ne justifie.
+        return _enforce_confidence_threshold(AnalysisReport(
+            summary=f"Analyse : {user_prompt}",
+            reasoning="La qualification automatique n'a pas produit de résultat exploitable.",
+            request_type="DESIGN_AND_DEV",
+            confidence=0.0,
+            is_clear=False,
+        ))
 
     def save_analysis_report(self, report: AnalysisReport, user_prompt: str, filepath: str = "docs/qualification_report.md"):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -576,6 +809,23 @@ class AppDevelopmentCrew():
             selected = [('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
         else:
             selected = [('design', self.design_task()), ('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
+
+        # Contexte EXPLICITE par tâche au lieu du défaut CrewAI (toutes les sorties précédentes) :
+        # chaque agent reçoit ce dont il a besoin pour raisonner, et pas plus. Le Développeur ne
+        # reçoit que le code de l'Analyste (specs/architecture ne feraient que diluer ce qu'il doit
+        # committer) ; la QA reçoit les critères d'acceptation du Designer en plus du code et du
+        # rapport de commit, pour juger la conformité fonctionnelle.
+        tasks_by_key = dict(selected)
+        context_plan = {
+            'architecture': ['design'],
+            'diagnostic': ['design', 'architecture'],
+            'development': ['diagnostic'],
+            'qa': ['design', 'diagnostic', 'development'],
+        }
+        for key, task_obj in selected:
+            wanted = [tasks_by_key[k] for k in context_plan.get(key, []) if k in tasks_by_key]
+            task_obj.context = wanted if wanted else None
+        self._reset_execution_state()
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]

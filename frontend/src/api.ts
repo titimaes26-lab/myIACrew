@@ -35,11 +35,13 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
 
 export function apiClient(apiUrl: string, accessToken: string) {
   return {
-    qualify: (user_request: string, signal?: AbortSignal) =>
+    // conversation_id : permet à qualification_agent de tenir compte des tours précédents
+    // (ex: "corrige ça" juste après une FEATURE doit être qualifié BUGFIX, pas DESIGN_AND_DEV).
+    qualify: (user_request: string, conversation_id: number | null, signal?: AbortSignal) =>
       fetch(`${apiUrl}/api/qualify`, {
         method: 'POST',
         headers: authHeaders(accessToken),
-        body: JSON.stringify({ user_request }),
+        body: JSON.stringify({ user_request, conversation_id: conversation_id ?? undefined }),
         signal,
       }).then((res) => parseJsonOrThrow<QualificationReport>(res)),
 
