@@ -342,6 +342,11 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             "path" (chemin dans le repo) et "content" (contenu complet du fichier). Exemple :
             '[{"path": "src/App.tsx", "content": "..."}, {"path": "package.json", "content": "..."}]'
     """
+    # Vérifiée AVANT le JSON : sur 'main', l'agent doit apprendre que la branche est interdite,
+    # pas qu'il faut corriger son JSON (il retenterait alors sur la même branche).
+    rejection = _reject_protected_branch(branch)
+    if rejection:
+        return rejection
     try:
         files = json.loads(files_json)
     except json.JSONDecodeError as e:
@@ -363,7 +368,7 @@ def write_files_to_branch(owner: str, repo: str, branch: str, commit_message: st
     if rejection:
         return rejection
     if not isinstance(files, list) or not files:
-        return 'ERREUR : files_json doit être une liste JSON non vide de {"path": ..., "content": ...}.'
+        return 'ERREUR : la liste des fichiers doit être non vide, chaque élément {"path": ..., "content": ...}.'
 
     # Validé intégralement AVANT le premier appel réseau : un chemin dupliqué ou un élément mal
     # formé découvert à mi-parcours (ex: après avoir déjà créé des blobs pour les premiers
@@ -373,9 +378,9 @@ def write_files_to_branch(owner: str, repo: str, branch: str, commit_message: st
     paths_seen = set()
     for f in files:
         if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not isinstance(f.get("content"), str):
-            return 'ERREUR : chaque élément de files_json doit être un objet avec "path" (str) et "content" (str).'
+            return 'ERREUR : chaque fichier doit être un objet avec "path" (str) et "content" (str).'
         if f["path"] in paths_seen:
-            return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans files_json, chaque chemin doit être unique."
+            return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans la liste, chaque chemin doit être unique."
         paths_seen.add(f["path"])
 
     # Filtre les fichiers dont le contenu échoue check_syntax_content (garde-fou contre une

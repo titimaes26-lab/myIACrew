@@ -172,17 +172,19 @@ diagnostic_task:
     lecture.
 
     Énonce d'abord la liste des fichiers que tu comptes créer ou modifier et une justification d'une
-    ligne pour chacun, puis pour CHACUN un titre "### Fichier : <chemin>" suivi d'un bloc de code
-    contenant l'intégralité de son contenu — pas un extrait, pas un résumé — pour que la tâche
-    suivante puisse le committer sans la moindre ambiguïté sur quel contenu va dans quel fichier.
-    Ces blocs sont extraits AUTOMATIQUEMENT (en Python) pour être committés : le titre doit être
-    exactement "### Fichier : <chemin relatif>" et être immédiatement suivi du bloc de code. Pour un
-    fichier Markdown qui contient lui-même des blocs de code, encadre-le avec quatre backticks.
+    ligne pour chacun, puis livre CHAQUE fichier entre deux balises, chacune SEULE sur sa ligne :
+    d'abord la ligne "<<<FICHIER: chemin/relatif.ext>>>", puis un bloc de code contenant
+    l'intégralité de son contenu — pas un extrait, pas un résumé —, puis la ligne
+    "<<<FIN_FICHIER>>>". Exemple pour src/App.tsx : une ligne "<<<FICHIER: src/App.tsx>>>", une
+    ligne "```tsx", tout le code, une ligne "```", une ligne "<<<FIN_FICHIER>>>".
+    Ces balises sont lues AUTOMATIQUEMENT (en Python) pour committer les fichiers : seul ce qui est
+    entre elles est committé, et un fichier sans sa balise de fin est considéré comme tronqué et
+    n'est pas committé. N'utilise ces balises QUE pour le contenu FINAL et complet d'un fichier :
+    pour citer du code existant (diagnostic, traçabilité, auto-revue), écris un bloc de code
+    normal, sans balises.
     Un contrôle automatique refuse ta réponse si un fichier contient un commentaire de raccourci
     ("// ...", "// ... reste", "reste du code inchangé", "code existant") : tu devras alors la
-    refaire. Réserve le titre "### Fichier : <chemin>" au contenu FINAL et complet ; pour citer
-    du code existant (diagnostic, traçabilité), utilise un autre titre, par exemple
-    "Extrait actuel de <chemin>".
+    refaire.
 
     Avant de rendre ta réponse, fais une AUTO-REVUE de chaque fichier et termine par une section
     "Auto-revue" d'une ligne par fichier : imports tous présents et utilisés, exports réellement
@@ -191,16 +193,16 @@ diagnostic_task:
     suivante n'a AUCUN moyen de vérifier ou compléter ce que tu écris ici — ni de lire le fichier
     original, ni d'appliquer une modification partielle — elle committe tel quel, intégralement,
     exactement ce que tu lui fournis. Si tu risques de ne pas pouvoir réécrire ce fichier EN ENTIER
-    sans le tronquer, N'INCLUS PAS de bloc de code pour lui : committer une version coupée (donc
+    sans le tronquer, NE LE METS PAS entre balises : committer une version coupée (donc
     corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
     ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
     ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
   expected_output: >
     Les hypothèses classées, la section "Traçabilité", le plan (liste des fichiers prévus et leur
     justification, avec un signalement explicite "NON réalisé" pour tout fichier où le contenu
-    complet n'a pas pu être fourni sans risque de troncature), puis pour chacun un titre
-    "### Fichier : <chemin>" suivi du code source COMPLET et directement utilisable de ce fichier,
-    et enfin la section "Auto-revue".
+    complet n'a pas pu être fourni sans risque de troncature), puis chaque fichier entre une ligne
+    "<<<FICHIER: <chemin>>>>" et une ligne "<<<FIN_FICHIER>>>", avec son code source COMPLET et
+    directement utilisable, et enfin la section "Auto-revue".
   agent: diagnostic_agent
 
 development_task:

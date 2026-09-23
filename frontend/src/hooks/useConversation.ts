@@ -37,7 +37,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // effectiveWorkflow, plus bas, se retrouverait lui-même élargi à string dès qu'il combine
   // cette valeur avec workflowType (typé WorkflowType), perdant la garantie à la
   // compilation que seule une des 4 catégories reconnues par le backend est envoyée.
-  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type'] } | null>(null);
+  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type']; confidence?: number } | null>(null);
   // Incrémenté à ces mêmes deux limites que workflowType ci-dessous (startNewConversation, et
   // loadConversation seulement quand il ne s'agit pas d'un no-op sur la conversation déjà
   // affichée) — PAS à chaque changement de conversationId : conversationId lui-même passe de
@@ -423,11 +423,28 @@ export function useConversation(accessToken: string, apiUrl: string) {
           // la demande précisée au lieu de réutiliser le type provisoire. Pas de nouvelle
           // clarification ici (is_clear ignoré), pour ne jamais boucler sur des questions.
           pushRunningTurn(undefined, clarifiedRequest);
-          const report = await api.qualify(clarifiedRequest, conversationId, controller.signal);
+          // Un échec de cette requalification (quota Gemini, erreur serveur) ne doit pas faire
+          // perdre la réponse : on retombe sur le type provisoire, comme avant cette étape.
+          let report: QualificationReport | null = null;
+          try {
+            report = await api.qualify(clarifiedRequest, conversationId, controller.signal);
+          } catch (qualifyErr) {
+            if (isAbortError(qualifyErr)) throw qualifyErr;
+          }
           if (myGeneration !== conversationGenerationRef.current) return;
           // confidence === 0 : repli "qualification impossible" du backend (DESIGN_AND_DEV par
-          // défaut, le workflow le plus coûteux) — le type provisoire reste alors le meilleur choix.
-          if (report.confidence !== 0) effectiveWorkflow = report.request_type;
+          // défaut, le workflow le plus coûteux), jamais un vrai choix.
+          if (report && report.confidence !== 0) {
+            effectiveWorkflow = report.request_type;
+          } else if (pendingClarification.confidence === 0) {
+            // Aucune des deux qualifications n'a abouti : plutôt que de lancer au hasard le
+            // workflow le plus coûteux, on laisse l'utilisateur choisir (pendingClarification est
+            // conservé par le catch ci-dessous, sa prochaine réponse reprendra cette demande).
+            throw new Error(
+              "Le type de demande n'a pas pu être déterminé automatiquement : choisis le type de "
+              + 'workflow manuellement, puis renvoie ta réponse.',
+            );
+          }
           setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: effectiveWorkflow } : turn)));
         }
         const data = await api.execute({
@@ -466,7 +483,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       if (myGeneration !== conversationGenerationRef.current) return;
 
       if (!report.is_clear) {
-        setPendingClarification({ originalRequest: text, workflow: report.request_type });
+        setPendingClarification({ originalRequest: text, workflow: report.request_type, confidence: report.confidence });
         setTurns((t) => t.map((turn) => (turn.id === tempId
           ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, questions: report.questions, updatedAt: new Date().toISOString() }
           : turn)));

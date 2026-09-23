@@ -226,6 +226,12 @@ def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
 
 _REQUEST_TYPES = set(RequestType.__args__)
 
+def _as_bool(value: Any) -> bool:
+    """bool() tel quel ferait de la chaîne "false" (fréquente dans un JSON extrait à la main) un True."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "vrai", "oui", "yes", "1")
+    return bool(value)
+
 def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
     """Reconstruit un AnalysisReport champ par champ depuis un JSON extrait à la main, en
     corrigeant les écarts courants du modèle (confiance en pourcentage, alternative hors liste)
@@ -252,7 +258,7 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
         alternative_type=alternative if alternative in _REQUEST_TYPES else None,
         request_type=request_type,
         confidence=min(max(confidence, 0.0), 1.0),
-        is_clear=bool(data.get("is_clear", False)),
+        is_clear=_as_bool(data.get("is_clear", False)),
         questions=[str(q) for q in questions] if isinstance(questions, list) else [],
     )
 
@@ -496,47 +502,52 @@ def _is_safe_local_path(path: str) -> bool:
     candidate = Path(path)
     return not candidate.is_absolute() and ".." not in candidate.parts
 
-# Fichiers du backend lui-même (et son .env, son dépôt git) : en mode local, le dossier de
-# travail est celui du serveur, et un fichier livré nommé "main.py" ou ".env" écraserait sinon le
-# serveur en cours d'exécution. Tout AUTRE fichier existant peut être mis à jour — sans quoi aucun
-# BUGFIX/FEATURE local sur un fichier existant ne pourrait jamais être livré.
+# Fichiers du backend lui-même, à toute profondeur (et tout .env ou dépôt git) : en mode local,
+# le dossier de travail est souvent celui du serveur, et un fichier livré nommé "main.py",
+# "tests/..." ou ".env" écraserait sinon le serveur en cours d'exécution. Tout AUTRE fichier
+# existant peut être mis à jour — sans quoi aucun BUGFIX/FEATURE local ne pourrait être livré.
 BACKEND_DIR = Path(__file__).resolve().parent
 
 def _is_protected_local_target(target: Path) -> bool:
     resolved = target.resolve()
-    if resolved.parent == BACKEND_DIR and resolved.is_file():
+    if resolved.name.startswith(".env") or ".git" in resolved.parts:
         return True
-    return resolved.name.startswith(".env") or ".git" in resolved.parts
+    return resolved.exists() and (resolved == BACKEND_DIR or BACKEND_DIR in resolved.parents)
 
-def _write_files_locally(files: list[dict]) -> str:
+def _write_files_locally(files: list[dict]) -> tuple[str, dict[str, str]]:
     """Pendant disque local de write_files_to_branch (mode sans repository cible).
 
     Refuse d'écrire sur un fichier du backend lui-même (voir _is_protected_local_target).
+    Renvoie (message pour l'agent, {chemin: raison} des fichiers NON écrits) : la QA doit les
+    savoir refusés plutôt que de lire à leur place l'ancien fichier resté sur le disque.
     """
-    written, rejected = [], []
+    written = []
+    refused: dict[str, str] = {}
     for f in files:
         path, content = f["path"], f["content"]
         if not _is_safe_local_path(path):
-            rejected.append(f"- '{path}' : chemin absolu ou hors du dossier de travail refusé")
+            refused[path] = "chemin absolu ou hors du dossier de travail refusé"
             continue
         syntax_issue = _reject_invalid_syntax(path, content)
         if syntax_issue:
-            rejected.append(f"- '{path}' : {syntax_issue}")
+            refused[path] = syntax_issue
             continue
         target = Path(path)
         if _is_protected_local_target(target):
-            rejected.append(f"- '{path}' : fichier du serveur backend lui-même, écrasement refusé")
+            refused[path] = "fichier du serveur backend lui-même, écrasement refusé"
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             written.append(path)
         except Exception as e:
-            rejected.append(f"- '{path}' : {type(e).__name__}: {e}")
+            refused[path] = f"{type(e).__name__}: {e}"
     message = f"OK : {len(written)} fichier(s) écrit(s) sur le disque local."
-    if rejected:
-        message += f"\nREJETÉS ({len(rejected)}) — non écrits :\n" + "\n".join(rejected)
-    return message
+    if refused:
+        message += f"\nREJETÉS ({len(refused)}) — non écrits :\n" + "\n".join(
+            f"- '{p}' : {reason}" for p, reason in refused.items()
+        )
+    return message, refused
 
 def _read_local_file(path: str) -> tuple[str | None, str | None]:
     if not _is_safe_local_path(path):
@@ -719,6 +730,7 @@ class AppDevelopmentCrew():
     def _reset_execution_state(self) -> None:
         self._analyst_files = []
         self._excluded_analyst_paths = []
+        self._undelivered_paths = {}
         self._diagnostic_guardrail_failures = 0
 
     def _diagnostic_guardrail(self, task_output):
@@ -748,7 +760,7 @@ class AppDevelopmentCrew():
         def github_commit_analyst_files(owner: str, repo: str, branch: str, commit_message: str) -> str:
             """
             Committe EN UN SEUL APPEL tous les fichiers rédigés par l'Analyste Diagnostic Technique,
-            extraits automatiquement de sa réponse (sections "### Fichier : <chemin>") : tu n'as
+            extraits automatiquement de sa réponse (balises <<<FICHIER: ...>>>) : tu n'as
             PAS à recopier leur contenu. À utiliser EN PRIORITÉ, après github_create_branch.
             Mêmes garde-fous que github_write_files (branche principale refusée, fichiers
             Python/JSON/YAML invalides rejetés et listés dans une section REJETÉS).
@@ -775,7 +787,9 @@ class AppDevelopmentCrew():
                 )
             manifest = format_manifest(files)
             if not owner or not repo:
-                return f"{_write_files_locally(files)}\nFichiers concernés :\n{manifest}{excluded_note}"
+                message, refused = _write_files_locally(files)
+                crew_self._undelivered_paths.update(refused)
+                return f"{message}\nFichiers concernés :\n{manifest}{excluded_note}"
             result = write_files_to_branch(owner, repo, branch, commit_message, files)
             return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}"
 
@@ -796,9 +810,10 @@ class AppDevelopmentCrew():
                 branch (str): branche de travail à inspecter.
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
+            undelivered = dict(getattr(crew_self, "_undelivered_paths", {}) or {})
             if not owner or not repo:
-                return build_delivery_report(files, _read_local_file)
-            return build_delivery_report(files, make_file_fetcher(owner, repo, branch))
+                return build_delivery_report(files, _read_local_file, undelivered)
+            return build_delivery_report(files, make_file_fetcher(owner, repo, branch), undelivered)
 
         return qa_verify_delivered_files
 

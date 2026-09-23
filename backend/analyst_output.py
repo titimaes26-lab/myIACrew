@@ -1,12 +1,14 @@
 """Lecture déterministe (en Python, sans LLM) de la sortie de diagnostic_task.
 
-diagnostic_task (voir tasksquestion.yaml) rédige, pour chaque fichier, un titre
-"### Fichier : <chemin>" suivi d'un bloc de code contenant son contenu COMPLET. Jusqu'ici,
-developer_agent devait recopier ce contenu à la main dans ses appels d'outils — la principale
-source de troncature silencieuse du pipeline. Ce module extrait ces fichiers une fois pour
-toutes, pour que :
+diagnostic_task (voir tasksquestion.yaml) encadre chaque fichier livré par deux balises seules
+sur leur ligne : "<<<FICHIER: <chemin>>>>" puis "<<<FIN_FICHIER>>>", avec le contenu COMPLET
+entre les deux. Des balises explicites plutôt que des titres Markdown : un titre "### Fichier :"
+se confond avec un commentaire, une citation de code ou un bloc ``` imbriqué, alors que ces
+balises n'apparaissent jamais par hasard. Jusqu'ici, developer_agent devait recopier ce contenu
+à la main dans ses appels d'outils — la principale source de troncature silencieuse du
+pipeline. Ce module extrait ces fichiers une fois pour toutes, pour que :
 - le guardrail de diagnostic_task rejette une sortie incomplète AVANT qu'elle n'arrive au
-  Développeur (voir find_placeholders) ;
+  Développeur (voir review_diagnostic_output) ;
 - le Développeur committe le contenu extrait tel quel, sans le recopier (voir
   github_commit_analyst_files, crewquestion.py) ;
 - la QA compare le contenu RÉELLEMENT présent sur la branche à celui rédigé par l'Analyste,
@@ -20,14 +22,12 @@ from typing import Callable
 
 from tools import check_syntax_content
 
-# Tolère les variantes de titre qu'un LLM produit en pratique : "### Fichier : x",
-# "**Fichier : `x`**", "### 1. Fichier : x", "### 📄 Fichier : x", "Fichier : x (modifié)".
-# LOOSE_FILE_HEADING sert seulement à détecter qu'un titre de fichier était VISÉ, même si son
-# bloc n'a pas pu être extrait.
-_HEADING_PREFIX = r"(?:#{1,4}\s*)?[^\w\s`]{0,4}\s*(?:\d{1,2}[.)]\s*)?\**\s*"
-FILE_HEADING = re.compile(r"^" + _HEADING_PREFIX + r"Fichier\s*:\s*(.+?)\s*$", re.IGNORECASE)
-LOOSE_FILE_HEADING = re.compile(r"^\W{0,8}(?:\d{1,2}[.)]\s*)?\W{0,4}Fichier\s*:", re.IGNORECASE | re.MULTILINE)
-FENCE_LINE = re.compile(r"^(`{3,}|~{3,})\s*([^`\s]*)")
+FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>>>$", re.IGNORECASE)
+# FIN_FICHIER avec un "_" : "<FIN FICHIER>" serait lu comme une balise HTML par le rendu Markdown
+# de l'interface (et masqué). La variante avec espace reste acceptée si le modèle l'écrit.
+FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*>>>$", re.IGNORECASE)
+FENCE_LINE = re.compile(r"^(`{3,}|~{3,})")
+ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
 
 # Seules les lignes de COMMENTAIRE sont inspectées : un "..." peut apparaître légitimement
 # dans du code (spread JS `...props`, texte d'interface), alors qu'un commentaire
@@ -62,14 +62,6 @@ SHORTCUT_ONLY = re.compile(
 # assumé et documenté, pas un oubli de format.
 NOT_DELIVERED_MARKER = re.compile(r"non\s+r[ée]alis[ée]", re.IGNORECASE)
 
-# La section "Auto-revue" (voir diagnostic_task) vient APRÈS les fichiers et peut citer des
-# extraits sous un titre "Fichier : <chemin>" : on arrête l'extraction à ce titre pour qu'un
-# extrait ne soit jamais pris pour le contenu du fichier.
-SELF_REVIEW_HEADING = re.compile(
-    r"^(?:#{1,4}\s*)?[^\w\s]{0,4}\s*\**\s*auto[- ]?revue\b.{0,30}$", re.IGNORECASE
-)
-ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
-
 # Préfixe de l'erreur renvoyée par un fetch (voir build_delivery_report) pour un fichier qui
 # EXISTE mais dont le contenu n'a pas pu être lu (binaire, encodage) : à ne pas confondre avec
 # un fichier absent.
@@ -84,18 +76,17 @@ MAX_PARALLEL_FETCHES = 8
 
 
 def normalize_path(raw: str) -> str | None:
-    """Chemin relatif propre tiré d'un titre, ou None s'il est inutilisable (vide, hors dépôt).
+    """Chemin relatif propre tiré d'une balise, ou None s'il est inutilisable.
 
-    Retire la mise en forme Markdown (``, **), une note finale entre parenthèses
-    ("src/App.tsx (modifié)") et un préfixe "./" ou "/" : un chemin commençant par "/" est
-    refusé par l'API GitHub, et un chemin décoré créerait un fichier au nom fantaisiste.
+    Retire seulement une mise en forme Markdown parasite (``, **) et un préfixe "./" ou "/"
+    (refusé par l'API GitHub). Tout le reste — espace, note "(extrait)", ".." — rend le chemin
+    invalide : mieux vaut refuser un fichier que l'écrire sous un nom fantaisiste.
     """
     path = raw.strip().strip("*`'\" ")
-    path = re.sub(r"\s+\([^)]*\)$", "", path).strip("*`'\" ")
     path = path.lstrip("/")
     while path.startswith("./"):
         path = path[2:]
-    if not path or " " in path or ".." in PurePosixPath(path).parts:
+    if not path or any(c.isspace() for c in path) or ".." in PurePosixPath(path).parts:
         return None
     return path
 
@@ -104,79 +95,69 @@ def _extension(path: str) -> str:
     return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
 
 
-def _find_closing_fence(lines: list[str], start: int, end: int, fence_str: str, prose: bool) -> int | None:
-    """Index de la ligne qui ferme le bloc ouvert juste avant `start`, cherchée avant `end` (le
-    titre de fichier suivant ou la fin), ou None si le bloc n'est jamais fermé.
-
-    Pour un fichier de texte libre (Markdown...), c'est la DERNIÈRE clôture de la section : un
-    README encadré par ``` contient souvent ses propres blocs ``` (avec ou sans langage), qu'on
-    ne peut pas distinguer ligne à ligne d'une clôture. Pour du code, la première clôture au
-    niveau 0, en suivant les sous-blocs ouverts avec un langage (```bash).
-    """
-    def is_closing(line: str) -> bool:
-        stripped = line.strip()
-        return bool(stripped) and set(stripped) == {fence_str[0]} and len(stripped) >= len(fence_str)
-
-    if prose:
-        candidates = [k for k in range(start, end) if is_closing(lines[k])]
-        return candidates[-1] if candidates else None
-    depth = 0
-    for k in range(start, end):
-        inner = FENCE_LINE.match(lines[k].strip())
-        if not inner or inner.group(1)[0] != fence_str[0]:
-            continue
-        if is_closing(lines[k]):
-            if depth == 0:
-                return k
-            depth -= 1
-        elif inner.group(2):
-            depth += 1
-    return None
+def _strip_outer_fence(body: list[str]) -> list[str]:
+    """Retire le bloc ``` qui encadre le contenu (utile à l'affichage Markdown du rapport), s'il
+    l'encadre ENTIÈREMENT : ouverture en première ligne, clôture en dernière. Les blocs ```
+    intérieurs (README, template literal) font partie du fichier et restent intacts."""
+    first = next((n for n, line in enumerate(body) if line.strip()), None)
+    last = next((n for n in range(len(body) - 1, -1, -1) if body[n].strip()), None)
+    if first is None or first == last:
+        return body
+    opening = FENCE_LINE.match(body[first].strip())
+    closing = body[last].strip()
+    if opening and set(closing) == {opening.group(1)[0]} and len(closing) >= len(opening.group(1)):
+        return body[first + 1:last]
+    return body
 
 
 def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
-    """(fichiers extraits, chemins annoncés dont le bloc est inexploitable).
+    """(fichiers extraits, fichiers annoncés mais inexploitables, avec la raison).
 
-    Chaque section va d'un titre "Fichier : <chemin>" au titre suivant (ou à la section
-    "Auto-revue", qui arrête l'extraction : ses extraits ne sont jamais des fichiers). Un bloc
-    jamais fermé (réponse coupée par la limite de tokens) est signalé, jamais committé à moitié.
-    En cas de chemin dupliqué, la DERNIÈRE version gagne : l'Analyste donne sa correction après
-    avoir éventuellement cité le code d'origine (voir la consigne de diagnostic_task, qui réserve
-    ce titre au contenu final).
+    Seules les balises comptent : un titre, un commentaire ou un extrait cité hors balises
+    n'est jamais pris pour un fichier. Une balise d'ouverture sans fermeture (réponse coupée
+    par la limite de tokens, ou nouvelle ouverture avant la fermeture) rend le fichier
+    inexploitable, jamais committé à moitié. En cas de chemin dupliqué, la DERNIÈRE version
+    fait foi — y compris si elle est inexploitable : une version antérieure (souvent une
+    citation du code d'origine) n'est alors jamais committée à sa place.
     """
-    if not text:
-        return [], []
-    lines = text.splitlines()
-    stop = next((n for n, line in enumerate(lines) if SELF_REVIEW_HEADING.match(line.strip())), len(lines))
-    headings = [n for n in range(stop) if FILE_HEADING.match(lines[n].strip())]
     files: dict[str, str] = {}
-    broken: list[str] = []
-    for index, i in enumerate(headings):
-        section_end = headings[index + 1] if index + 1 < len(headings) else stop
-        raw_path = FILE_HEADING.match(lines[i].strip()).group(1)
-        path = normalize_path(raw_path)
-        j = i + 1
-        while j < section_end and not lines[j].strip():
-            j += 1
-        fence = FENCE_LINE.match(lines[j].strip()) if j < section_end else None
-        if not fence:
-            # Un titre sans bloc annoncé lui-même "NON réalisé" est un choix documenté.
-            if path and not NOT_DELIVERED_MARKER.search(lines[i]):
-                broken.append(f"{path} (titre sans bloc de code juste en dessous)")
+    broken: dict[str, str] = {}
+    current_path: str | None = None
+    current_raw = ""
+    body: list[str] = []
+
+    def mark_broken(path: str | None, raw: str, reason: str) -> None:
+        key = path or raw.strip() or "(chemin vide)"
+        files.pop(key, None)
+        broken[key] = reason
+
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        start = FILE_START.match(stripped)
+        if start:
+            if current_raw or current_path:
+                mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
+            current_raw = start.group(1) or " "
+            current_path = normalize_path(start.group(1))
+            body = []
             continue
-        if not path:
-            broken.append(f"{raw_path.strip()} (chemin invalide)")
+        if FILE_END.match(stripped):
+            if current_path:
+                content = "\n".join(_strip_outer_fence(body))
+                files[current_path] = content + "\n" if content and not content.endswith("\n") else content
+                broken.pop(current_path, None)
+            elif current_raw:
+                mark_broken(None, current_raw, "chemin invalide")
+            current_path, current_raw, body = None, "", []
             continue
-        closing = _find_closing_fence(
-            lines, j + 1, section_end, fence.group(1), _extension(path) in PROSE_EXTENSIONS
-        )
-        if closing is None:
-            broken.append(f"{path} (bloc de code jamais fermé : contenu probablement tronqué)")
-            continue
-        content = "\n".join(lines[j + 1:closing])
-        files[path] = content + "\n" if content and not content.endswith("\n") else content
-    broken = [b for b in broken if b.split(" ", 1)[0] not in files]
-    return [{"path": p, "content": c} for p, c in files.items()], broken
+        if current_raw or current_path:
+            body.append(line)
+    if current_raw or current_path:
+        mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
+    return (
+        [{"path": p, "content": c} for p, c in files.items()],
+        [f"{p} ({reason})" for p, reason in broken.items()],
+    )
 
 
 def parse_file_blocks(text: str) -> list[dict]:
@@ -216,15 +197,14 @@ def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str
         )
     if not files and not broken:
         # "non réalisé" ne dispense du signalement que si la réponse ne contient AUCUN code :
-        # des blocs de code présents mais non extraits sont un problème de format, pas un choix.
+        # des blocs de code hors balises sont un problème de format, pas un choix assumé.
         has_code = bool(ANY_FENCE.search(text or ""))
-        declared_nothing = NOT_DELIVERED_MARKER.search(text or "") and not has_code
-        if LOOSE_FILE_HEADING.search(text or "") or not declared_nothing:
+        if has_code or not NOT_DELIVERED_MARKER.search(text or ""):
             problems.append(
-                "Aucun fichier exploitable trouvé : chaque fichier doit être introduit par une ligne "
-                "'### Fichier : <chemin>' suivie IMMÉDIATEMENT d'un bloc de code (```) contenant son "
-                "contenu COMPLET. Si tu ne peux livrer aucun fichier, dis-le explicitement en le "
-                "marquant 'NON réalisé' avec la raison."
+                "Aucun fichier exploitable trouvé : encadre CHAQUE fichier livré par une ligne "
+                "'<<<FICHIER: <chemin relatif>>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
+                "contenu COMPLET entre les deux. Si tu ne peux livrer aucun fichier, dis-le "
+                "explicitement en le marquant 'NON réalisé' avec la raison."
             )
     placeholders = find_placeholders(files)
     if placeholders:
@@ -232,7 +212,7 @@ def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str
         problems.append(
             "Contenu incomplet détecté (commentaires de remplacement qui seraient committés tels "
             f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
-            "retire leur bloc et liste-les comme 'NON réalisé' dans ton plan."
+            "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
         )
     if not problems:
         return files, None, set()
@@ -248,12 +228,14 @@ def format_manifest(files: list[dict]) -> str:
 def build_delivery_report(
     files: list[dict],
     fetch: Callable[[str], tuple[str | None, str | None]],
+    undelivered: dict[str, str] | None = None,
 ) -> str:
     """Rapport par fichier : présence réelle, identité avec la version de l'Analyste, syntaxe.
 
     fetch(path) -> (contenu, erreur) : contenu None en cas d'échec, avec l'erreur préfixée par
     FILE_ABSENT (absence confirmée) ou PRESENT_UNREADABLE (présent mais illisible) ; toute autre
-    erreur rend le fichier NON VÉRIFIABLE. Les résultats sont étiquetés [vérifié outil] : ils proviennent
+    erreur rend le fichier NON VÉRIFIABLE. undelivered : {chemin: raison} des fichiers dont
+    l'écriture a été refusée — ils ne sont pas relus (on lirait l'ancien fichier à leur place). Les résultats sont étiquetés [vérifié outil] : ils proviennent
     d'une comparaison exacte en Python et de check_syntax_content, jamais d'une lecture LLM.
     """
     if not files:
@@ -263,11 +245,17 @@ def build_delivery_report(
         )
     # Lectures en parallèle (une par fichier) : sur un gros lot, des allers-retours GitHub
     # séquentiels ajouteraient des dizaines de secondes à un seul appel d'outil de la QA.
+    undelivered = undelivered or {}
+    to_fetch = [f for f in files if f["path"] not in undelivered]
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as pool:
-        fetched = list(pool.map(lambda f: fetch(f["path"]), files))
+        fetched = dict(zip((f["path"] for f in to_fetch), pool.map(lambda f: fetch(f["path"]), to_fetch)))
     rows = []
-    for f, (actual, error) in zip(files, fetched):
+    for f in files:
         path, expected = f["path"], f["content"]
+        if path in undelivered:
+            rows.append(f"### {path}\n- Présence : NON LIVRÉ, écriture refusée [vérifié outil] — {undelivered[path]}")
+            continue
+        actual, error = fetched[path]
         if actual is None and (error or "").startswith(PRESENT_UNREADABLE):
             rows.append(
                 f"### {path}\n- Présence : PRÉSENT [vérifié outil]\n"
