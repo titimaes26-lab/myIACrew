@@ -584,21 +584,40 @@ def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
+MAX_RETRY_CONTEXT_CHARS = 4000
+
+_PATH_TOKEN = re.compile(r"[\w./-]+\.[A-Za-z0-9]+")
+# "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") est un retrait ; suivi
+# de ": aucun" ("Fichiers NON réalisés : aucun"), c'est l'inverse.
+# "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
+_NOT_DONE = re.compile(r"non\s+r[ée]alis[ée]e?s?(?!\w)(?!\s*:\s*(aucun|n[ée]ant|none|rien)\b)", re.IGNORECASE)
+_NEGATION_BEFORE = re.compile(r"(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
+
+def _is_withdrawn(text: str, path: str) -> bool:
+    """Vrai si une ligne de `text` déclare `path` "NON réalisé" (retrait explicite) : `path` doit
+    être le DERNIER chemin cité avant la mention, pour qu'une ligne qui en liste plusieurs
+    ("src/a.ts réalisé ; src/b.ts NON réalisé") ne retire que le bon, et la mention ne doit pas
+    être niée ("rien de NON réalisé")."""
+    for line in text.splitlines():
+        for match in _NOT_DONE.finditer(line):
+            before = line[:match.start()]
+            if _NEGATION_BEFORE.search(before):
+                continue
+            tokens = _PATH_TOKEN.findall(before)
+            if tokens and tokens[-1] == path:
+                return True
+    return False
+
 # Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
 # "Verdict : ✅ GO", "Verdict : GO avec réserves", "Verdict : NON GO", ou "## Verdict" en
 # titre suivi de "**GO**" sur une ligne suivante.
-MAX_RETRY_CONTEXT_CHARS = 4000
-
-def _is_withdrawn(text: str, path: str) -> bool:
-    """Vrai si une ligne de `text` mentionne `path` puis "NON réalisé" (retrait explicite)."""
-    # "(?!s?\s*:)" : "Fichiers a.ts, b.ts — NON réalisés : aucun" n'est pas un retrait.
-    pattern = re.compile(re.escape(path) + r"\b.{0,80}?non\s+r[ée]alis[ée](?!e?s?\s*:)", re.IGNORECASE)
-    return any(pattern.search(line) for line in text.splitlines())
-
+# La valeur doit être un mot ISOLÉ en fin de ligne (ou suivi d'une parenthèse/d'un tiret de
+# précision) : "verdict: No go-live possible" ou "... :\nGo figure" ne sont pas des verdicts.
 QA_VERDICT = re.compile(
     r"verdict[^:\n—–=-]{0,60}(?:[:—–=-]|[ \t*]*\n)\s*\W{0,8}"
-    r"(GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO)\b",
-    re.IGNORECASE,
+    r"(GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO)"
+    r"(?![\w-])(?=[*_`.!)]*[ \t]*(?:$|[(—–:]|-\s))",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 def _qa_verdict_guardrail(task_output):

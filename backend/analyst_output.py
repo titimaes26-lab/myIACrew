@@ -28,7 +28,8 @@ FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
 MARKER_LIKE = re.compile(r"^<<<.*FICHIER", re.IGNORECASE)
 # FIN_FICHIER avec un "_" : "<FIN FICHIER>" serait lu comme une balise HTML par le rendu Markdown
 # de l'interface (et masqué). La variante avec espace reste acceptée si le modèle l'écrit.
-FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*>>>$", re.IGNORECASE)
+# Variante tolérée : "<<<FIN_FICHIER: src/a.ts>>>" (le modèle répète parfois le chemin).
+FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::[^>]*)?>{3,}\s*$", re.IGNORECASE)
 FENCE_LINE = re.compile(r"^(`{3,}|~{3,})")
 ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
 
@@ -51,12 +52,20 @@ SHORTCUT_WORDS = (
     r"m[êe]me|previous|pr[ée]c[ée]dente?s?|etc|remaining|suite)(?![\w])"
 )
 # Un espace est exigé entre l'ellipse et le mot : "// ...rest is forwarded" décrit un spread.
-LEADING_ELLIPSIS = re.compile(r"^(\.{3}|…)(\s*$|\s*[*/}>-]|\s+" + SHORTCUT_WORDS + r")", re.IGNORECASE)
+# Jusqu'à deux articles/déterminants sont tolérés avant le mot : "// ... le reste du fichier",
+# "// ... the rest", "# ... les autres fonctions".
+_FILLER_WORDS = r"((le|la|les|l'|the|all|tout|toute|toutes|tous)\s+){0,2}"
+LEADING_ELLIPSIS = re.compile(
+    r"^(\.{3}|…)(\s*$|\s*[*/}>-]|\s+" + _FILLER_WORDS + SHORTCUT_WORDS + r")", re.IGNORECASE
+)
 SHORTCUT_ONLY = re.compile(
     r"^(\.{3}|…)?\s*(le\s+|the\s+)?"
     r"(reste du (code|fichier|composant)|code (existant|inchang[ée])|"
     r"rest of (the )?(code|file|component)|(existing|unchanged) code)"
-    r"(\s+(inchang[ée]|existant|identique|ici|here|unchanged|as before|comme avant))*"
+    # "... est inchangé", "... remains unchanged", "... restent identiques" : un verbe d'état
+    # suivi de la formule reste un raccourci, pas une vraie phrase.
+    r"(\s+(est|sont|reste|restent|remains?|stays?|is|are))?"
+    r"(\s+(inchang[ée]e?s?|existante?s?|identiques?|ici|here|unchanged|the same|as before|comme avant))*"
     r"\s*(\.{3}|…)?\s*[.:;*/}>-]*\s*$",
     re.IGNORECASE,
 )
@@ -199,6 +208,11 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
             continue
         if MARKER_LIKE.match(stripped):
             mark_broken(None, stripped[:80], "balise mal formée, attendu : <<<FICHIER: chemin/du/fichier>>>")
+            if current_raw or current_path:
+                # Une balise mal formée en plein fichier annonce presque toujours le fichier
+                # SUIVANT : continuer ferait absorber son contenu par le fichier en cours.
+                mark_broken(current_path, current_raw, "balise mal formée rencontrée avant <<<FIN_FICHIER>>>")
+                current_path, current_raw, body = None, "", []
             continue
         if current_raw or current_path:
             body.append(line)

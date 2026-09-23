@@ -202,3 +202,23 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     a._reset_execution_state({"work_branch": "", "conversation_id": "1"})
     b._reset_execution_state({"work_branch": "", "conversation_id": "2"})
     assert a._workspace != b._workspace
+
+
+@pytest.mark.parametrize("text, path, expected", [
+    ("- src/big.ts — NON réalisé : fichier trop volumineux", "src/big.ts", True),
+    ("- src/a.ts réalisé ; src/b.ts NON réalisé (trop gros)", "src/a.ts", False),
+    ("- src/a.ts réalisé ; src/b.ts NON réalisé (trop gros)", "src/b.ts", True),
+    ("Fichiers src/b.ts — NON réalisés : aucun", "src/b.ts", False),
+    ("- src/App.tsx : réécrit en entier (rien de NON réalisé)", "src/App.tsx", False),
+    ("- src/App.tsx.bak NON réalisé", "src/App.tsx", False),
+])
+def test_is_withdrawn(text, path, expected):
+    assert cq._is_withdrawn(text, path) is expected
+
+
+@pytest.mark.parametrize("text", [
+    "verdict: No go-live possible sans tests",
+    "Le verdict ne peut pas être rendu :\nGo figure",
+])
+def test_incidental_verdict_mentions_are_not_verdicts(text):
+    assert cq.QA_VERDICT.search(text) is None

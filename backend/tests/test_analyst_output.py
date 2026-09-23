@@ -204,3 +204,24 @@ def test_note_after_closing_fence_is_flagged_not_committed():
     text = "<<<FICHIER: a.py>>>\n```python\nx = 1\n```\n\nNote : ok\n<<<FIN_FICHIER>>>\n"
     files, broken = parse_file_sections(text)
     assert files == [] and "a.py" in broken
+
+
+def test_shortcuts_with_articles_and_state_verbs_are_detected():
+    files = [{"path": "a.ts", "content": (
+        "// ... le reste du fichier est inchangé\n"
+        "// ... the rest remains unchanged\n"
+        "// le reste du code est inchangé\n"
+        "// Code inchangé si l'utilisateur n'est pas connecté\n"
+    )}, {"path": "b.py", "content": "# ... les autres fonctions restent identiques\n"}]
+    assert [(p, n) for p, n, _ in find_placeholders(files)] == [("a.ts", 1), ("a.ts", 2), ("a.ts", 3), ("b.py", 1)]
+
+
+def test_malformed_marker_inside_open_file_does_not_merge_files():
+    text = "<<<FICHIER: a.py>>>\nx = 1\n<<<FICHIER b.py>>>\ny = 2\n<<<FIN_FICHIER>>>\n"
+    files, broken = parse_file_sections(text)
+    assert files == [] and "a.py" in broken
+
+
+def test_end_marker_repeating_the_path_is_accepted():
+    text = "<<<FICHIER: src/a.ts>>>\nexport const a = 1;\n<<<FIN_FICHIER: src/a.ts>>>\n"
+    assert parse_file_sections(text) == ([{"path": "src/a.ts", "content": "export const a = 1;\n"}], {})
