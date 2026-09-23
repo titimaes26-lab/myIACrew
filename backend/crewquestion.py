@@ -42,7 +42,7 @@ from github_tools import (
     track_edit_failures,
     write_files_to_branch,
 )
-from analyst_output import build_delivery_report, format_manifest, review_diagnostic_output
+from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, build_delivery_report, format_manifest, review_diagnostic_output
 
 # --- MÉTRIQUES & PAUSES ---
 class ExecutionMetrics:
@@ -496,12 +496,22 @@ def _is_safe_local_path(path: str) -> bool:
     candidate = Path(path)
     return not candidate.is_absolute() and ".." not in candidate.parts
 
+# Fichiers du backend lui-même (et son .env, son dépôt git) : en mode local, le dossier de
+# travail est celui du serveur, et un fichier livré nommé "main.py" ou ".env" écraserait sinon le
+# serveur en cours d'exécution. Tout AUTRE fichier existant peut être mis à jour — sans quoi aucun
+# BUGFIX/FEATURE local sur un fichier existant ne pourrait jamais être livré.
+BACKEND_DIR = Path(__file__).resolve().parent
+
+def _is_protected_local_target(target: Path) -> bool:
+    resolved = target.resolve()
+    if resolved.parent == BACKEND_DIR and resolved.is_file():
+        return True
+    return resolved.name.startswith(".env") or ".git" in resolved.parts
+
 def _write_files_locally(files: list[dict]) -> str:
     """Pendant disque local de write_files_to_branch (mode sans repository cible).
 
-    Ne remplace JAMAIS un fichier existant (même comportement que file_write_tool, qui refuse
-    d'écraser par défaut) : le dossier de travail est celui du backend lui-même, et un chemin
-    comme "main.py" ou ".env" écraserait sinon le serveur en cours d'exécution.
+    Refuse d'écrire sur un fichier du backend lui-même (voir _is_protected_local_target).
     """
     written, rejected = [], []
     for f in files:
@@ -514,8 +524,8 @@ def _write_files_locally(files: list[dict]) -> str:
             rejected.append(f"- '{path}' : {syntax_issue}")
             continue
         target = Path(path)
-        if target.exists():
-            rejected.append(f"- '{path}' : existe déjà sur le disque local, écrasement refusé")
+        if _is_protected_local_target(target):
+            rejected.append(f"- '{path}' : fichier du serveur backend lui-même, écrasement refusé")
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -534,7 +544,11 @@ def _read_local_file(path: str) -> tuple[str | None, str | None]:
     try:
         return Path(path).read_text(encoding="utf-8"), None
     except FileNotFoundError:
-        return None, f"'{path}' n'existe pas sur le disque local"
+        return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur le disque local"
+    except IsADirectoryError:
+        return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
+    except UnicodeDecodeError:
+        return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
@@ -704,6 +718,7 @@ class AppDevelopmentCrew():
 
     def _reset_execution_state(self) -> None:
         self._analyst_files = []
+        self._excluded_analyst_paths = []
         self._diagnostic_guardrail_failures = 0
 
     def _diagnostic_guardrail(self, task_output):
@@ -717,6 +732,7 @@ class AppDevelopmentCrew():
         # committera : même accepté en dernier recours, il écraserait le vrai fichier par une
         # version tronquée. Les fichiers sains du lot restent committables.
         self._analyst_files = [f for f in files if f["path"] not in faulty_paths]
+        self._excluded_analyst_paths = sorted(faulty_paths)
         if issue is None:
             return True, task_output
         self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1
@@ -743,6 +759,14 @@ class AppDevelopmentCrew():
                 commit_message (str): message de commit.
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
+            excluded = list(getattr(crew_self, "_excluded_analyst_paths", []) or [])
+            excluded_note = (
+                "\nEXCLUS volontairement (contenu incomplet, ex: '// ... reste du code') : "
+                + ", ".join(excluded)
+                + ". Ne les committe JAMAIS, avec aucun outil : liste-les comme non livrés."
+            ) if excluded else ""
+            if not files and excluded:
+                return f"INFO : aucun fichier committable.{excluded_note}"
             if not files:
                 return (
                     "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
@@ -751,9 +775,9 @@ class AppDevelopmentCrew():
                 )
             manifest = format_manifest(files)
             if not owner or not repo:
-                return f"{_write_files_locally(files)}\nFichiers concernés :\n{manifest}"
+                return f"{_write_files_locally(files)}\nFichiers concernés :\n{manifest}{excluded_note}"
             result = write_files_to_branch(owner, repo, branch, commit_message, files)
-            return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}"
+            return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}"
 
         return github_commit_analyst_files
 

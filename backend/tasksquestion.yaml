@@ -179,7 +179,10 @@ diagnostic_task:
     exactement "### Fichier : <chemin relatif>" et être immédiatement suivi du bloc de code. Pour un
     fichier Markdown qui contient lui-même des blocs de code, encadre-le avec quatre backticks.
     Un contrôle automatique refuse ta réponse si un fichier contient un commentaire de raccourci
-    ("// ...", "reste du code inchangé", "à compléter") : tu devras alors la refaire.
+    ("// ...", "// ... reste", "reste du code inchangé", "code existant") : tu devras alors la
+    refaire. Réserve le titre "### Fichier : <chemin>" au contenu FINAL et complet ; pour citer
+    du code existant (diagnostic, traçabilité), utilise un autre titre, par exemple
+    "Extrait actuel de <chemin>".
 
     Avant de rendre ta réponse, fais une AUTO-REVUE de chaque fichier et termine par une section
     "Auto-revue" d'une ligne par fichier : imports tous présents et utilisés, exports réellement

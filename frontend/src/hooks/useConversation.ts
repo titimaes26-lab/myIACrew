@@ -425,7 +425,9 @@ export function useConversation(accessToken: string, apiUrl: string) {
           pushRunningTurn(undefined, clarifiedRequest);
           const report = await api.qualify(clarifiedRequest, conversationId, controller.signal);
           if (myGeneration !== conversationGenerationRef.current) return;
-          effectiveWorkflow = report.request_type;
+          // confidence === 0 : repli "qualification impossible" du backend (DESIGN_AND_DEV par
+          // défaut, le workflow le plus coûteux) — le type provisoire reste alors le meilleur choix.
+          if (report.confidence !== 0) effectiveWorkflow = report.request_type;
           setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: effectiveWorkflow } : turn)));
         }
         const data = await api.execute({

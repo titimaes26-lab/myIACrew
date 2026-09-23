@@ -21,10 +21,12 @@ from typing import Callable
 from tools import check_syntax_content
 
 # Tolère les variantes de titre qu'un LLM produit en pratique : "### Fichier : x",
-# "**Fichier : `x`**", "Fichier : x (modifié)". LOOSE_FILE_HEADING sert seulement à
-# détecter qu'un titre de fichier était VISÉ, même si son bloc n'a pas pu être extrait.
-FILE_HEADING = re.compile(r"^(?:#{2,4}\s*)?\**\s*Fichier\s*:\s*(.+?)\s*$", re.IGNORECASE)
-LOOSE_FILE_HEADING = re.compile(r"^\W{0,6}Fichier\s*:", re.IGNORECASE | re.MULTILINE)
+# "**Fichier : `x`**", "### 1. Fichier : x", "### 📄 Fichier : x", "Fichier : x (modifié)".
+# LOOSE_FILE_HEADING sert seulement à détecter qu'un titre de fichier était VISÉ, même si son
+# bloc n'a pas pu être extrait.
+_HEADING_PREFIX = r"(?:#{1,4}\s*)?[^\w\s`]{0,4}\s*(?:\d{1,2}[.)]\s*)?\**\s*"
+FILE_HEADING = re.compile(r"^" + _HEADING_PREFIX + r"Fichier\s*:\s*(.+?)\s*$", re.IGNORECASE)
+LOOSE_FILE_HEADING = re.compile(r"^\W{0,8}(?:\d{1,2}[.)]\s*)?\W{0,4}Fichier\s*:", re.IGNORECASE | re.MULTILINE)
 FENCE_LINE = re.compile(r"^(`{3,}|~{3,})\s*([^`\s]*)")
 
 # Seules les lignes de COMMENTAIRE sont inspectées : un "..." peut apparaître légitimement
@@ -32,24 +34,26 @@ FENCE_LINE = re.compile(r"^(`{3,}|~{3,})\s*([^`\s]*)")
 # "// ... reste du code inchangé" ne l'est jamais dans un fichier complet. "#" n'est un
 # commentaire que pour certaines extensions (ailleurs, c'est un titre Markdown, un sélecteur
 # CSS d'id...) et les fichiers de texte libre ne sont pas inspectés du tout.
-SLASH_COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*|<!--)")
-HASH_COMMENT = re.compile(r"^\s*#")
+COMMENT_MARKER = re.compile(r"^\s*(//|/\*+|\*|\{/\*|<!--|#)\s*")
 HASH_COMMENT_EXTENSIONS = {"py", "yaml", "yml", "sh", "toml", "rb"}
 PROSE_EXTENSIONS = {"md", "mdx", "txt", "rst"}
-# Une ellipse seule ("// ...") ou suivie d'un mot de raccourci ("// ... reste", "# ... code
-# existant") trahit un fichier incomplet ; "// ...args are forwarded" (commentaire légitime
-# sur un spread) ou un "TODO : à compléter" dans un fichier par ailleurs complet, non.
+# Deux formes de raccourci, testées sur le TEXTE du commentaire (marqueur retiré) :
+# 1. une ellipse en tête, seule ou suivie d'un mot de raccourci : "// ...", "// ... reste",
+#    "# ... code existant" — mais pas "// ...args are forwarded" (commentaire sur un spread) ;
+# 2. un commentaire qui n'est QUE la formule de raccourci : "// reste du code inchangé",
+#    "/* code existant */" — mais pas "// Code inchangé si l'utilisateur n'est pas connecté",
+#    une vraie phrase qui continue après la formule.
 SHORTCUT_WORDS = (
     r"(reste|rest|code|existing|existant|inchang[ée]e?s?|unchanged|autres?|others?|same|"
     r"m[êe]me|previous|pr[ée]c[ée]dente?s?|etc|remaining|suite)(?![\w])"
 )
-PLACEHOLDER_IN_COMMENT = re.compile(
-    r"^\s*(//|#|/\*|\*|\{/\*|<!--)\s*(\.{3}|…)\s*($|\*/|\*/\}|-->|" + SHORTCUT_WORDS + r")"
-    r"|reste du (code|fichier|composant)"
-    r"|code inchang[ée]"
-    r"|rest of (the )?(code|file|component)"
-    r"|(existing|unchanged) code\s*(\.{3}|…)"
-    r"|(\.{3}|…)\s*(existing|unchanged) code",
+LEADING_ELLIPSIS = re.compile(r"^(\.{3}|…)\s*($|[*/}>-]|" + SHORTCUT_WORDS + r")", re.IGNORECASE)
+SHORTCUT_ONLY = re.compile(
+    r"^(\.{3}|…)?\s*(le\s+|the\s+)?"
+    r"(reste du (code|fichier|composant)|code (existant|inchang[ée])|"
+    r"rest of (the )?(code|file|component)|(existing|unchanged) code)"
+    r"(\s+(inchang[ée]|existant|identique|ici|here|unchanged|as before|comme avant))*"
+    r"\s*(\.{3}|…)?\s*[.:;*/}>-]*\s*$",
     re.IGNORECASE,
 )
 
@@ -61,13 +65,19 @@ NOT_DELIVERED_MARKER = re.compile(r"non\s+r[ée]alis[ée]", re.IGNORECASE)
 # La section "Auto-revue" (voir diagnostic_task) vient APRÈS les fichiers et peut citer des
 # extraits sous un titre "Fichier : <chemin>" : on arrête l'extraction à ce titre pour qu'un
 # extrait ne soit jamais pris pour le contenu du fichier.
-SELF_REVIEW_HEADING = re.compile(r"^#{1,4}\s*\**\s*auto[- ]?revue", re.IGNORECASE)
+SELF_REVIEW_HEADING = re.compile(
+    r"^(?:#{1,4}\s*)?[^\w\s]{0,4}\s*\**\s*auto[- ]?revue\b.{0,30}$", re.IGNORECASE
+)
 ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
 
 # Préfixe de l'erreur renvoyée par un fetch (voir build_delivery_report) pour un fichier qui
 # EXISTE mais dont le contenu n'a pas pu être lu (binaire, encodage) : à ne pas confondre avec
 # un fichier absent.
 PRESENT_UNREADABLE = "PRÉSENT_ILLISIBLE"
+# Préfixe réservé à une absence CONFIRMÉE (404, fichier introuvable) : toute autre erreur
+# (authentification, rate limit, panne réseau) rend le fichier NON VÉRIFIABLE, jamais ABSENT
+# — sinon une panne GitHub passerait pour une preuve outillée de livraison manquante.
+FILE_ABSENT = "ABSENT"
 
 MAX_DIFF_LINES_PER_FILE = 40
 MAX_PARALLEL_FETCHES = 8
@@ -94,70 +104,77 @@ def _extension(path: str) -> str:
     return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
 
 
+def _find_closing_fence(lines: list[str], start: int, end: int, fence_str: str, prose: bool) -> int | None:
+    """Index de la ligne qui ferme le bloc ouvert juste avant `start`, cherchée avant `end` (le
+    titre de fichier suivant ou la fin), ou None si le bloc n'est jamais fermé.
+
+    Pour un fichier de texte libre (Markdown...), c'est la DERNIÈRE clôture de la section : un
+    README encadré par ``` contient souvent ses propres blocs ``` (avec ou sans langage), qu'on
+    ne peut pas distinguer ligne à ligne d'une clôture. Pour du code, la première clôture au
+    niveau 0, en suivant les sous-blocs ouverts avec un langage (```bash).
+    """
+    def is_closing(line: str) -> bool:
+        stripped = line.strip()
+        return bool(stripped) and set(stripped) == {fence_str[0]} and len(stripped) >= len(fence_str)
+
+    if prose:
+        candidates = [k for k in range(start, end) if is_closing(lines[k])]
+        return candidates[-1] if candidates else None
+    depth = 0
+    for k in range(start, end):
+        inner = FENCE_LINE.match(lines[k].strip())
+        if not inner or inner.group(1)[0] != fence_str[0]:
+            continue
+        if is_closing(lines[k]):
+            if depth == 0:
+                return k
+            depth -= 1
+        elif inner.group(2):
+            depth += 1
+    return None
+
+
 def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
     """(fichiers extraits, chemins annoncés dont le bloc est inexploitable).
 
-    Un bloc ouvert par ``` se ferme sur une ligne composée uniquement du même caractère, au
-    moins aussi longue. Les blocs IMBRIQUÉS sont suivis : une ligne ```bash (avec un langage)
-    à l'intérieur ouvre un sous-bloc, fermé par le ``` suivant — un README encadré par ```
-    au lieu de ```` n'est donc pas coupé à son premier exemple de commande. Un bloc jamais
-    fermé (réponse coupée par la limite de tokens) est signalé, jamais committé à moitié.
-    En cas de chemin dupliqué, la version la plus LONGUE gagne : un doublon est presque
-    toujours un extrait cité plus bas, jamais une réécriture plus courte du fichier entier.
+    Chaque section va d'un titre "Fichier : <chemin>" au titre suivant (ou à la section
+    "Auto-revue", qui arrête l'extraction : ses extraits ne sont jamais des fichiers). Un bloc
+    jamais fermé (réponse coupée par la limite de tokens) est signalé, jamais committé à moitié.
+    En cas de chemin dupliqué, la DERNIÈRE version gagne : l'Analyste donne sa correction après
+    avoir éventuellement cité le code d'origine (voir la consigne de diagnostic_task, qui réserve
+    ce titre au contenu final).
     """
     if not text:
         return [], []
     lines = text.splitlines()
+    stop = next((n for n, line in enumerate(lines) if SELF_REVIEW_HEADING.match(line.strip())), len(lines))
+    headings = [n for n in range(stop) if FILE_HEADING.match(lines[n].strip())]
     files: dict[str, str] = {}
     broken: list[str] = []
-    i = 0
-    while i < len(lines):
-        if SELF_REVIEW_HEADING.match(lines[i].strip()):
-            break
-        heading = FILE_HEADING.match(lines[i].strip())
-        if not heading:
-            i += 1
-            continue
-        path = normalize_path(heading.group(1))
+    for index, i in enumerate(headings):
+        section_end = headings[index + 1] if index + 1 < len(headings) else stop
+        raw_path = FILE_HEADING.match(lines[i].strip()).group(1)
+        path = normalize_path(raw_path)
         j = i + 1
-        while j < len(lines) and not lines[j].strip():
+        while j < section_end and not lines[j].strip():
             j += 1
-        fence = FENCE_LINE.match(lines[j].strip()) if j < len(lines) else None
+        fence = FENCE_LINE.match(lines[j].strip()) if j < section_end else None
         if not fence:
             # Un titre sans bloc annoncé lui-même "NON réalisé" est un choix documenté.
             if path and not NOT_DELIVERED_MARKER.search(lines[i]):
                 broken.append(f"{path} (titre sans bloc de code juste en dessous)")
-            i += 1
             continue
-        fence_str = fence.group(1)
-        body: list[str] = []
-        depth = 0
-        k = j + 1
-        closed = False
-        while k < len(lines):
-            stripped = lines[k].strip()
-            inner = FENCE_LINE.match(stripped)
-            if inner and inner.group(1)[0] == fence_str[0]:
-                is_bare = set(stripped) == {fence_str[0]}
-                if is_bare and depth == 0 and len(stripped) >= len(fence_str):
-                    closed = True
-                    break
-                if is_bare:
-                    depth = max(depth - 1, 0)
-                elif inner.group(2):
-                    depth += 1
-            body.append(lines[k])
-            k += 1
         if not path:
-            broken.append(f"{heading.group(1).strip()} (chemin invalide)")
-        elif not closed:
+            broken.append(f"{raw_path.strip()} (chemin invalide)")
+            continue
+        closing = _find_closing_fence(
+            lines, j + 1, section_end, fence.group(1), _extension(path) in PROSE_EXTENSIONS
+        )
+        if closing is None:
             broken.append(f"{path} (bloc de code jamais fermé : contenu probablement tronqué)")
-        else:
-            content = "\n".join(body)
-            content = content + "\n" if content and not content.endswith("\n") else content
-            if len(content) > len(files.get(path, "")):
-                files[path] = content
-        i = k + 1
+            continue
+        content = "\n".join(lines[j + 1:closing])
+        files[path] = content + "\n" if content and not content.endswith("\n") else content
     broken = [b for b in broken if b.split(" ", 1)[0] not in files]
     return [{"path": p, "content": c} for p, c in files.items()], broken
 
@@ -175,8 +192,11 @@ def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
             continue
         hash_is_comment = ext in HASH_COMMENT_EXTENSIONS
         for n, line in enumerate(f["content"].splitlines(), start=1):
-            is_comment = SLASH_COMMENT.match(line) or (hash_is_comment and HASH_COMMENT.match(line))
-            if is_comment and PLACEHOLDER_IN_COMMENT.search(line):
+            marker = COMMENT_MARKER.match(line)
+            if not marker or (marker.group(1) == "#" and not hash_is_comment):
+                continue
+            body = line[marker.end():].strip()
+            if LEADING_ELLIPSIS.match(body) or SHORTCUT_ONLY.match(body):
                 issues.append((f["path"], n, line.strip()[:120]))
     return issues
 
@@ -231,8 +251,9 @@ def build_delivery_report(
 ) -> str:
     """Rapport par fichier : présence réelle, identité avec la version de l'Analyste, syntaxe.
 
-    fetch(path) -> (contenu, erreur) : contenu None si le fichier est absent ou illisible, avec
-    l'erreur correspondante (préfixée par PRESENT_UNREADABLE s'il existe mais n'a pas pu être lu). Les résultats sont étiquetés [vérifié outil] : ils proviennent
+    fetch(path) -> (contenu, erreur) : contenu None en cas d'échec, avec l'erreur préfixée par
+    FILE_ABSENT (absence confirmée) ou PRESENT_UNREADABLE (présent mais illisible) ; toute autre
+    erreur rend le fichier NON VÉRIFIABLE. Les résultats sont étiquetés [vérifié outil] : ils proviennent
     d'une comparaison exacte en Python et de check_syntax_content, jamais d'une lecture LLM.
     """
     if not files:
@@ -253,8 +274,14 @@ def build_delivery_report(
                 f"- Contenu : NON VÉRIFIABLE, fichier illisible par l'outil — {error}"
             )
             continue
+        if actual is None and (error or "").startswith(FILE_ABSENT):
+            rows.append(f"### {path}\n- Présence : ABSENT [vérifié outil] — {error}")
+            continue
         if actual is None:
-            rows.append(f"### {path}\n- Présence : ABSENT [vérifié outil] — {error or 'introuvable'}")
+            rows.append(
+                f"### {path}\n- Présence : NON VÉRIFIABLE (erreur de l'outil, pas une preuve "
+                f"d'absence) — {error or 'erreur inconnue'}"
+            )
             continue
         if actual.rstrip("\n") == expected.rstrip("\n"):
             match_line = "- Contenu : IDENTIQUE à la version de l'Analyste [vérifié outil]"

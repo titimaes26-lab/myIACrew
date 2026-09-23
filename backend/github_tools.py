@@ -10,7 +10,7 @@ from typing import Callable, NamedTuple
 from crewai.tools import tool
 from github import Auth, Github, GithubException, InputGitTreeElement
 
-from analyst_output import PRESENT_UNREADABLE
+from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
 from tools import check_syntax_content
 
 
@@ -178,12 +178,12 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
             content_file = gh_repo.get_contents(path, ref=branch)
         except GithubException as e:
             if e.status == 404:
-                return None, f"'{path}' n'existe pas sur la branche '{branch}'"
+                return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur la branche '{branch}'"
             return None, _github_error(e)
         except Exception as e:
             return None, f"ERREUR : {e}"
         if isinstance(content_file, list):
-            return None, f"'{path}' est un dossier, pas un fichier"
+            return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
         try:
             try:
                 raw = content_file.decoded_content

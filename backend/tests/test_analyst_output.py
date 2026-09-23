@@ -106,7 +106,7 @@ def test_delivery_report_flags_absent_divergent_and_identical():
     remote = {"same.json": '{"a": 1}', "diff.py": "x = 2\n"}
 
     report = build_delivery_report(
-        files, lambda p: (remote[p], None) if p in remote else (None, "introuvable")
+        files, lambda p: (remote[p], None) if p in remote else (None, "ABSENT : introuvable")
     )
     assert "### same.json" in report and "IDENTIQUE" in report
     assert "DIVERGENT" in report and "+x = 2" in report
@@ -121,12 +121,13 @@ def test_snippet_in_self_review_never_replaces_full_file():
     assert parse_file_blocks(text)[0]["content"].count("\n") == 3
 
 
-def test_duplicate_path_keeps_the_longest_block():
+def test_duplicate_path_keeps_the_last_block_even_if_shorter():
+    # Code d'origine cité d'abord, correction (plus courte) ensuite : la correction gagne.
     text = (
-        "### Fichier : a.py\n```python\nx = 1\ny = 2\n```\n"
-        "### Fichier : a.py\n```python\nx = 1\n```\n"
+        "### Fichier : cart.ts\n```ts\nconst a = 1;\nconst b = 2;\nbug();\n```\n"
+        "### Fichier : cart.ts\n```ts\nconst a = 1;\nfix();\n```\n"
     )
-    assert parse_file_blocks(text)[0]["content"] == "x = 1\ny = 2\n"
+    assert parse_file_blocks(text)[0]["content"] == "const a = 1;\nfix();\n"
 
 
 def test_not_delivered_marker_does_not_hide_unparsed_code():
@@ -140,8 +141,11 @@ def test_legitimate_comments_are_not_placeholders():
         {"path": "b.py", "content": "# Conserve le code existant pour compatibilité\n"},
     ]
     assert find_placeholders(files) == []
-    shortcuts = [{"path": "c.ts", "content": "// ...\n// ... reste inchangé\n/* ... existing code */\n"}]
-    assert [n for _, n, _ in find_placeholders(shortcuts)] == [1, 2, 3]
+    shortcuts = [{"path": "c.ts", "content": (
+        "// ...\n// ... reste inchangé\n/* ... existing code */\n// reste du code inchangé\n"
+        "// Code inchangé si l'utilisateur n'est pas connecté\n// Le reste du composant gère l'affichage\n"
+    )}]
+    assert [n for _, n, _ in find_placeholders(shortcuts)] == [1, 2, 3, 4]
 
 
 def test_unreadable_file_is_present_not_absent():
@@ -152,3 +156,39 @@ def test_unreadable_file_is_present_not_absent():
         lambda p: (None, f"{PRESENT_UNREADABLE} : '{p}' existe mais n'a pas pu être lu"),
     )
     assert "PRÉSENT" in report and "ABSENT" not in report and "NON VÉRIFIABLE" in report
+
+
+def test_numbered_and_emoji_headings_are_recognized():
+    text = (
+        "### 1. Fichier : a.ts\n```ts\na\n```\n"
+        "### 📄 Fichier : b.ts\n```ts\nb\n```\n"
+    )
+    assert [f["path"] for f in parse_file_blocks(text)] == ["a.ts", "b.ts"]
+
+
+def test_bare_nested_fence_in_markdown_is_kept():
+    text = "### Fichier : README.md\n```md\n# T\n```\nnpm i\n```\nFin\n```\n### Fichier : a.ts\n```ts\na\n```\n"
+    files = parse_file_blocks(text)
+    assert files[0]["content"] == "# T\n```\nnpm i\n```\nFin\n"
+    assert files[1] == {"path": "a.ts", "content": "a\n"}
+
+
+def test_bold_self_review_heading_stops_extraction():
+    text = (
+        "### Fichier : a.ts\n```ts\na\n```\n**Auto-revue**\n"
+        "### Fichier : src/utils.ts\n```ts\nsnippet\n```\n"
+    )
+    assert [f["path"] for f in parse_file_blocks(text)] == ["a.ts"]
+
+
+def test_fetch_errors_are_not_reported_as_absent():
+    from analyst_output import FILE_ABSENT
+
+    report = build_delivery_report(
+        [{"path": "a.ts", "content": "a\n"}, {"path": "b.ts", "content": "b\n"}],
+        lambda p: (None, "ERREUR_GITHUB : API rate limit exceeded") if p == "a.ts"
+        else (None, f"{FILE_ABSENT} : introuvable"),
+    )
+    a_part, b_part = report.split("### b.ts")
+    assert "NON VÉRIFIABLE" in a_part and "ABSENT" not in a_part.replace("absence", "")
+    assert "ABSENT [vérifié outil]" in b_part
