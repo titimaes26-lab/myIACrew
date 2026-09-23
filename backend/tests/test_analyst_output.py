@@ -236,3 +236,16 @@ def test_elided_and_partitive_shortcuts_are_detected():
 def test_end_marker_repeating_the_path_is_accepted():
     text = "<<<FICHIER: src/a.ts>>>\nexport const a = 1;\n<<<FIN_FICHIER: src/a.ts>>>\n"
     assert parse_file_sections(text) == ([{"path": "src/a.ts", "content": "export const a = 1;\n"}], {})
+
+
+def test_end_marker_variants_close_the_right_file():
+    text = (
+        "<<<FICHIER: src/components/App.tsx>>>\nx\n<<<FIN_FICHIER: App.tsx>>>\n"
+        "<<<FICHIER: a.py>>>\ny = 1\n<<<FIN_FICHIER>>> (a.py)\n"
+    )
+    files, broken = parse_file_sections(text)
+    assert [f["path"] for f in files] == ["src/components/App.tsx", "a.py"] and broken == {}
+
+
+def test_not_delivered_none_is_not_a_deliberate_non_delivery():
+    assert review_diagnostic_output("Fichiers NON réalisés : aucun")[1] is not None

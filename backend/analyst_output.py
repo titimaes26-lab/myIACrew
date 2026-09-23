@@ -29,7 +29,7 @@ MARKER_LIKE = re.compile(r"^<<<.*FICHIER", re.IGNORECASE)
 # FIN_FICHIER avec un "_" : "<FIN FICHIER>" serait lu comme une balise HTML par le rendu Markdown
 # de l'interface (et masqué). La variante avec espace reste acceptée si le modèle l'écrit.
 # Variante tolérée : "<<<FIN_FICHIER: src/a.ts>>>" (le modèle répète parfois le chemin).
-FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::\s*([^>]*?)\s*)?>{3,}\s*$", re.IGNORECASE)
+FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::\s*([^>]*?)\s*)?>{3,}.*$", re.IGNORECASE)
 FENCE_LINE = re.compile(r"^(`{3,}|~{3,})")
 ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
 
@@ -73,7 +73,17 @@ SHORTCUT_ONLY = re.compile(
 # Marqueur que diagnostic_task utilise pour signaler un fichier volontairement NON fourni (voir
 # tasksquestion.yaml) : une sortie sans aucun bloc de fichier mais qui l'emploie est un choix
 # assumé et documenté, pas un oubli de format.
-NOT_DELIVERED_MARKER = re.compile(r"non\s+r[ée]alis[ée]", re.IGNORECASE)
+# "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") marque un fichier non
+# livré ; suivi de ": aucun" ("Fichiers NON réalisé(s) : aucune"), c'est l'inverse. Partagé avec
+# le repérage des fichiers retirés (crewquestion._withdrawn_paths) pour que les deux concordent.
+# "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
+NOT_DELIVERED_MARKER = re.compile(
+    r"non\s+r[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)"
+    r"(?!\s*(?:\(e?s\))?\s*:\s*(aucune?s?|n[ée]ant|none|rien)\b)",
+    re.IGNORECASE,
+)
+# Les corps de fichiers entre balises ne sont jamais des déclarations de l'Analyste.
+FILE_BLOCKS = re.compile(r"^<<<\s*FICHIER\s*:.*?^<<<\s*FIN[\s_]+FICHIER[^\n]*$", re.IGNORECASE | re.MULTILINE | re.DOTALL)
 
 # Préfixe de l'erreur renvoyée par un fetch (voir build_delivery_report) pour un fichier qui
 # EXISTE mais dont le contenu n'a pas pu être lu (binaire, encodage) : à ne pas confondre avec
@@ -200,7 +210,9 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
             closing_path = normalize_path(end.group(1)) if end.group(1) else None
             if in_malformed:
                 in_malformed = False
-            elif current_path and closing_path and closing_path != current_path:
+            elif (current_path and closing_path and closing_path != current_path
+                  and not current_path.endswith("/" + closing_path)):
+                # "<<<FIN_FICHIER: App.tsx>>>" pour "src/components/App.tsx" reste le même fichier.
                 mark_broken(current_path, current_raw, f"fermé par la balise de fin d'un autre fichier ({closing_path})")
             elif current_path:
                 lines, problem = _strip_outer_fence(body, _extension(current_path) in PROSE_EXTENSIONS)

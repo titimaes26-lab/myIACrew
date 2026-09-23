@@ -35,6 +35,8 @@ def new_crew(owner="", repo="", branch="feature/x"):
     ("Verdict : GO avec réserves mineures", "GO"),
     ("Verdict : GO\r\n", "GO"),
     ("Verdict : go", "go"),
+    ("Verdict : Go ✅", "Go"),
+    ("Verdict : No go, 2 bloquants", "No go"),
 ])
 def test_qa_verdict_variants(text, expected):
     match = cq.QA_VERDICT.search(text)
@@ -163,7 +165,7 @@ def test_retry_that_withdraws_a_file_removes_it():
     crew._diagnostic_guardrail(retry)
     assert sorted(f["path"] for f in crew._analyst_files) == ["src/b.ts", "src/new.ts"]
     assert "src/old.ts" in crew._not_extracted
-    assert not cq._is_withdrawn("Fichiers src/b.ts — NON réalisés : aucun", "src/b.ts")
+    assert not cq._withdrawn_paths("Fichiers src/b.ts — NON réalisés : aucun", ["src/b.ts"])
 
 
 def test_retry_message_repeats_the_architecture_context():
@@ -224,9 +226,15 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     ("- src/a.ts, src/b.ts — NON réalisés (trop gros)", "src/a.ts", True),
     ("- src/a.ts : migration React 18.2 NON réalisée", "src/a.ts", True),
     ("- src/utils/casino.ts piano NON réalisé", "src/utils/casino.ts", True),
+    ("| src/a.ts | NON réalisé | trop gros |", "src/a.ts", True),
+    ("- ./src/a.ts — NON réalisé", "src/a.ts", True),
+    ("Fichiers src/a.ts — NON réalisé(s) : aucun", "src/a.ts", False),
+    ("Fichiers src/a.ts — tâches NON réalisées : aucune", "src/a.ts", False),
+    ("- src/a.ts réalisé, src/b.ts NON réalisé", "src/a.ts", False),
+    ("<<<FICHIER: src/a.ts>>>\n// src/a.ts NON réalisé\n<<<FIN_FICHIER>>>", "src/a.ts", False),
 ])
 def test_is_withdrawn(text, path, expected):
-    assert cq._is_withdrawn(text, path) is expected
+    assert (path in cq._withdrawn_paths(text, [path])) is expected
 
 
 @pytest.mark.parametrize("text", [

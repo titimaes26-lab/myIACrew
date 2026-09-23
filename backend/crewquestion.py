@@ -43,6 +43,8 @@ from github_tools import (
 )
 from analyst_output import (
     FILE_ABSENT,
+    FILE_BLOCKS,
+    NOT_DELIVERED_MARKER,
     PRESENT_UNREADABLE,
     build_delivery_report,
     format_manifest,
@@ -586,49 +588,45 @@ def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None
 
 MAX_RETRY_CONTEXT_CHARS = 4000
 
-# "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") est un retrait ; suivi
-# de ": aucun" ("Fichiers NON réalisés : aucun"), c'est l'inverse.
-# "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
-_NOT_DONE = re.compile(r"non\s+r[ée]alis[ée]e?s?(?!\w)(?!\s*:\s*(aucun|n[ée]ant|none|rien)\b)", re.IGNORECASE)
 _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
-# Fin de la proposition précédente : "src/a.ts réalisé ; src/b.ts NON réalisé" ne retire que b.
-_CLAUSE_BREAK = re.compile(r";|\||\.\s")
+# Mention POSITIVE ("src/a.ts réalisé, src/b.ts NON réalisé") : ce qui la précède appartient à
+# une autre proposition. Plus fiable qu'une ponctuation (",", "|" d'un tableau Markdown...).
+_DONE_POSITIVE = re.compile(r"(?<!non\s)(?<!non\s\s)\br[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)", re.IGNORECASE)
 
 def _withdrawn_paths(text: str, candidates) -> set[str]:
     """Chemins de `candidates` que `text` déclare "NON réalisé" (retrait explicite), en une
     seule passe. Un chemin est retiré s'il figure, délimité exactement (pas "src/App.tsx.bak"
-    pour "src/App.tsx"), dans la MÊME proposition que la mention, avant elle : tous les
-    fichiers de "src/a.ts, src/b.ts — NON réalisés" sont retirés, une note intermédiaire
-    ("migration React 18.2 NON réalisée") ne bloque rien, et une mention niée ("rien de NON
-    réalisé") n'est pas un retrait."""
-    candidates = list(candidates)
+    pour "src/App.tsx", "./" ou "/" initial toléré), sur la même ligne avant la mention et après
+    la dernière mention positive ("réalisé") : tous les fichiers de "src/a.ts, src/b.ts — NON
+    réalisés" ou d'une ligne de tableau "| src/a.ts | NON réalisé |" sont retirés, pas "src/a.ts"
+    dans "src/a.ts réalisé, src/b.ts NON réalisé". Une mention niée ("rien de NON réalisé") et
+    le contenu des fichiers livrés (entre balises) sont ignorés."""
+    patterns = {
+        path: re.compile(r"(?<![\w./-])(?:\./|/)?" + re.escape(path) + r"(?![\w/-]|\.\w)")
+        for path in candidates
+    }
     withdrawn: set[str] = set()
-    for line in text.splitlines():
-        for match in _NOT_DONE.finditer(line):
+    for line in FILE_BLOCKS.sub("", text).splitlines():
+        for match in NOT_DELIVERED_MARKER.finditer(line):
             before = line[:match.start()]
             if _NEGATION_BEFORE.search(before):
                 continue
-            clause = _CLAUSE_BREAK.split(before)[-1]
-            for path in candidates:
-                if re.search(r"(?<![\w./-])" + re.escape(path) + r"(?![\w./-])", clause):
-                    withdrawn.add(path)
+            positives = list(_DONE_POSITIVE.finditer(before))
+            clause = before[positives[-1].end():] if positives else before
+            withdrawn.update(path for path, pattern in patterns.items() if pattern.search(clause))
     return withdrawn
-
-def _is_withdrawn(text: str, path: str) -> bool:
-    return path in _withdrawn_paths(text, [path])
 
 # Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
 # "Verdict : ✅ GO", "Verdict : GO avec réserves", "Verdict : NON GO", ou "## Verdict" en
 # titre suivi de "**GO**" sur une ligne suivante.
-# Pour écarter les mentions fortuites ("verdict: No go-live possible", "... :\nGo figure"), la
-# valeur doit être soit en MAJUSCULES (la forme demandée à la QA : "GO ✅", "NO_GO car ..."),
-# soit seule en fin de ligne dans n'importe quelle casse ("Verdict : go", "GO avec réserves").
+# Pour écarter les mentions fortuites ("verdict: No go-live possible", "... :\nGo figure"), une
+# valeur qui n'est pas en MAJUSCULES ne doit être suivie ni d'un tiret collé ni d'un mot en
+# minuscules ; en MAJUSCULES (la forme demandée à la QA), tout est accepté ("NO_GO car ...").
 _VERDICT_VALUES = r"GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO"
 QA_VERDICT = re.compile(
     r"(?i:verdict)[^:\n—–=-]{0,60}(?:[:—–=-]|[ \t*]*\r?\n)\s*\W{0,8}"
-    r"(?:(?P<eol>(?i:" + _VERDICT_VALUES + r"))(?=[*_`.!)\s]*$)"
+    r"(?:(?P<eol>(?i:" + _VERDICT_VALUES + r"))(?![\w-])(?![ \t]+[a-zà-ÿ])"
     r"|(?P<upper>" + _VERDICT_VALUES + r")(?![\w-]))",
-    re.MULTILINE,
 )
 
 def _qa_verdict_guardrail(task_output):
@@ -839,8 +837,8 @@ class AppDevelopmentCrew():
         merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
         not_extracted = dict(getattr(self, "_not_extracted", {}))
         for path in _withdrawn_paths(raw, list(merged)):
-                merged.pop(path)
-                not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
+            merged.pop(path)
+            not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
         for f in files:
             if f["path"] not in faulty_paths:
                 merged[f["path"]] = f
