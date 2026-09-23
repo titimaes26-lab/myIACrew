@@ -150,6 +150,11 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
     if (!text.trim() || disabled) return;
     onSend(text, { owner: repoOwner.trim(), name: repoName.trim(), branch: baseBranch.trim() });
     setText('');
+    // Replie le panneau après CHAQUE envoi, y compris dans la même conversation (sur demande
+    // explicite) : ne réinitialise PAS repoOwner/repoName/baseBranch (le bouton replié continue
+    // d'afficher "owner/repo" sélectionné, voir plus bas), donc rouvrir le panneau pour un
+    // message suivant retrouve les mêmes valeurs sans avoir à les ressaisir.
+    setShowRepoFields(false);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
