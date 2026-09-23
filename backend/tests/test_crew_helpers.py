@@ -29,9 +29,16 @@ def new_crew(owner="", repo="", branch="feature/x"):
     ("Verdict\nGO_AVEC_RESERVES", "GO_AVEC_RESERVES"),
     ("Verdict — GO", "GO"),
     ("Verdict : NON GO", "NON GO"),
+    ("Verdict : GO ✅", "GO"),
+    ("Verdict : NO_GO, 3 bloquants", "NO_GO"),
+    ("Verdict : NO_GO car les tests échouent", "NO_GO"),
+    ("Verdict : GO avec réserves mineures", "GO"),
+    ("Verdict : GO\r\n", "GO"),
+    ("Verdict : go", "go"),
 ])
 def test_qa_verdict_variants(text, expected):
-    assert cq.QA_VERDICT.search(text).group(1) == expected
+    match = cq.QA_VERDICT.search(text)
+    assert (match.group("eol") or match.group("upper")) == expected
 
 
 def test_qa_guardrail_adds_missing_verdict():
@@ -211,6 +218,12 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     ("Fichiers src/b.ts — NON réalisés : aucun", "src/b.ts", False),
     ("- src/App.tsx : réécrit en entier (rien de NON réalisé)", "src/App.tsx", False),
     ("- src/App.tsx.bak NON réalisé", "src/App.tsx", False),
+    ("- Dockerfile — NON réalisé (trop long)", "Dockerfile", True),
+    ("- app/(auth)/page.tsx — NON réalisé", "app/(auth)/page.tsx", True),
+    ("- src/[id].tsx — NON réalisé", "src/[id].tsx", True),
+    ("- src/a.ts, src/b.ts — NON réalisés (trop gros)", "src/a.ts", True),
+    ("- src/a.ts : migration React 18.2 NON réalisée", "src/a.ts", True),
+    ("- src/utils/casino.ts piano NON réalisé", "src/utils/casino.ts", True),
 ])
 def test_is_withdrawn(text, path, expected):
     assert cq._is_withdrawn(text, path) is expected

@@ -586,38 +586,49 @@ def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None
 
 MAX_RETRY_CONTEXT_CHARS = 4000
 
-_PATH_TOKEN = re.compile(r"[\w./-]+\.[A-Za-z0-9]+")
 # "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") est un retrait ; suivi
 # de ": aucun" ("Fichiers NON réalisés : aucun"), c'est l'inverse.
 # "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
 _NOT_DONE = re.compile(r"non\s+r[ée]alis[ée]e?s?(?!\w)(?!\s*:\s*(aucun|n[ée]ant|none|rien)\b)", re.IGNORECASE)
-_NEGATION_BEFORE = re.compile(r"(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
+_NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
+# Fin de la proposition précédente : "src/a.ts réalisé ; src/b.ts NON réalisé" ne retire que b.
+_CLAUSE_BREAK = re.compile(r";|\||\.\s")
 
-def _is_withdrawn(text: str, path: str) -> bool:
-    """Vrai si une ligne de `text` déclare `path` "NON réalisé" (retrait explicite) : `path` doit
-    être le DERNIER chemin cité avant la mention, pour qu'une ligne qui en liste plusieurs
-    ("src/a.ts réalisé ; src/b.ts NON réalisé") ne retire que le bon, et la mention ne doit pas
-    être niée ("rien de NON réalisé")."""
+def _withdrawn_paths(text: str, candidates) -> set[str]:
+    """Chemins de `candidates` que `text` déclare "NON réalisé" (retrait explicite), en une
+    seule passe. Un chemin est retiré s'il figure, délimité exactement (pas "src/App.tsx.bak"
+    pour "src/App.tsx"), dans la MÊME proposition que la mention, avant elle : tous les
+    fichiers de "src/a.ts, src/b.ts — NON réalisés" sont retirés, une note intermédiaire
+    ("migration React 18.2 NON réalisée") ne bloque rien, et une mention niée ("rien de NON
+    réalisé") n'est pas un retrait."""
+    candidates = list(candidates)
+    withdrawn: set[str] = set()
     for line in text.splitlines():
         for match in _NOT_DONE.finditer(line):
             before = line[:match.start()]
             if _NEGATION_BEFORE.search(before):
                 continue
-            tokens = _PATH_TOKEN.findall(before)
-            if tokens and tokens[-1] == path:
-                return True
-    return False
+            clause = _CLAUSE_BREAK.split(before)[-1]
+            for path in candidates:
+                if re.search(r"(?<![\w./-])" + re.escape(path) + r"(?![\w./-])", clause):
+                    withdrawn.add(path)
+    return withdrawn
+
+def _is_withdrawn(text: str, path: str) -> bool:
+    return path in _withdrawn_paths(text, [path])
 
 # Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
 # "Verdict : ✅ GO", "Verdict : GO avec réserves", "Verdict : NON GO", ou "## Verdict" en
 # titre suivi de "**GO**" sur une ligne suivante.
-# La valeur doit être un mot ISOLÉ en fin de ligne (ou suivi d'une parenthèse/d'un tiret de
-# précision) : "verdict: No go-live possible" ou "... :\nGo figure" ne sont pas des verdicts.
+# Pour écarter les mentions fortuites ("verdict: No go-live possible", "... :\nGo figure"), la
+# valeur doit être soit en MAJUSCULES (la forme demandée à la QA : "GO ✅", "NO_GO car ..."),
+# soit seule en fin de ligne dans n'importe quelle casse ("Verdict : go", "GO avec réserves").
+_VERDICT_VALUES = r"GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO"
 QA_VERDICT = re.compile(
-    r"verdict[^:\n—–=-]{0,60}(?:[:—–=-]|[ \t*]*\n)\s*\W{0,8}"
-    r"(GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO)"
-    r"(?![\w-])(?=[*_`.!)]*[ \t]*(?:$|[(—–:]|-\s))",
-    re.IGNORECASE | re.MULTILINE,
+    r"(?i:verdict)[^:\n—–=-]{0,60}(?:[:—–=-]|[ \t*]*\r?\n)\s*\W{0,8}"
+    r"(?:(?P<eol>(?i:" + _VERDICT_VALUES + r"))(?=[*_`.!)\s]*$)"
+    r"|(?P<upper>" + _VERDICT_VALUES + r")(?![\w-]))",
+    re.MULTILINE,
 )
 
 def _qa_verdict_guardrail(task_output):
@@ -827,8 +838,7 @@ class AppDevelopmentCrew():
         files, issue, faulty_paths, broken = review_diagnostic_output(raw)
         merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
         not_extracted = dict(getattr(self, "_not_extracted", {}))
-        for path in list(merged):
-            if _is_withdrawn(raw, path):
+        for path in _withdrawn_paths(raw, list(merged)):
                 merged.pop(path)
                 not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
         for f in files:

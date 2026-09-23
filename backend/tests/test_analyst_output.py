@@ -220,6 +220,17 @@ def test_malformed_marker_inside_open_file_does_not_merge_files():
     text = "<<<FICHIER: a.py>>>\nx = 1\n<<<FICHIER b.py>>>\ny = 2\n<<<FIN_FICHIER>>>\n"
     files, broken = parse_file_sections(text)
     assert files == [] and "a.py" in broken
+    assert "(balise orpheline)" not in broken
+
+
+def test_end_marker_for_another_file_is_flagged():
+    files, broken = parse_file_sections("<<<FICHIER: a.py>>>\nx = 1\n<<<FIN_FICHIER: b.py>>>\n")
+    assert files == [] and "a.py" in broken
+
+
+def test_elided_and_partitive_shortcuts_are_detected():
+    files = [{"path": "a.ts", "content": "// ... l'existant\n// ... du code existant\n"}]
+    assert [n for _, n, _ in find_placeholders(files)] == [1, 2]
 
 
 def test_end_marker_repeating_the_path_is_accepted():

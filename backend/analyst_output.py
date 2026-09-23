@@ -29,7 +29,7 @@ MARKER_LIKE = re.compile(r"^<<<.*FICHIER", re.IGNORECASE)
 # FIN_FICHIER avec un "_" : "<FIN FICHIER>" serait lu comme une balise HTML par le rendu Markdown
 # de l'interface (et masqué). La variante avec espace reste acceptée si le modèle l'écrit.
 # Variante tolérée : "<<<FIN_FICHIER: src/a.ts>>>" (le modèle répète parfois le chemin).
-FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::[^>]*)?>{3,}\s*$", re.IGNORECASE)
+FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::\s*([^>]*?)\s*)?>{3,}\s*$", re.IGNORECASE)
 FENCE_LINE = re.compile(r"^(`{3,}|~{3,})")
 ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
 
@@ -54,7 +54,7 @@ SHORTCUT_WORDS = (
 # Un espace est exigé entre l'ellipse et le mot : "// ...rest is forwarded" décrit un spread.
 # Jusqu'à deux articles/déterminants sont tolérés avant le mot : "// ... le reste du fichier",
 # "// ... the rest", "# ... les autres fonctions".
-_FILLER_WORDS = r"((le|la|les|l'|the|all|tout|toute|toutes|tous)\s+){0,2}"
+_FILLER_WORDS = r"((le|la|les|the|all|tout|toute|toutes|tous|de|du|des)\s+|l['’]\s*){0,2}"
 LEADING_ELLIPSIS = re.compile(
     r"^(\.{3}|…)(\s*$|\s*[*/}>-]|\s+" + _FILLER_WORDS + SHORTCUT_WORDS + r")", re.IGNORECASE
 )
@@ -175,6 +175,9 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     current_path: str | None = None
     current_raw = ""
     body: list[str] = []
+    # Vrai entre une balise mal formée et sa <<<FIN_FICHIER>>> : ce contenu n'appartient à aucun
+    # fichier exploitable, et sa balise de fin n'est pas une balise orpheline.
+    in_malformed = False
 
     def mark_broken(path: str | None, raw: str, reason: str) -> None:
         key = path or raw.strip() or "(chemin vide)"
@@ -185,14 +188,21 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
         stripped = line.strip()
         start = FILE_START.match(stripped)
         if start:
+            in_malformed = False
             if current_raw or current_path:
                 mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
             current_raw = start.group(1) or " "
             current_path = normalize_path(start.group(1))
             body = []
             continue
-        if FILE_END.match(stripped):
-            if current_path:
+        end = FILE_END.match(stripped)
+        if end:
+            closing_path = normalize_path(end.group(1)) if end.group(1) else None
+            if in_malformed:
+                in_malformed = False
+            elif current_path and closing_path and closing_path != current_path:
+                mark_broken(current_path, current_raw, f"fermé par la balise de fin d'un autre fichier ({closing_path})")
+            elif current_path:
                 lines, problem = _strip_outer_fence(body, _extension(current_path) in PROSE_EXTENSIONS)
                 if problem:
                     mark_broken(current_path, current_raw, problem)
@@ -212,7 +222,8 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
                 # Une balise mal formée en plein fichier annonce presque toujours le fichier
                 # SUIVANT : continuer ferait absorber son contenu par le fichier en cours.
                 mark_broken(current_path, current_raw, "balise mal formée rencontrée avant <<<FIN_FICHIER>>>")
-                current_path, current_raw, body = None, "", []
+            current_path, current_raw, body = None, "", []
+            in_malformed = True
             continue
         if current_raw or current_path:
             body.append(line)
