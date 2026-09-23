@@ -574,7 +574,12 @@ async def _run_crew_and_persist(
                                         f"sur branch={normalized_base_branch} en attendant."
                                     )
                                     if has_repo_target
-                                    else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
+                                    else (
+                                        "Aucun repository GitHub cible fourni : travaille uniquement sur le disque local. "
+                                        "N'utilise aucun outil github_* SAUF github_commit_analyst_files et "
+                                        "qa_verify_delivered_files, à appeler avec owner et repo vides : ils "
+                                        "agissent alors sur le disque local."
+                                    )
                                 ),
                             },
                             request_type=data.target_workflow,
@@ -762,26 +767,32 @@ async def _run_crew_and_persist(
 def read_root():
     return {"status": "API CrewAI opérationnelle"}
 
-@app.post("/api/qualify", response_model=AnalysisReport)
-async def qualify_request(
-    data: UserRequestInput,
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Étape 1 : Qualification du besoin"""
-    # Tours précédents de la conversation : sans eux, un message de suivi ("corrige ça",
-    # "ajoute aussi Y") est qualifié hors contexte, souvent en DESIGN_AND_DEV par défaut.
-    conversation_context = ""
-    if data.conversation_id is not None:
-        conversation = session.get(Conversation, data.conversation_id)
-        if not conversation or conversation.user_id != user.get("id"):
-            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+def _load_qualification_context(conversation_id: int, user_id) -> str | None:
+    """Rappel des tours précédents pour /api/qualify, ou None si la conversation est introuvable
+    ou n'appartient pas à cet utilisateur. Synchrone (accès DB bloquant) : à appeler via
+    asyncio.to_thread, avec sa propre Session, pour ne pas bloquer la boucle asyncio."""
+    with Session(engine) as session:
+        conversation = session.get(Conversation, conversation_id)
+        if not conversation or conversation.user_id != user_id:
+            return None
         prior_entries = session.exec(
             select(ExecutionHistory)
             .where(ExecutionHistory.conversation_id == conversation.id)
             .order_by(ExecutionHistory.created_at.asc())
         ).all()
-        conversation_context = build_conversation_context(prior_entries)
+        return build_conversation_context(prior_entries)
+
+@app.post("/api/qualify", response_model=AnalysisReport)
+async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):
+    """Étape 1 : Qualification du besoin"""
+    # Tours précédents de la conversation : sans eux, un message de suivi ("corrige ça",
+    # "ajoute aussi Y") est qualifié hors contexte, souvent en DESIGN_AND_DEV par défaut.
+    conversation_context = ""
+    if data.conversation_id is not None:
+        loaded = await asyncio.to_thread(_load_qualification_context, data.conversation_id, user.get("id"))
+        if loaded is None:
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+        conversation_context = loaded
     try:
         report = await crew_instance.analyze_user_request(data.user_request, conversation_context)
         crew_instance.save_analysis_report(report, data.user_request)

@@ -36,13 +36,20 @@ SLASH_COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*|<!--)")
 HASH_COMMENT = re.compile(r"^\s*#")
 HASH_COMMENT_EXTENSIONS = {"py", "yaml", "yml", "sh", "toml", "rb"}
 PROSE_EXTENSIONS = {"md", "mdx", "txt", "rst"}
+# Une ellipse seule ("// ...") ou suivie d'un mot de raccourci ("// ... reste", "# ... code
+# existant") trahit un fichier incomplet ; "// ...args are forwarded" (commentaire légitime
+# sur un spread) ou un "TODO : à compléter" dans un fichier par ailleurs complet, non.
+SHORTCUT_WORDS = (
+    r"(reste|rest|code|existing|existant|inchang[ée]e?s?|unchanged|autres?|others?|same|"
+    r"m[êe]me|previous|pr[ée]c[ée]dente?s?|etc|remaining|suite)(?![\w])"
+)
 PLACEHOLDER_IN_COMMENT = re.compile(
-    r"(^\s*(//|#|/\*|\*|\{/\*|<!--)\s*(\.{3}|…)\s*($|\*/|\*/\}|-->|[a-zà-ÿ(\[]))"
+    r"^\s*(//|#|/\*|\*|\{/\*|<!--)\s*(\.{3}|…)\s*($|\*/|\*/\}|-->|" + SHORTCUT_WORDS + r")"
     r"|reste du (code|fichier|composant)"
     r"|code inchang[ée]"
-    r"|à compléter|a completer"
     r"|rest of (the )?(code|file|component)"
-    r"|(existing|unchanged) code",
+    r"|(existing|unchanged) code\s*(\.{3}|…)"
+    r"|(\.{3}|…)\s*(existing|unchanged) code",
     re.IGNORECASE,
 )
 
@@ -50,6 +57,17 @@ PLACEHOLDER_IN_COMMENT = re.compile(
 # tasksquestion.yaml) : une sortie sans aucun bloc de fichier mais qui l'emploie est un choix
 # assumé et documenté, pas un oubli de format.
 NOT_DELIVERED_MARKER = re.compile(r"non\s+r[ée]alis[ée]", re.IGNORECASE)
+
+# La section "Auto-revue" (voir diagnostic_task) vient APRÈS les fichiers et peut citer des
+# extraits sous un titre "Fichier : <chemin>" : on arrête l'extraction à ce titre pour qu'un
+# extrait ne soit jamais pris pour le contenu du fichier.
+SELF_REVIEW_HEADING = re.compile(r"^#{1,4}\s*\**\s*auto[- ]?revue", re.IGNORECASE)
+ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
+
+# Préfixe de l'erreur renvoyée par un fetch (voir build_delivery_report) pour un fichier qui
+# EXISTE mais dont le contenu n'a pas pu être lu (binaire, encodage) : à ne pas confondre avec
+# un fichier absent.
+PRESENT_UNREADABLE = "PRÉSENT_ILLISIBLE"
 
 MAX_DIFF_LINES_PER_FILE = 40
 MAX_PARALLEL_FETCHES = 8
@@ -84,7 +102,8 @@ def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
     à l'intérieur ouvre un sous-bloc, fermé par le ``` suivant — un README encadré par ```
     au lieu de ```` n'est donc pas coupé à son premier exemple de commande. Un bloc jamais
     fermé (réponse coupée par la limite de tokens) est signalé, jamais committé à moitié.
-    En cas de chemin dupliqué, la DERNIÈRE version gagne.
+    En cas de chemin dupliqué, la version la plus LONGUE gagne : un doublon est presque
+    toujours un extrait cité plus bas, jamais une réécriture plus courte du fichier entier.
     """
     if not text:
         return [], []
@@ -93,6 +112,8 @@ def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
     broken: list[str] = []
     i = 0
     while i < len(lines):
+        if SELF_REVIEW_HEADING.match(lines[i].strip()):
+            break
         heading = FILE_HEADING.match(lines[i].strip())
         if not heading:
             i += 1
@@ -133,7 +154,9 @@ def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
             broken.append(f"{path} (bloc de code jamais fermé : contenu probablement tronqué)")
         else:
             content = "\n".join(body)
-            files[path] = content + "\n" if content and not content.endswith("\n") else content
+            content = content + "\n" if content and not content.endswith("\n") else content
+            if len(content) > len(files.get(path, "")):
+                files[path] = content
         i = k + 1
     broken = [b for b in broken if b.split(" ", 1)[0] not in files]
     return [{"path": p, "content": c} for p, c in files.items()], broken
@@ -172,7 +195,11 @@ def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str
             + "\n".join(f"- {b}" for b in broken)
         )
     if not files and not broken:
-        if LOOSE_FILE_HEADING.search(text or "") or not NOT_DELIVERED_MARKER.search(text or ""):
+        # "non réalisé" ne dispense du signalement que si la réponse ne contient AUCUN code :
+        # des blocs de code présents mais non extraits sont un problème de format, pas un choix.
+        has_code = bool(ANY_FENCE.search(text or ""))
+        declared_nothing = NOT_DELIVERED_MARKER.search(text or "") and not has_code
+        if LOOSE_FILE_HEADING.search(text or "") or not declared_nothing:
             problems.append(
                 "Aucun fichier exploitable trouvé : chaque fichier doit être introduit par une ligne "
                 "'### Fichier : <chemin>' suivie IMMÉDIATEMENT d'un bloc de code (```) contenant son "
@@ -204,8 +231,8 @@ def build_delivery_report(
 ) -> str:
     """Rapport par fichier : présence réelle, identité avec la version de l'Analyste, syntaxe.
 
-    fetch(path) -> (contenu, erreur) : contenu None si le fichier est absent/illisible, avec
-    l'erreur correspondante. Les résultats sont étiquetés [vérifié outil] : ils proviennent
+    fetch(path) -> (contenu, erreur) : contenu None si le fichier est absent ou illisible, avec
+    l'erreur correspondante (préfixée par PRESENT_UNREADABLE s'il existe mais n'a pas pu être lu). Les résultats sont étiquetés [vérifié outil] : ils proviennent
     d'une comparaison exacte en Python et de check_syntax_content, jamais d'une lecture LLM.
     """
     if not files:
@@ -220,6 +247,12 @@ def build_delivery_report(
     rows = []
     for f, (actual, error) in zip(files, fetched):
         path, expected = f["path"], f["content"]
+        if actual is None and (error or "").startswith(PRESENT_UNREADABLE):
+            rows.append(
+                f"### {path}\n- Présence : PRÉSENT [vérifié outil]\n"
+                f"- Contenu : NON VÉRIFIABLE, fichier illisible par l'outil — {error}"
+            )
+            continue
         if actual is None:
             rows.append(f"### {path}\n- Présence : ABSENT [vérifié outil] — {error or 'introuvable'}")
             continue

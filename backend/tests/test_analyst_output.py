@@ -39,14 +39,13 @@ def test_parse_file_blocks_extracts_paths_and_full_content():
     assert files[1]["content"] == "# Doc\n```bash\nnpm run dev\n```\n"
 
 
-def test_parse_ignores_unclosed_block_and_keeps_last_duplicate():
+def test_parse_ignores_unclosed_block():
     text = (
         "### Fichier : a.py\n```python\nx = 1\n```\n"
-        "### Fichier : a.py\n```python\nx = 2\n```\n"
         "### Fichier : b.py\n```python\ny = 1\n"
     )
     files = parse_file_blocks(text)
-    assert files == [{"path": "a.py", "content": "x = 2\n"}]
+    assert files == [{"path": "a.py", "content": "x = 1\n"}]
 
 
 def test_spread_operator_is_not_a_placeholder():
@@ -112,3 +111,44 @@ def test_delivery_report_flags_absent_divergent_and_identical():
     assert "### same.json" in report and "IDENTIQUE" in report
     assert "DIVERGENT" in report and "+x = 2" in report
     assert "ABSENT" in report
+
+
+def test_snippet_in_self_review_never_replaces_full_file():
+    text = (
+        "### Fichier : src/App.tsx\n```tsx\nimport a from 'a';\nimport b from 'b';\nexport const App = 1;\n```\n"
+        "## Auto-revue\n### Fichier : src/App.tsx\n```tsx\nimport a from 'a';\n```\n"
+    )
+    assert parse_file_blocks(text)[0]["content"].count("\n") == 3
+
+
+def test_duplicate_path_keeps_the_longest_block():
+    text = (
+        "### Fichier : a.py\n```python\nx = 1\ny = 2\n```\n"
+        "### Fichier : a.py\n```python\nx = 1\n```\n"
+    )
+    assert parse_file_blocks(text)[0]["content"] == "x = 1\ny = 2\n"
+
+
+def test_not_delivered_marker_does_not_hide_unparsed_code():
+    text = "Fichiers NON réalisés : aucun\n#### `src/App.tsx`\n```tsx\nexport {}\n```\n"
+    assert review_diagnostic_output(text)[1] is not None
+
+
+def test_legitimate_comments_are_not_placeholders():
+    files = [
+        {"path": "a.ts", "content": "// ...args are forwarded to the logger\n// TODO: à compléter quand l'API sera prête\n"},
+        {"path": "b.py", "content": "# Conserve le code existant pour compatibilité\n"},
+    ]
+    assert find_placeholders(files) == []
+    shortcuts = [{"path": "c.ts", "content": "// ...\n// ... reste inchangé\n/* ... existing code */\n"}]
+    assert [n for _, n, _ in find_placeholders(shortcuts)] == [1, 2, 3]
+
+
+def test_unreadable_file_is_present_not_absent():
+    from analyst_output import PRESENT_UNREADABLE
+
+    report = build_delivery_report(
+        [{"path": "big.json", "content": "{}\n"}],
+        lambda p: (None, f"{PRESENT_UNREADABLE} : '{p}' existe mais n'a pas pu être lu"),
+    )
+    assert "PRÉSENT" in report and "ABSENT" not in report and "NON VÉRIFIABLE" in report

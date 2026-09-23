@@ -1,14 +1,16 @@
+import base64
 import json
 import os
 import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from crewai.tools import tool
 from github import Auth, Github, GithubException, InputGitTreeElement
 
+from analyst_output import PRESENT_UNREADABLE
 from tools import check_syntax_content
 
 
@@ -153,20 +155,46 @@ def _record_edit_success(owner: str, repo: str, path: str, branch: str) -> None:
             counts.pop((owner, repo, path, branch), None)
 
 
-def read_file_or_error(owner: str, repo: str, path: str, branch: str) -> tuple[str | None, str | None]:
-    """(contenu, None) si le fichier existe, sinon (None, raison). Pour un usage Python interne
-    (voir qa_verify_delivered_files, crewquestion.py), sans passer par l'objet Tool crewai."""
+def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tuple[str | None, str | None]]:
+    """Fonction path -> (contenu, None) ou (None, raison), pour un usage Python interne (voir
+    qa_verify_delivered_files, crewquestion.py), sans passer par l'objet Tool crewai.
+
+    Le dépôt est résolu UNE fois pour toutes les lectures (un seul get_repo, au lieu d'un par
+    fichier). Un fichier qui existe mais n'a pas pu être décodé (au-delà de 1 Mo l'API ne
+    renvoie pas son contenu, ou contenu non UTF-8) est signalé par PRESENT_UNREADABLE, pour que
+    la QA ne le déclare jamais ABSENT à tort.
+    """
     try:
-        content_file = _get_repo(owner, repo).get_contents(path, ref=branch)
+        gh_repo = _get_repo(owner, repo)
+    except GithubException as e:
+        error = _github_error(e)
+        return lambda path: (None, error)
+    except Exception as e:
+        error = f"ERREUR : {e}"
+        return lambda path: (None, error)
+
+    def fetch(path: str) -> tuple[str | None, str | None]:
+        try:
+            content_file = gh_repo.get_contents(path, ref=branch)
+        except GithubException as e:
+            if e.status == 404:
+                return None, f"'{path}' n'existe pas sur la branche '{branch}'"
+            return None, _github_error(e)
+        except Exception as e:
+            return None, f"ERREUR : {e}"
         if isinstance(content_file, list):
             return None, f"'{path}' est un dossier, pas un fichier"
-        return content_file.decoded_content.decode("utf-8"), None
-    except GithubException as e:
-        if e.status == 404:
-            return None, f"'{path}' n'existe pas sur la branche '{branch}'"
-        return None, _github_error(e)
-    except Exception as e:
-        return None, f"ERREUR : {e}"
+        try:
+            try:
+                raw = content_file.decoded_content
+            except Exception:
+                # Fichier > 1 Mo : get_contents ne renvoie pas son contenu, le blob git oui.
+                raw = base64.b64decode(gh_repo.get_git_blob(content_file.sha).content)
+            return raw.decode("utf-8"), None
+        except Exception as e:
+            return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'a pas pu être lu ({type(e).__name__})"
+
+    return fetch
 
 
 @tool("github_read_file")

@@ -38,7 +38,7 @@ from github_tools import (
     github_write_files,
     github_open_pull_request,
     _reject_invalid_syntax,
-    read_file_or_error,
+    make_file_fetcher,
     track_edit_failures,
     write_files_to_branch,
 )
@@ -223,6 +223,38 @@ def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
                 "Peux-tu préciser le résultat attendu : " + ", ".join(_WORKFLOW_LABELS.values()) + " ?"
             ]
     return report
+
+_REQUEST_TYPES = set(RequestType.__args__)
+
+def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
+    """Reconstruit un AnalysisReport champ par champ depuis un JSON extrait à la main, en
+    corrigeant les écarts courants du modèle (confiance en pourcentage, alternative hors liste)
+    au lieu de tout rejeter pour un seul champ. None si request_type lui-même est inexploitable.
+    """
+    if not isinstance(data, dict):
+        return None
+    request_type = str(data.get("request_type", "")).strip().upper()
+    if request_type not in _REQUEST_TYPES:
+        return None
+    alternative = str(data.get("alternative_type") or "").strip().upper()
+    try:
+        confidence = float(data.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        # Absente ou illisible = incertaine (0.5), pas 1.0 : un JSON récupéré à la main
+        # depuis une sortie mal formée ne mérite pas d'être cru sur parole.
+        confidence = 0.5
+    if confidence > 1:
+        confidence /= 100
+    questions = data.get("questions") or []
+    return AnalysisReport(
+        summary=str(data.get("summary") or "Analyse effectuée."),
+        reasoning=str(data.get("reasoning") or ""),
+        alternative_type=alternative if alternative in _REQUEST_TYPES else None,
+        request_type=request_type,
+        confidence=min(max(confidence, 0.0), 1.0),
+        is_clear=bool(data.get("is_clear", False)),
+        questions=[str(q) for q in questions] if isinstance(questions, list) else [],
+    )
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
 
@@ -465,7 +497,12 @@ def _is_safe_local_path(path: str) -> bool:
     return not candidate.is_absolute() and ".." not in candidate.parts
 
 def _write_files_locally(files: list[dict]) -> str:
-    """Pendant disque local de write_files_to_branch (mode sans repository cible)."""
+    """Pendant disque local de write_files_to_branch (mode sans repository cible).
+
+    Ne remplace JAMAIS un fichier existant (même comportement que file_write_tool, qui refuse
+    d'écraser par défaut) : le dossier de travail est celui du backend lui-même, et un chemin
+    comme "main.py" ou ".env" écraserait sinon le serveur en cours d'exécution.
+    """
     written, rejected = [], []
     for f in files:
         path, content = f["path"], f["content"]
@@ -476,8 +513,11 @@ def _write_files_locally(files: list[dict]) -> str:
         if syntax_issue:
             rejected.append(f"- '{path}' : {syntax_issue}")
             continue
+        target = Path(path)
+        if target.exists():
+            rejected.append(f"- '{path}' : existe déjà sur le disque local, écrasement refusé")
+            continue
         try:
-            target = Path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             written.append(path)
@@ -498,9 +538,10 @@ def _read_local_file(path: str) -> tuple[str | None, str | None]:
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
-# Tolère "Verdict final : GO", "**Verdict** : NO GO", "Verdict : GO avec réserves".
+# Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO",
+# "Verdict : ✅ GO", "Verdict : GO avec réserves".
 QA_VERDICT = re.compile(
-    r"verdict[^:\n]{0,20}:\s*[*`_]*\s*(GO[ _]AVEC[ _]R[ÉE]SERVES|NO[ _-]?GO|GO)\b", re.IGNORECASE
+    r"verdict[^:\n]{0,60}:\W{0,8}(GO[ _]AVEC[ _]R[ÉE]SERVES|NO[ _-]?GO|GO)\b", re.IGNORECASE
 )
 
 def _qa_verdict_guardrail(task_output):
@@ -733,7 +774,7 @@ class AppDevelopmentCrew():
             files = list(getattr(crew_self, "_analyst_files", []) or [])
             if not owner or not repo:
                 return build_delivery_report(files, _read_local_file)
-            return build_delivery_report(files, lambda path: read_file_or_error(owner, repo, path, branch))
+            return build_delivery_report(files, make_file_fetcher(owner, repo, branch))
 
         return qa_verify_delivered_files
 
@@ -771,13 +812,9 @@ class AppDevelopmentCrew():
         try:
             match = re.search(r'\{.*\}', raw_output, re.DOTALL)
             if match:
-                data = json.loads(match.group(0))
-                # confidence absente = incertaine (0.5), pas 1.0 : un JSON récupéré à la main
-                # depuis une sortie mal formée ne mérite pas d'être cru sur parole.
-                data.setdefault("confidence", 0.5)
-                data.setdefault("summary", "Analyse effectuée.")
-                data.setdefault("is_clear", False)
-                return _enforce_confidence_threshold(AnalysisReport.model_validate(data))
+                report = _coerce_analysis_report(json.loads(match.group(0)))
+                if report is not None:
+                    return _enforce_confidence_threshold(report)
         except Exception:
             pass
 
