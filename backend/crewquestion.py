@@ -865,7 +865,8 @@ class AppDevelopmentCrew():
             not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
         # Fichier livré DANS cette réponse ET déclaré "NON réalisé" : ambigu ("NON réalisé" peut
         # décrire autre chose que le fichier). On ne tranche pas en silence : l'Analyste est
-        # invité à clarifier ; s'il ne le fait pas, le contenu livré en entier fait foi.
+        # invité à clarifier ; s'il ne le fait pas, le fichier est EXCLU (et signalé) — committer
+        # une version peut-être partielle par-dessus le vrai fichier est pire que ne rien committer.
         ambiguous = sorted(withdrawn & delivered_now)
         if ambiguous:
             clarification = (
@@ -895,6 +896,11 @@ class AppDevelopmentCrew():
                 f"{issue}\n\nRenvoie ta réponse COMPLÈTE, avec TOUS les fichiers entre balises "
                 f"(y compris ceux qui étaient déjà corrects).{self._diagnostic_retry_context()}"
             )
+        for path in ambiguous:
+            merged.pop(path, None)
+            not_extracted[path] = "livré mais déclaré NON réalisé, ambiguïté non levée"
+        self._analyst_files = list(merged.values())
+        self._not_extracted = not_extracted
         excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
         return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
 

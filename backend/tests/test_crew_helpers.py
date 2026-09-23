@@ -289,4 +289,32 @@ def test_file_both_delivered_and_withdrawn_is_sent_back_then_delivered_content_w
     ok, message = crew._diagnostic_guardrail(raw)
     assert not ok and "src/App.tsx" in message
     ok, _ = crew._diagnostic_guardrail(raw)
+    # Ambiguïté non levée : exclu et signalé, jamais committé en silence ni perdu sans trace.
+    assert ok and crew._analyst_files == []
+    assert "ambiguïté" in crew._not_extracted["src/App.tsx"]
+
+
+def test_clarified_retry_commits_the_delivered_file():
+    crew = new_crew()
+    crew._diagnostic_guardrail(output(
+        "- src/App.tsx : ajout du bouton d'export qui était NON réalisé avant\n"
+        "<<<FICHIER: src/App.tsx>>>\nexport const App = 1;\n<<<FIN_FICHIER>>>\n"
+    ))
+    ok, _ = crew._diagnostic_guardrail(output(
+        "- src/App.tsx : ajout du bouton d'export\n"
+        "<<<FICHIER: src/App.tsx>>>\nexport const App = 1;\n<<<FIN_FICHIER>>>\n"
+    ))
     assert ok and [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]
+
+
+def test_file_withdrawn_in_the_same_response_is_not_committed():
+    crew = new_crew()
+    raw = output(
+        "- src/App.tsx — NON réalisé (trop volumineux)\n"
+        "<<<FICHIER: src/App.tsx>>>\nexport const partial = 1;\n<<<FIN_FICHIER>>>\n"
+        "<<<FICHIER: src/b.ts>>>\nexport const b = 1;\n<<<FIN_FICHIER>>>\n"
+    )
+    crew._diagnostic_guardrail(raw)
+    ok, out = crew._diagnostic_guardrail(raw)
+    assert ok and [f["path"] for f in crew._analyst_files] == ["src/b.ts"]
+    assert "src/App.tsx" in crew._not_extracted and "src/App.tsx" in out
