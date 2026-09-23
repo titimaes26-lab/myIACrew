@@ -8,6 +8,8 @@ export interface QualificationReport {
   confidence?: number;
   is_clear: boolean;
   questions: string[];
+  // Vrai si le backend n'a pas pu qualifier la demande : request_type n'est alors qu'un défaut.
+  fallback?: boolean;
 }
 
 export interface ExecutionHistoryEntry {

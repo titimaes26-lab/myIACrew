@@ -201,7 +201,7 @@ diagnostic_task:
     Les hypothèses classées, la section "Traçabilité", le plan (liste des fichiers prévus et leur
     justification, avec un signalement explicite "NON réalisé" pour tout fichier où le contenu
     complet n'a pas pu être fourni sans risque de troncature), puis chaque fichier entre une ligne
-    "<<<FICHIER: <chemin>>>>" et une ligne "<<<FIN_FICHIER>>>", avec son code source COMPLET et
+    "<<<FICHIER: chemin/du/fichier>>>" et une ligne "<<<FIN_FICHIER>>>", avec son code source COMPLET et
     directement utilisable, et enfin la section "Auto-revue".
   agent: diagnostic_agent
 
@@ -256,9 +256,9 @@ development_task:
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant
        les changements (reprends le plan de l'Analyste).
     Ne modifie jamais directement la branche {base_branch}.
-    Sans repository cible (travail sur disque local), appelle `github_commit_analyst_files` avec
-    owner et repo vides : il écrit les fichiers de l'Analyste sur le disque local. En repli
-    seulement, utilise `file_write_tool` pour écrire chaque fichier sans en modifier le contenu.
+    Sans repository cible (travail local), appelle `github_commit_analyst_files` avec owner et
+    repo vides : il écrit les fichiers de l'Analyste dans l'espace de travail local dédié. C'est
+    le SEUL moyen d'écrire en local : si l'outil n'a rien pu extraire, indique-le dans ton rapport.
 
     Réaction aux réponses des outils (ne jamais improviser autre chose) :
     - "OK" : passe à l'étape suivante.

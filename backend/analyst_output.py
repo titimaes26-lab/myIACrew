@@ -1,7 +1,7 @@
 """Lecture déterministe (en Python, sans LLM) de la sortie de diagnostic_task.
 
 diagnostic_task (voir tasksquestion.yaml) encadre chaque fichier livré par deux balises seules
-sur leur ligne : "<<<FICHIER: <chemin>>>>" puis "<<<FIN_FICHIER>>>", avec le contenu COMPLET
+sur leur ligne : "<<<FICHIER: chemin/du/fichier>>>" puis "<<<FIN_FICHIER>>>", avec le contenu COMPLET
 entre les deux. Des balises explicites plutôt que des titres Markdown : un titre "### Fichier :"
 se confond avec un commentaire, une citation de code ou un bloc ``` imbriqué, alors que ces
 balises n'apparaissent jamais par hasard. Jusqu'ici, developer_agent devait recopier ce contenu
@@ -22,7 +22,7 @@ from typing import Callable
 
 from tools import check_syntax_content
 
-FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>>>$", re.IGNORECASE)
+FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}$", re.IGNORECASE)
 # FIN_FICHIER avec un "_" : "<FIN FICHIER>" serait lu comme une balise HTML par le rendu Markdown
 # de l'interface (et masqué). La variante avec espace reste acceptée si le modèle l'écrit.
 FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*>>>$", re.IGNORECASE)
@@ -83,11 +83,11 @@ def normalize_path(raw: str) -> str | None:
     (refusé par l'API GitHub). Tout le reste — espace, note "(extrait)", ".." — rend le chemin
     invalide : mieux vaut refuser un fichier que l'écrire sous un nom fantaisiste.
     """
-    path = raw.strip().strip("*`'\" ")
+    path = raw.strip().strip("*`'\" <>")
     path = path.lstrip("/")
     while path.startswith("./"):
         path = path[2:]
-    if not path or any(c.isspace() for c in path) or ".." in PurePosixPath(path).parts:
+    if not path or any(c.isspace() or c in '<>|"*?:\\' for c in path) or ".." in PurePosixPath(path).parts:
         return None
     return path
 
@@ -132,7 +132,7 @@ def _fences_are_balanced(lines: list[str]) -> bool:
     return open_fence is None
 
 
-def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
+def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     """(fichiers extraits, fichiers annoncés mais inexploitables, avec la raison).
 
     Seules les balises comptent : un titre, un commentaire ou un extrait cité hors balises
@@ -176,14 +176,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
             body.append(line)
     if current_raw or current_path:
         mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
-    return (
-        [{"path": p, "content": c} for p, c in files.items()],
-        [f"{p} ({reason})" for p, reason in broken.items()],
-    )
-
-
-def parse_file_blocks(text: str) -> list[dict]:
-    return parse_file_sections(text)[0]
+    return [{"path": p, "content": c} for p, c in files.items()], broken
 
 
 def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
@@ -204,18 +197,19 @@ def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
     return issues
 
 
-def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str]]:
-    """(fichiers extraits, problème à renvoyer à l'Analyste, chemins des fichiers fautifs).
+def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str], dict[str, str]]:
+    """(fichiers extraits, problème à renvoyer à l'Analyste, chemins des fichiers à raccourci,
+    {chemin: raison} des fichiers annoncés mais inexploitables).
 
-    Les chemins fautifs sont ceux qui ne doivent JAMAIS être committés tels quels, même si
-    l'Analyste ne corrige pas sa réponse (voir _diagnostic_guardrail, crewquestion.py).
+    Les fichiers à raccourci sont extraits mais ne doivent JAMAIS être committés tels quels,
+    même si l'Analyste ne corrige pas sa réponse (voir _diagnostic_guardrail, crewquestion.py).
     """
     files, broken = parse_file_sections(text)
     problems: list[str] = []
     if broken:
         problems.append(
             "Fichiers annoncés mais inexploitables (ils ne seront PAS committés) :\n"
-            + "\n".join(f"- {b}" for b in broken)
+            + "\n".join(f"- {p} ({reason})" for p, reason in broken.items())
         )
     if not files and not broken:
         # "non réalisé" ne dispense du signalement que si la réponse ne contient AUCUN code :
@@ -224,7 +218,7 @@ def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str
         if has_code or not NOT_DELIVERED_MARKER.search(text or ""):
             problems.append(
                 "Aucun fichier exploitable trouvé : encadre CHAQUE fichier livré par une ligne "
-                "'<<<FICHIER: <chemin relatif>>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
+                "'<<<FICHIER: chemin/relatif/du/fichier>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
                 "contenu COMPLET entre les deux. Si tu ne peux livrer aucun fichier, dis-le "
                 "explicitement en le marquant 'NON réalisé' avec la raison."
             )
@@ -236,9 +230,8 @@ def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str
             f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
             "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
         )
-    if not problems:
-        return files, None, set()
-    return files, "\n\n".join(problems), {p for p, _, _ in placeholders}
+    faulty = {p for p, _, _ in placeholders}
+    return files, ("\n\n".join(problems) if problems else None), faulty, broken
 
 
 def format_manifest(files: list[dict]) -> str:
@@ -250,34 +243,43 @@ def format_manifest(files: list[dict]) -> str:
 def build_delivery_report(
     files: list[dict],
     fetch: Callable[[str], tuple[str | None, str | None]],
-    undelivered: dict[str, str] | None = None,
+    write_rejections: dict[str, str] | None = None,
+    not_extracted: dict[str, str] | None = None,
 ) -> str:
     """Rapport par fichier : présence réelle, identité avec la version de l'Analyste, syntaxe.
 
     fetch(path) -> (contenu, erreur) : contenu None en cas d'échec, avec l'erreur préfixée par
     FILE_ABSENT (absence confirmée) ou PRESENT_UNREADABLE (présent mais illisible) ; toute autre
-    erreur rend le fichier NON VÉRIFIABLE. undelivered : {chemin: raison} des fichiers dont
-    l'écriture a été refusée — ils ne sont pas relus (on lirait l'ancien fichier à leur place). Les résultats sont étiquetés [vérifié outil] : ils proviennent
-    d'une comparaison exacte en Python et de check_syntax_content, jamais d'une lecture LLM.
+    erreur rend le fichier NON VÉRIFIABLE. write_rejections : {chemin: raison} des fichiers
+    refusés au dernier commit — relus quand même (un autre outil a pu les écrire depuis), mais
+    signalés NON LIVRÉS s'ils ne sont pas identiques à la version de l'Analyste. not_extracted :
+    {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables.
+    Les résultats sont étiquetés [vérifié outil] : ils proviennent d'une comparaison exacte en
+    Python et de check_syntax_content, jamais d'une lecture LLM.
     """
-    if not files:
+    write_rejections = write_rejections or {}
+    rows = [
+        f"### {path}\n- Présence : NON LIVRÉ, jamais committable [vérifié outil] — {reason}"
+        for path, reason in sorted((not_extracted or {}).items())
+    ]
+    if not files and not rows:
         return (
             "INFO : l'Analyste n'a fourni aucun fichier exploitable pour cette exécution : rien "
             "à comparer. Vérifie le code avec github_read_file/check_syntax si nécessaire."
         )
     # Lectures en parallèle (une par fichier) : sur un gros lot, des allers-retours GitHub
     # séquentiels ajouteraient des dizaines de secondes à un seul appel d'outil de la QA.
-    undelivered = undelivered or {}
-    to_fetch = [f for f in files if f["path"] not in undelivered]
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as pool:
-        fetched = dict(zip((f["path"] for f in to_fetch), pool.map(lambda f: fetch(f["path"]), to_fetch)))
-    rows = []
-    for f in files:
+        fetched = list(pool.map(lambda f: fetch(f["path"]), files))
+    for f, (actual, error) in zip(files, fetched):
         path, expected = f["path"], f["content"]
-        if path in undelivered:
-            rows.append(f"### {path}\n- Présence : NON LIVRÉ, écriture refusée [vérifié outil] — {undelivered[path]}")
+        identical = actual is not None and actual.rstrip("\n") == expected.rstrip("\n")
+        if path in write_rejections and not identical:
+            rows.append(
+                f"### {path}\n- Présence : NON LIVRÉ, écriture refusée au commit [vérifié outil] — "
+                f"{write_rejections[path]}"
+            )
             continue
-        actual, error = fetched[path]
         if actual is None and (error or "").startswith(PRESENT_UNREADABLE):
             rows.append(
                 f"### {path}\n- Présence : PRÉSENT [vérifié outil]\n"
@@ -293,7 +295,7 @@ def build_delivery_report(
                 f"d'absence) — {error or 'erreur inconnue'}"
             )
             continue
-        if actual.rstrip("\n") == expected.rstrip("\n"):
+        if identical:
             match_line = "- Contenu : IDENTIQUE à la version de l'Analyste [vérifié outil]"
         else:
             diff = list(difflib.unified_diff(

@@ -11,7 +11,10 @@ from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
 from sqlmodel import Session, func, select
 
-from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, build_conversation_context, track_execution_metrics
+from crewquestion import (
+    AppDevelopmentCrew, CrewStepError, LOCAL_WORKSPACE_DIR, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
+    build_conversation_context, track_execution_metrics,
+)
 from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
 from auth import get_current_user, close_http_client
 from github_tools import verify_github_delivery, get_branch_head_sha, GitHubVerificationUnavailable
@@ -575,10 +578,11 @@ async def _run_crew_and_persist(
                                     )
                                     if has_repo_target
                                     else (
-                                        "Aucun repository GitHub cible fourni : travaille uniquement sur le disque local. "
-                                        "N'utilise aucun outil github_* SAUF github_commit_analyst_files et "
-                                        "qa_verify_delivered_files, à appeler avec owner et repo vides : ils "
-                                        "agissent alors sur le disque local."
+                                        "Aucun repository GitHub cible fourni : travaille uniquement en local, "
+                                        f"dans l'espace de travail {LOCAL_WORKSPACE_DIR} (les chemins de fichiers "
+                                        "restent relatifs à ce dossier). N'utilise aucun outil github_* SAUF "
+                                        "github_commit_analyst_files et qa_verify_delivered_files, à appeler avec "
+                                        "owner et repo vides : ils agissent alors sur cet espace de travail."
                                     )
                                 ),
                             },
@@ -790,7 +794,7 @@ def _load_qualification_context(conversation_id: int, user_id) -> str | None:
         ).all()
         return build_conversation_context(list(reversed(recent)), total_count=total)
 
-@app.post("/api/qualify", response_model=AnalysisReport)
+@app.post("/api/qualify", response_model=QualificationResult)
 async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):
     """Étape 1 : Qualification du besoin"""
     # Tours précédents de la conversation : sans eux, un message de suivi ("corrige ça",

@@ -166,8 +166,14 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
     """
     try:
         gh_repo = _get_repo(owner, repo)
+        # Branche vérifiée d'abord : sans elle, chaque lecture renverrait 404 et TOUS les fichiers
+        # passeraient pour absents, alors que c'est la branche qui manque (non vérifiable).
+        gh_repo.get_branch(branch)
     except GithubException as e:
-        error = _github_error(e)
+        error = (
+            f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}"
+            if e.status == 404 else _github_error(e)
+        )
         return lambda path: (None, error)
     except Exception as e:
         error = f"ERREUR : {e}"
@@ -185,14 +191,20 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
         if isinstance(content_file, list):
             return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
         try:
+            raw = content_file.decoded_content
+        except Exception:
+            # Fichier > 1 Mo : get_contents ne renvoie pas son contenu, le blob git oui. Une erreur
+            # de CET appel (réseau, quota) rend le fichier non vérifiable, pas illisible.
             try:
-                raw = content_file.decoded_content
-            except Exception:
-                # Fichier > 1 Mo : get_contents ne renvoie pas son contenu, le blob git oui.
                 raw = base64.b64decode(gh_repo.get_git_blob(content_file.sha).content)
+            except GithubException as e:
+                return None, _github_error(e)
+            except Exception as e:
+                return None, f"ERREUR : {e}"
+        try:
             return raw.decode("utf-8"), None
-        except Exception as e:
-            return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'a pas pu être lu ({type(e).__name__})"
+        except UnicodeDecodeError:
+            return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
 
     return fetch
 
@@ -359,11 +371,16 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
     return write_files_to_branch(owner, repo, branch, commit_message, files)
 
 
-def write_files_to_branch(owner: str, repo: str, branch: str, commit_message: str, files) -> str:
+def write_files_to_branch(
+    owner: str, repo: str, branch: str, commit_message: str, files,
+    rejected_sink: dict[str, str] | None = None,
+) -> str:
     """Implémentation de github_write_files, factorée en fonction Python pure pour être aussi
     appelée par github_commit_analyst_files (crewquestion.py) avec les fichiers extraits en
     Python de la sortie de diagnostic_task — mêmes garde-fous (branche protégée, syntaxe,
-    collision avec un dossier), sans passer par un JSON rédigé par le LLM."""
+    collision avec un dossier), sans passer par un JSON rédigé par le LLM.
+    rejected_sink reçoit {chemin: raison} des fichiers rejetés par la vérification syntaxique,
+    pour que l'appelant n'ait pas à refaire ce contrôle."""
     rejection = _reject_protected_branch(branch)
     if rejection:
         return rejection
@@ -395,6 +412,8 @@ def write_files_to_branch(owner: str, repo: str, branch: str, commit_message: st
     for f in files:
         issue = _reject_invalid_syntax(f["path"], f["content"])
         (rejected.append((f["path"], issue)) if issue else valid_files.append(f))
+    if rejected_sink is not None:
+        rejected_sink.update(dict(rejected))
 
     if not valid_files:
         lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)

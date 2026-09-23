@@ -28,7 +28,6 @@ from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tools import tool
-from crewai_tools import FileWriterTool
 from tools import read_a_files_content, check_syntax
 from github_tools import (
     github_read_file,
@@ -204,6 +203,14 @@ class AnalysisReport(BaseModel):
     is_clear: bool = Field(description="Vrai si la demande est claire, Faux si des ambiguïtés existent.")
     questions: List[str] = Field(default_factory=list, description="Liste de 2 à 4 questions si la demande est floue.")
 
+class QualificationResult(AnalysisReport):
+    """Réponse de /api/qualify : AnalysisReport + un indicateur EXPLICITE de repli. Séparé du
+    modèle demandé au LLM (output_pydantic) pour que celui-ci ne puisse jamais le remplir."""
+    fallback: bool = Field(
+        default=False,
+        description="Vrai si la qualification automatique a échoué : request_type n'est alors qu'un défaut.",
+    )
+
 # Sous ce seuil, la qualification est jugée trop incertaine pour lancer un workflow coûteux
 # (jusqu'à 5 agents) sur une catégorie peut-être fausse : on pose plutôt des questions.
 QUALIFICATION_CONFIDENCE_THRESHOLD = 0.6
@@ -284,7 +291,6 @@ architect_llm = _make_llm(0.3)
 diagnostic_llm = _make_llm(0.2)
 developer_llm = _make_llm(0.0)
 qa_llm = _make_llm(0.2)
-file_write_tool = FileWriterTool()
 
 # Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
 # du reste sans ambiguïté (voir parseCrewResult.ts). Un simple titre "## Résumé" pourrait
@@ -509,73 +515,55 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
         # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
         print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}", flush=True)
 
-def _is_safe_local_path(path: str) -> bool:
-    # Même règle que pour l'extraction (analyst_output.normalize_path) : relatif, sans "..".
-    return normalize_path(path) == path
-
-# Code du serveur lui-même : en mode local, le dossier de travail est celui du backend, et un
-# fichier livré nommé "main.py", "tests/..." ou ".env" écraserait sinon le serveur en cours
-# d'exécution. Sont protégés : les fichiers à la racine du backend (son code, sa config), ses
-# dossiers de code (tests/, __pycache__/), tout .env* et tout dépôt git. Les fichiers d'un projet
-# généré en local (ex: src/App.tsx) restent modifiables — sans quoi aucun BUGFIX/FEATURE local
-# sur un fichier existant ne pourrait être livré.
+# Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
+# de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
+# cours d'exécution. Toute écriture ET toute relecture locale (Développeur, QA) y est confinée.
 BACKEND_DIR = Path(__file__).resolve().parent
-PROTECTED_BACKEND_SUBDIRS = {"tests", "__pycache__", ".venv", "venv"}
+LOCAL_WORKSPACE_DIR = Path(os.getenv("LOCAL_WORKSPACE_DIR") or BACKEND_DIR / "workspace").resolve()
 
-def _is_protected_local_target(target: Path) -> bool:
-    resolved = target.resolve()
-    if resolved.name.startswith(".env") or ".git" in resolved.parts:
-        return True
-    if resolved.parent == BACKEND_DIR:
-        return True
-    if BACKEND_DIR in resolved.parents:
-        top = resolved.relative_to(BACKEND_DIR).parts[0]
-        # tests/reports/ reçoit le rapport QA (output_file de qa_task) : pas du code du serveur.
-        return top in PROTECTED_BACKEND_SUBDIRS and resolved.relative_to(BACKEND_DIR).parts[:2] != ("tests", "reports")
-    return False
+def _local_target(path: str) -> Path | None:
+    """Chemin absolu dans LOCAL_WORKSPACE_DIR, ou None s'il en sortirait (absolu, "..")."""
+    if normalize_path(path) != path:
+        return None
+    target = (LOCAL_WORKSPACE_DIR / path).resolve()
+    return target if LOCAL_WORKSPACE_DIR in target.parents else None
 
-def _write_files_locally(files: list[dict]) -> tuple[str, dict[str, str]]:
-    """Pendant disque local de write_files_to_branch (mode sans repository cible).
-
-    Refuse d'écrire sur un fichier du backend lui-même (voir _is_protected_local_target).
-    Renvoie (message pour l'agent, {chemin: raison} des fichiers NON écrits) : la QA doit les
-    savoir refusés plutôt que de lire à leur place l'ancien fichier resté sur le disque.
-    """
+def _write_files_locally(files: list[dict], rejected_sink: dict[str, str]) -> str:
+    """Pendant disque local de write_files_to_branch (mode sans repository cible), confiné à
+    LOCAL_WORKSPACE_DIR. Les fichiers NON écrits sont ajoutés à rejected_sink ({chemin: raison})."""
     written = []
-    refused: dict[str, str] = {}
     for f in files:
         path, content = f["path"], f["content"]
-        if not _is_safe_local_path(path):
-            refused[path] = "chemin absolu ou hors du dossier de travail refusé"
+        target = _local_target(path)
+        if target is None:
+            rejected_sink[path] = "chemin hors de l'espace de travail local refusé"
             continue
         syntax_issue = _reject_invalid_syntax(path, content)
         if syntax_issue:
-            refused[path] = syntax_issue
-            continue
-        target = Path(path)
-        if _is_protected_local_target(target):
-            refused[path] = "fichier du serveur backend lui-même, écrasement refusé"
+            rejected_sink[path] = syntax_issue
             continue
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             written.append(path)
         except Exception as e:
-            refused[path] = f"{type(e).__name__}: {e}"
-    message = f"OK : {len(written)} fichier(s) écrit(s) sur le disque local."
+            rejected_sink[path] = f"{type(e).__name__}: {e}"
+    message = f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local ({LOCAL_WORKSPACE_DIR})."
+    refused = {p: r for p, r in rejected_sink.items() if p in {f["path"] for f in files}}
     if refused:
         message += f"\nREJETÉS ({len(refused)}) — non écrits :\n" + "\n".join(
             f"- '{p}' : {reason}" for p, reason in refused.items()
         )
-    return message, refused
+    return message
 
 def _read_local_file(path: str) -> tuple[str | None, str | None]:
-    if not _is_safe_local_path(path):
-        return None, "chemin absolu ou hors du dossier de travail"
+    target = _local_target(path)
+    if target is None:
+        return None, "chemin hors de l'espace de travail local"
     try:
-        return Path(path).read_text(encoding="utf-8"), None
+        return target.read_text(encoding="utf-8"), None
     except FileNotFoundError:
-        return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur le disque local"
+        return None, f"{FILE_ABSENT} : '{path}' n'existe pas dans l'espace de travail local"
     except IsADirectoryError:
         return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
     except UnicodeDecodeError:
@@ -673,8 +661,11 @@ class AppDevelopmentCrew():
             # en Python de la sortie de l'Analyste (voir _build_commit_analyst_files_tool), sans
             # que le LLM ait à recopier leur contenu — github_write_file(s) restent le repli.
             tools=[
+                # Sans file_write_tool : en local, github_commit_analyst_files écrit dans l'espace
+                # de travail dédié (LOCAL_WORKSPACE_DIR) ; file_write_tool écrirait n'importe où,
+                # y compris sur le code du serveur.
                 self._build_commit_analyst_files_tool(),
-                file_write_tool, check_syntax,
+                check_syntax,
                 github_create_branch, github_write_file, github_write_files,
                 github_open_pull_request,
             ],
@@ -749,29 +740,50 @@ class AppDevelopmentCrew():
     # outils dans un pool de threads qui ne recopie pas le contexte courant.
 
     def _reset_execution_state(self) -> None:
+        # Fichiers committables, fusionnés au fil des tentatives de l'Analyste (voir le guardrail).
         self._analyst_files = []
-        self._excluded_analyst_paths = []
-        self._undelivered_paths = {}
+        # {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables
+        # (raccourci "// ... reste du code", balise de fin manquante, chemin invalide).
+        self._not_extracted = {}
+        # {chemin: raison} des fichiers refusés à l'écriture lors du DERNIER commit qui les
+        # concernait : un commit ultérieur réussi efface leur entrée.
+        self._write_rejections = {}
         self._diagnostic_guardrail_failures = 0
 
     def _diagnostic_guardrail(self, task_output):
-        """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun bloc de fichier, ou
-        commentaires de type "// ... reste du code") pour qu'il la corrige ; à la 2e tentative,
-        accepte en signalant le problème plutôt que de faire échouer tout le crew (CrewAI lève
-        une exception quand un guardrail échoue au-delà de guardrail_max_retries)."""
+        """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun fichier, balise de fin
+        manquante, commentaires de type "// ... reste du code") pour qu'il la corrige ; à la 2e
+        tentative, accepte en signalant le problème plutôt que de faire échouer tout le crew
+        (CrewAI lève une exception quand un guardrail échoue au-delà de guardrail_max_retries).
+
+        Les fichiers sains sont FUSIONNÉS d'une tentative à l'autre : une réponse corrigée qui ne
+        reprend que les fichiers fautifs ne fait pas perdre les fichiers sains de la première.
+        """
         raw = getattr(task_output, "raw", "") or ""
-        files, issue, faulty_paths = review_diagnostic_output(raw)
-        # Jamais de fichier à raccourci ("// ... reste du code") dans ce que le Développeur
-        # committera : même accepté en dernier recours, il écraserait le vrai fichier par une
-        # version tronquée. Les fichiers sains du lot restent committables.
-        self._analyst_files = [f for f in files if f["path"] not in faulty_paths]
-        self._excluded_analyst_paths = sorted(faulty_paths)
+        files, issue, faulty_paths, broken = review_diagnostic_output(raw)
+        merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
+        not_extracted = dict(getattr(self, "_not_extracted", {}))
+        for f in files:
+            if f["path"] not in faulty_paths:
+                merged[f["path"]] = f
+                not_extracted.pop(f["path"], None)
+        # Jamais de fichier à raccourci ou tronqué dans ce que le Développeur committera : il
+        # écraserait le vrai fichier par une version incomplète. Une version SAINE d'une tentative
+        # précédente reste en revanche committable.
+        for path, reason in [(p, "contenu incomplet (commentaire de raccourci)") for p in faulty_paths] + list(broken.items()):
+            if path not in merged:
+                not_extracted[path] = reason
+        self._analyst_files = list(merged.values())
+        self._not_extracted = not_extracted
         if issue is None:
             return True, task_output
         self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1
         if self._diagnostic_guardrail_failures <= 1:
-            return False, issue
-        excluded = "".join(f"\n- {p} : NON réalisé (contenu incomplet, exclu du commit)" for p in sorted(faulty_paths))
+            return False, (
+                f"{issue}\n\nRenvoie ta réponse COMPLÈTE, avec TOUS les fichiers entre balises "
+                "(y compris ceux qui étaient déjà corrects)."
+            )
+        excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
         return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
 
     def _build_commit_analyst_files_tool(self):
@@ -785,20 +797,21 @@ class AppDevelopmentCrew():
             PAS à recopier leur contenu. À utiliser EN PRIORITÉ, après github_create_branch.
             Mêmes garde-fous que github_write_files (branche principale refusée, fichiers
             Python/JSON/YAML invalides rejetés et listés dans une section REJETÉS).
-            Sans repository cible (owner/repo vides), écrit les fichiers sur le disque local.
+            Sans repository cible (owner/repo vides), écrit les fichiers dans l'espace de travail
+            local dédié.
             Arguments:
                 owner (str), repo (str): repository cible (chaînes vides si travail local).
                 branch (str): branche de travail (jamais main/master).
                 commit_message (str): message de commit.
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
-            excluded = list(getattr(crew_self, "_excluded_analyst_paths", []) or [])
+            not_extracted = dict(getattr(crew_self, "_not_extracted", {}) or {})
             excluded_note = (
-                "\nEXCLUS volontairement (contenu incomplet, ex: '// ... reste du code') : "
-                + ", ".join(excluded)
+                "\nEXCLUS (non committables) : "
+                + "; ".join(f"{p} ({reason})" for p, reason in sorted(not_extracted.items()))
                 + ". Ne les committe JAMAIS, avec aucun outil : liste-les comme non livrés."
-            ) if excluded else ""
-            if not files and excluded:
+            ) if not_extracted else ""
+            if not files and not_extracted:
                 return f"INFO : aucun fichier committable.{excluded_note}"
             if not files:
                 return (
@@ -807,21 +820,20 @@ class AppDevelopmentCrew():
                     "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
                 )
             manifest = format_manifest(files)
+            rejections: dict[str, str] = {}
             if not owner or not repo:
-                message, refused = _write_files_locally(files)
-                crew_self._undelivered_paths.update(refused)
-                return f"{message}\nFichiers concernés :\n{manifest}{excluded_note}"
-            # Rejets connus AVANT l'envoi (même contrôle que write_files_to_branch) : notés pour
-            # que la QA les annonce NON LIVRÉS au lieu de relire l'ancienne version de la branche.
+                result = _write_files_locally(files, rejections)
+            else:
+                result = write_files_to_branch(owner, repo, branch, commit_message, files, rejections)
+                if not result.startswith("OK"):
+                    # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
+                    for f in files:
+                        rejections.setdefault(f["path"], f"commit refusé : {result[:200]}")
+            # Cet appel fait foi pour SES fichiers : un échec précédent réparé par ce commit est
+            # oublié, un nouveau refus est retenu (voir qa_verify_delivered_files).
             for f in files:
-                syntax_issue = _reject_invalid_syntax(f["path"], f["content"])
-                if syntax_issue:
-                    crew_self._undelivered_paths[f["path"]] = syntax_issue
-            result = write_files_to_branch(owner, repo, branch, commit_message, files)
-            if not result.startswith("OK"):
-                # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
-                for f in files:
-                    crew_self._undelivered_paths.setdefault(f["path"], f"commit refusé : {result[:200]}")
+                crew_self._write_rejections.pop(f["path"], None)
+            crew_self._write_rejections.update(rejections)
             return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}"
 
         return github_commit_analyst_files
@@ -834,22 +846,25 @@ class AppDevelopmentCrew():
             """
             Vérifie EN UN SEUL APPEL chaque fichier rédigé par l'Analyste : présence réelle sur la
             branche, comparaison EXACTE (diff) avec la version de l'Analyste, et check_syntax sur
-            le contenu réellement présent. Chaque résultat est une preuve outillée [vérifié outil].
-            Sans repository cible (owner/repo vides), lit les fichiers sur le disque local.
+            le contenu réellement présent — ainsi que les fichiers annoncés mais jamais committables.
+            Chaque résultat est une preuve outillée [vérifié outil].
+            Sans repository cible (owner/repo vides), lit l'espace de travail local.
             Arguments:
                 owner (str), repo (str): repository cible (chaînes vides si travail local).
                 branch (str): branche de travail à inspecter.
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
-            undelivered = dict(getattr(crew_self, "_undelivered_paths", {}) or {})
-            if not owner or not repo:
-                return build_delivery_report(files, _read_local_file, undelivered)
-            return build_delivery_report(files, make_file_fetcher(owner, repo, branch), undelivered)
+            fetch = _read_local_file if not owner or not repo else make_file_fetcher(owner, repo, branch)
+            return build_delivery_report(
+                files, fetch,
+                write_rejections=dict(getattr(crew_self, "_write_rejections", {}) or {}),
+                not_extracted=dict(getattr(crew_self, "_not_extracted", {}) or {}),
+            )
 
         return qa_verify_delivered_files
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
-    async def analyze_user_request(self, user_prompt: str, conversation_context: str = "") -> AnalysisReport:
+    async def analyze_user_request(self, user_prompt: str, conversation_context: str = "") -> QualificationResult:
         qualif_agent = self.qualification_agent()
         task_prompt = f"""
         Tu es le Spécialiste en Qualification / Senior Product Owner.
@@ -876,7 +891,7 @@ class AppDevelopmentCrew():
         quota_mgr.last_execution_time = time.time()
 
         if hasattr(result, 'pydantic') and result.pydantic is not None:
-            return _enforce_confidence_threshold(result.pydantic)
+            return QualificationResult(**_enforce_confidence_threshold(result.pydantic).model_dump())
 
         raw_output = str(result.raw) if hasattr(result, 'raw') else str(result)
         try:
@@ -884,19 +899,19 @@ class AppDevelopmentCrew():
             if match:
                 report = _coerce_analysis_report(json.loads(match.group(0)))
                 if report is not None:
-                    return _enforce_confidence_threshold(report)
+                    return QualificationResult(**_enforce_confidence_threshold(report).model_dump())
         except Exception:
             pass
 
         # Qualification impossible : on demande plutôt que de lancer au hasard le workflow le
         # plus long (DESIGN_AND_DEV, 5 agents) sur une catégorie que rien ne justifie.
-        return _enforce_confidence_threshold(AnalysisReport(
+        return QualificationResult(fallback=True, **_enforce_confidence_threshold(AnalysisReport(
             summary=f"Analyse : {user_prompt}",
             reasoning="La qualification automatique n'a pas produit de résultat exploitable.",
             request_type="DESIGN_AND_DEV",
             confidence=0.0,
             is_clear=False,
-        ))
+        )).model_dump())
 
     def save_analysis_report(self, report: AnalysisReport, user_prompt: str, filepath: str = "docs/qualification_report.md"):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)

@@ -8,10 +8,13 @@ from analyst_output import (  # noqa: E402
     PRESENT_UNREADABLE,
     build_delivery_report,
     find_placeholders,
-    parse_file_blocks,
     parse_file_sections,
     review_diagnostic_output,
 )
+
+
+def parse_file_blocks(text):
+    return parse_file_sections(text)[0]
 
 
 def block(path, content, lang="ts"):
@@ -59,7 +62,7 @@ def test_headings_comments_and_quotes_outside_markers_are_ignored():
 
 def test_missing_end_marker_is_reported_not_committed():
     text = block("a.py", "x = 1\n", "python") + "<<<FICHIER: src/store.ts>>>\n```ts\nexport const a ="
-    files, issue, _ = review_diagnostic_output(text)
+    files, issue, _, _ = review_diagnostic_output(text)
     assert [f["path"] for f in files] == ["a.py"]
     assert issue and "src/store.ts" in issue and "FIN_FICHIER" in issue
 
@@ -68,7 +71,7 @@ def test_new_start_before_end_marks_previous_file_broken():
     text = "<<<FICHIER: a.ts>>>\nconst a = 1;\n" + block("b.ts", "const b = 1;\n")
     files, broken = parse_file_sections(text)
     assert [f["path"] for f in files] == ["b.ts"]
-    assert broken and broken[0].startswith("a.ts")
+    assert set(broken) == {"a.ts"}
 
 
 def test_last_version_wins_even_if_shorter():
@@ -80,14 +83,14 @@ def test_truncated_last_version_never_falls_back_to_earlier_one():
     text = block("a.ts", "export const old = 1;\n") + "<<<FICHIER: a.ts>>>\n```ts\nexport const fixed ="
     files, broken = parse_file_sections(text)
     assert files == []
-    assert broken and broken[0].startswith("a.ts")
+    assert set(broken) == {"a.ts"}
 
 
 def test_invalid_paths_are_rejected_and_decorations_stripped():
     text = block("src/App.tsx (extrait)", "x\n") + block("`./src/b.ts`", "y\n") + block("/src/c.ts", "z\n")
     files, broken = parse_file_sections(text)
     assert [f["path"] for f in files] == ["src/b.ts", "src/c.ts"]
-    assert broken == ["src/App.tsx (extrait) (chemin invalide)"]
+    assert broken == {"src/App.tsx (extrait)": "chemin invalide"}
 
 
 def test_output_without_files_is_rejected_unless_declared_not_delivered():
@@ -99,7 +102,7 @@ def test_output_without_files_is_rejected_unless_declared_not_delivered():
 
 
 def test_placeholder_comments_are_detected():
-    files, issue, faulty = review_diagnostic_output(block("src/a.ts", "const a = 1;\n// ... reste du code inchangé\n"))
+    files, issue, faulty, _ = review_diagnostic_output(block("src/a.ts", "const a = 1;\n// ... reste du code inchangé\n"))
     assert len(files) == 1
     assert issue and "src/a.ts ligne 2" in issue
     assert faulty == {"src/a.ts"}
@@ -141,7 +144,11 @@ def test_delivery_report_flags_absent_divergent_identical_and_unverifiable():
             return None, f"{PRESENT_UNREADABLE} : trop volumineux"
         return None, f"{FILE_ABSENT} : introuvable"
 
-    report = build_delivery_report(files, fetch, {"refused.py": "fichier du serveur backend"})
+    report = build_delivery_report(
+        files, fetch,
+        write_rejections={"refused.py": "ERREUR_SYNTAXE", "same.json": "échec d'un 1er commit"},
+        not_extracted={"src/cart.ts": "contenu incomplet"},
+    )
     sections = {s.split("\n", 1)[0]: s for s in report.split("### ")[1:]}
     assert "IDENTIQUE" in sections["same.json"]
     assert "DIVERGENT" in sections["diff.py"] and "+x = 2" in sections["diff.py"]
@@ -149,6 +156,9 @@ def test_delivery_report_flags_absent_divergent_identical_and_unverifiable():
     assert "NON VÉRIFIABLE" in sections["limited.ts"] and "ABSENT [" not in sections["limited.ts"]
     assert "PRÉSENT" in sections["big.json"] and "NON VÉRIFIABLE" in sections["big.json"]
     assert "NON LIVRÉ" in sections["refused.py"] and "DIVERGENT" not in sections["refused.py"]
+    # Refusé à un premier commit mais bien présent depuis : pas de faux NON LIVRÉ.
+    assert "NON LIVRÉ" not in sections["same.json"]
+    assert "jamais committable" in sections["src/cart.ts"]
 
 
 def test_readme_starting_and_ending_with_fences_is_not_unwrapped():
@@ -160,3 +170,11 @@ def test_readme_starting_and_ending_with_fences_is_not_unwrapped():
 def test_spread_style_comments_are_not_placeholders():
     files = [{"path": "a.tsx", "content": "// ...rest is forwarded to the input\n// ...same props as Button\n"}]
     assert find_placeholders(files) == []
+
+
+def test_marker_variants_do_not_produce_bogus_paths():
+    text = (
+        "<<<FICHIER: src/App.tsx>>>>\nx\n<<<FIN_FICHIER>>>\n"
+        "<<<FICHIER: <src/b.ts>>>>\ny\n<<<FIN FICHIER>>>\n"
+    )
+    assert [f["path"] for f in parse_file_blocks(text)] == ["src/App.tsx", "src/b.ts"]

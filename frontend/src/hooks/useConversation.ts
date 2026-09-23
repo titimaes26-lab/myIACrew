@@ -37,7 +37,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // effectiveWorkflow, plus bas, se retrouverait lui-même élargi à string dès qu'il combine
   // cette valeur avec workflowType (typé WorkflowType), perdant la garantie à la
   // compilation que seule une des 4 catégories reconnues par le backend est envoyée.
-  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type']; confidence?: number } | null>(null);
+  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type']; fallback?: boolean } | null>(null);
   // Incrémenté à ces mêmes deux limites que workflowType ci-dessous (startNewConversation, et
   // loadConversation seulement quand il ne s'agit pas d'un no-op sur la conversation déjà
   // affichée) — PAS à chaque changement de conversationId : conversationId lui-même passe de
@@ -432,16 +432,16 @@ export function useConversation(accessToken: string, apiUrl: string) {
             if (isAbortError(qualifyErr)) throw qualifyErr;
           }
           if (myGeneration !== conversationGenerationRef.current) return;
-          // confidence === 0 : repli "qualification impossible" du backend (DESIGN_AND_DEV par
-          // défaut, le workflow le plus coûteux), jamais un vrai choix.
-          if (report && report.confidence !== 0) {
+          // fallback : repli "qualification impossible" du backend (DESIGN_AND_DEV par défaut, le
+          // workflow le plus coûteux), jamais un vrai choix.
+          if (report && !report.fallback) {
             effectiveWorkflow = report.request_type;
-          } else if (pendingClarification.confidence === 0) {
+          } else if (pendingClarification.fallback) {
             // Aucune des deux qualifications n'a abouti : plutôt que de lancer au hasard le
             // workflow le plus coûteux, on redemande le type à l'utilisateur. La demande précisée
             // (réponse comprise) devient la nouvelle demande en attente : rien de ce qui a été
             // tapé n'est perdu, il suffit de choisir un type et de confirmer.
-            setPendingClarification({ originalRequest: clarifiedRequest, workflow: effectiveWorkflow, confidence: 0 });
+            setPendingClarification({ originalRequest: clarifiedRequest, workflow: effectiveWorkflow, fallback: true });
             setTurns((t) => t.map((turn) => (turn.id === tempId
               ? {
                 ...turn,
@@ -491,7 +491,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       if (myGeneration !== conversationGenerationRef.current) return;
 
       if (!report.is_clear) {
-        setPendingClarification({ originalRequest: text, workflow: report.request_type, confidence: report.confidence });
+        setPendingClarification({ originalRequest: text, workflow: report.request_type, fallback: report.fallback });
         setTurns((t) => t.map((turn) => (turn.id === tempId
           ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, questions: report.questions, updatedAt: new Date().toISOString() }
           : turn)));
