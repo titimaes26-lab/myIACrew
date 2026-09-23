@@ -618,7 +618,13 @@ class AppDevelopmentCrew():
             tasks=selected_tasks,
             process=Process.sequential,
             task_callback=on_task_complete,
-            max_rpm=3,
+            # 13 (pas 3) : partagé par TOUS les agents de ce crew en séquence (design,
+            # architecture, diagnostic, development, qa) — qa_task étant dernier et ayant le
+            # max_iter le plus élevé (10, voir qa_agent), c'est lui qui hérite le plus de la
+            # latence cumulée d'un plafond trop bas. Relevé sur demande explicite pour réduire
+            # cette latence ; retry_on_rate_limit_async (plus haut) absorbe toujours les 429
+            # transitoires si cette valeur s'avère trop optimiste face au quota Gemini réel.
+            max_rpm=13,
             output_log_file='crew_execution.log',
             verbose=True
         )

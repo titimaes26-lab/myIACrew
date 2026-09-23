@@ -211,45 +211,43 @@ qa_task:
     {user_request}
     ---
 
-    Revois le code produit par le Développeur.
-    Pour chaque fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx créé ou modifié, appelle l'outil
-    `check_syntax` sur son contenu (vérification statique, sans exécution) avant de conclure :
-    ne te contente pas d'une relecture visuelle pour juger de la validité syntaxique. Récupère ce
-    contenu avec `github_read_file` sur la branche de travail ({work_branch}) si un repository
-    cible est fourni (jamais depuis le disque local dans ce cas, puisque le Développeur n'y a rien
-    écrit), ou avec `read_a_files_content` sinon.
-    Sur un TRÈS GROS lot de fichiers (le Développeur peut désormais en committer des dizaines en
-    un seul appel via `github_write_files`, voir development_task), vérifier CHACUN avec
-    `check_syntax` peut dépasser ton propre budget d'appels d'outils : dans ce cas, priorise les
-    fichiers qui te semblent les plus à risque (logique complexe, fichiers de configuration
-    structurants comme `package.json`/`tsconfig.json`) plutôt que de t'arrêter à mi-chemin sans
-    jamais conclure, et liste EXPLICITEMENT dans ton rapport les fichiers que tu n'as PAS pu
-    vérifier avec `check_syntax` faute de budget restant.
-    Vérifie aussi les importations manquantes et les incohérences de montage React.
-    Dans ton rapport, distingue clairement ce que tu as vérifié avec `check_syntax` (et son
-    résultat exact) de ce que tu n'as évalué qu'en lisant le code : n'affirme jamais une
-    absence de bug que tu n'as pas réellement vérifiée avec l'outil.
+    Revois le code produit par le Développeur (le plan et le contenu complet rédigés par
+    l'Analyste, committés tels quels par le Développeur — voir leurs rapports respectifs). Ne
+    fais JAMAIS confiance à ces rapports sur la seule foi de leurs affirmations : pour chaque
+    fichier annoncé comme créé ou modifié, récupère son contenu RÉEL en UNE SEULE lecture — avec
+    `github_read_file` sur la branche de travail ({work_branch}) si un repository cible est
+    fourni (jamais depuis le disque local dans ce cas, puisque le Développeur n'y a rien écrit),
+    ou avec `read_a_files_content` sinon — et réutilise ce même contenu pour les DEUX
+    vérifications suivantes, SANS le relire une seconde fois :
+    1. Présence et contenu réels : le fichier existe-t-il, et son contenu correspond-il à ce que
+       l'Analyste a rédigé et que le Développeur prétend avoir committé ? Un fichier annoncé mais
+       absent, ou dont le contenu diverge de ce qui est décrit (par exemple si le Développeur a
+       committé un contenu différent de celui rédigé par l'Analyste), est un problème BLOQUANT à
+       signaler explicitement, pas un détail mineur.
+    2. Syntaxe (extensions .py/.json/.yaml/.ts/.tsx/.js/.jsx uniquement) : appelle `check_syntax`
+       sur ce même contenu (vérification statique, sans exécution) — ne te contente jamais d'une
+       relecture visuelle pour juger de la validité syntaxique. Vérifie aussi les importations
+       manquantes et les incohérences de montage React. Dans ton rapport, distingue clairement ce
+       que tu as vérifié avec `check_syntax` (et son résultat exact) de ce que tu n'as évalué
+       qu'en lisant le code : n'affirme jamais une absence de bug que tu n'as pas réellement
+       vérifiée avec l'outil.
 
-    Ne fais JAMAIS confiance aux rapports de l'Analyste et du Développeur sur la seule foi de leurs
-    affirmations. Pour chaque fichier annoncé (voir le plan de l'Analyste et la confirmation de
-    commit du Développeur), confirme sa présence ET son contenu réels : si un repository cible est
-    fourni, avec `github_read_file` sur la branche de travail ({work_branch}) — utilise
-    `github_list_directory` seulement pour repérer les fichiers présents, jamais pour juger de
-    leur contenu, qu'il ne renvoie pas ; sinon (travail sur disque local), avec
-    `read_a_files_content`. Un fichier annoncé mais absent, ou dont le contenu diverge de ce qui
-    est décrit (par exemple si le Développeur a committé un contenu différent de celui rédigé par
-    l'Analyste), est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Sur un
-    TRÈS GROS lot (voir plus haut) où confirmer chaque fichier un par un dépasserait ton propre
-    budget d'appels d'outils, applique la même priorisation que pour `check_syntax` : commence par
-    `github_list_directory` pour au moins confirmer que les fichiers annoncés sont bien présents
-    (peu coûteux, un seul appel), puis approfondis avec `github_read_file` sur autant de fichiers
-    que ton budget le permet, et liste explicitement ceux dont tu n'as confirmé ni infirmé le
-    contenu. Si un repository cible est fourni,
-    tu n'as pas d'outil pour vérifier toi-même qu'une Pull Request a réellement été ouverte :
-    dis-le clairement dans ton rapport plutôt que de confirmer une affirmation que tu ne peux pas
-    contrôler. Si le Développeur a lui-même signalé, dans son rapport, des fichiers non committés,
-    reflète-le explicitement dans ta conclusion : ne recommande jamais la mise en production d'un
-    travail que le Développeur a lui-même qualifié d'incomplet.
+    Sur un TRÈS GROS lot de fichiers (le Développeur peut désormais en committer des dizaines en
+    un seul appel via `github_write_files`, voir development_task), lire et vérifier CHACUN de
+    cette façon peut dépasser ton propre budget d'appels d'outils : dans ce cas, commence par
+    `github_list_directory` (peu coûteux, un seul appel) pour au moins confirmer que les fichiers
+    annoncés sont bien présents, puis approfondis (lecture + `check_syntax`) sur autant de
+    fichiers que ton budget le permet en priorisant les plus à risque (logique complexe, fichiers
+    de configuration structurants comme `package.json`/`tsconfig.json`) plutôt que de t'arrêter à
+    mi-chemin sans jamais conclure — liste EXPLICITEMENT dans ton rapport les fichiers que tu
+    n'as pas pu vérifier, faute de budget restant.
+
+    Si un repository cible est fourni, tu n'as pas d'outil pour vérifier toi-même qu'une Pull
+    Request a réellement été ouverte : dis-le clairement dans ton rapport plutôt que de confirmer
+    une affirmation que tu ne peux pas contrôler. Si le Développeur a lui-même signalé, dans son
+    rapport, des fichiers non committés, reflète-le explicitement dans ta conclusion : ne
+    recommande jamais la mise en production d'un travail que le Développeur a lui-même qualifié
+    d'incomplet.
 
     Au-delà de la syntaxe et de la véracité de ces rapports, compare aussi le résultat livré à la
     demande initiale rappelée en haut de cette tâche : un code syntaxiquement valide et fidèlement
