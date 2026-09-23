@@ -243,3 +243,49 @@ def test_is_withdrawn(text, path, expected):
 ])
 def test_incidental_verdict_mentions_are_not_verdicts(text):
     assert cq.QA_VERDICT.search(text) is None
+
+
+def test_local_reads_normalize_dot_slash_but_stay_confined(monkeypatch, tmp_path):
+    monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
+    crew = new_crew()
+    (crew._workspace / "src").mkdir(parents=True)
+    (crew._workspace / "src/a.ts").write_text("export {};\n")
+    assert cq._read_local_file(crew._workspace, "./src/a.ts") == ("export {};\n", None)
+    assert crew._build_local_read_tool().run(file_path="./src/a.ts") == "export {};\n"
+    assert cq._read_local_file(crew._workspace, "../x")[0] is None
+
+
+def test_commit_and_qa_tools_are_never_cached(monkeypatch):
+    crew = new_crew(owner="o", repo="r")
+    crew._analyst_files = [{"path": "src/a.ts", "content": "export {};\n"}]
+    commit, qa = crew._build_commit_analyst_files_tool(), crew._build_qa_verify_tool()
+    assert commit.cache_function() is False and qa.cache_function() is False
+    calls = []
+    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: calls.append(1) or "ERREUR : non fast-forward")
+    commit.run(commit_message="m")
+    commit.run(commit_message="m")
+    assert len(calls) == 2
+
+
+def test_local_mode_without_extracted_files_never_suggests_github():
+    message = new_crew()._build_commit_analyst_files_tool().run(commit_message="m")
+    assert "github_write_files" not in message and "espace de travail local" in message
+    github_message = new_crew(owner="o", repo="r")._build_commit_analyst_files_tool().run(commit_message="m")
+    assert "github_write_files" in github_message
+
+
+def test_local_write_with_every_file_rejected_is_an_error(tmp_path):
+    message = cq._write_files_locally(tmp_path, [{"path": "a.json", "content": "{ invalide"}], {})
+    assert message.startswith("ERREUR")
+
+
+def test_file_withdrawn_in_the_same_response_is_not_committed():
+    crew = new_crew()
+    ok, _ = crew._diagnostic_guardrail(output(
+        "- src/App.tsx — NON réalisé (trop volumineux)\n"
+        "<<<FICHIER: src/App.tsx>>>\nexport const partial = 1;\n<<<FIN_FICHIER>>>\n"
+        "<<<FICHIER: src/b.ts>>>\nexport const b = 1;\n<<<FIN_FICHIER>>>\n"
+    ))
+    assert ok
+    assert [f["path"] for f in crew._analyst_files] == ["src/b.ts"]
+    assert "src/App.tsx" in crew._not_extracted

@@ -249,3 +249,19 @@ def test_end_marker_variants_close_the_right_file():
 
 def test_not_delivered_none_is_not_a_deliberate_non_delivery():
     assert review_diagnostic_output("Fichiers NON réalisés : aucun")[1] is not None
+
+
+def test_indented_markers_do_not_shift_file_content():
+    text = (
+        "1. Fichier principal :\n"
+        "   <<<FICHIER: app.py>>>\n"
+        "   ```python\n"
+        "   import os\n"
+        "   if True:\n"
+        "       x = 1\n"
+        "   ```\n"
+        "   <<<FIN_FICHIER>>>\n"
+    )
+    files, broken = parse_file_sections(text)
+    assert broken == {}
+    assert files == [{"path": "app.py", "content": "import os\nif True:\n    x = 1\n"}]

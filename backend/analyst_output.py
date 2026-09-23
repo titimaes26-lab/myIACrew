@@ -188,6 +188,9 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     # Vrai entre une balise mal formée et sa <<<FIN_FICHIER>>> : ce contenu n'appartient à aucun
     # fichier exploitable, et sa balise de fin n'est pas une balise orpheline.
     in_malformed = False
+    # Indentation de la balise d'ouverture : si l'Analyste écrit ses fichiers dans une liste
+    # Markdown indentée, ce décalage n'appartient pas au contenu et est retiré de chaque ligne.
+    indent = ""
 
     def mark_broken(path: str | None, raw: str, reason: str) -> None:
         key = path or raw.strip() or "(chemin vide)"
@@ -203,6 +206,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
                 mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
             current_raw = start.group(1) or " "
             current_path = normalize_path(start.group(1))
+            indent = line[:len(line) - len(line.lstrip())]
             body = []
             continue
         end = FILE_END.match(stripped)
@@ -238,7 +242,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
             in_malformed = True
             continue
         if current_raw or current_path:
-            body.append(line)
+            body.append(line[len(indent):] if indent and line.startswith(indent) else line)
     if current_raw or current_path:
         mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
     return [{"path": p, "content": c} for p, c in files.items()], broken

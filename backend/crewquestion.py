@@ -536,11 +536,13 @@ def _conversation_workspace(conversation_id: str) -> Path:
     return LOCAL_WORKSPACE_DIR / (f"conversation-{safe}" if safe else "sans-conversation")
 
 def _local_target(workspace: Path, path: str) -> Path | None:
-    """Chemin absolu dans `workspace`, ou None s'il en sortirait (absolu, "..")."""
-    if normalize_path(path) != path:
+    """Chemin absolu dans `workspace`, ou None s'il en sortirait (".."). Un préfixe "./" ou "/"
+    (fréquent sous la plume d'un LLM) est normalisé plutôt que refusé."""
+    normalized = normalize_path(path)
+    if normalized is None:
         return None
     root = workspace.resolve()
-    target = (root / path).resolve()
+    target = (root / normalized).resolve()
     return target if root in target.parents else None
 
 def _write_files_locally(workspace: Path, files: list[dict], rejected_sink: dict[str, str]) -> str:
@@ -563,7 +565,13 @@ def _write_files_locally(workspace: Path, files: list[dict], rejected_sink: dict
             written.append(path)
         except Exception as e:
             rejected_sink[path] = f"{type(e).__name__}: {e}"
-    message = f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local."
+    # Comme write_files_to_branch : aucun fichier écrit est une ERREUR, jamais un "OK : 0" que
+    # le Développeur lirait comme un succès (règle "OK : passe à l'étape suivante").
+    message = (
+        f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local."
+        if written or not files
+        else f"ERREUR : aucun fichier écrit dans l'espace de travail local ({len(files)} rejeté(s))."
+    )
     refused = {p: r for p, r in rejected_sink.items() if p in {f["path"] for f in files}}
     if refused:
         message += f"\nREJETÉS ({len(refused)}) — non écrits :\n" + "\n".join(
@@ -587,6 +595,9 @@ def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None
         return None, f"{type(e).__name__}: {e}"
 
 MAX_RETRY_CONTEXT_CHARS = 4000
+
+def _never_cache(_args: Any = None, _result: Any = None) -> bool:
+    return False
 
 _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
 # Mention POSITIVE ("src/a.ts réalisé, src/b.ts NON réalisé") : ce qui la précède appartient à
@@ -836,11 +847,14 @@ class AppDevelopmentCrew():
         files, issue, faulty_paths, broken = review_diagnostic_output(raw)
         merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
         not_extracted = dict(getattr(self, "_not_extracted", {}))
-        for path in _withdrawn_paths(raw, list(merged)):
-            merged.pop(path)
+        # Retraits vérifiés sur les fichiers précédents ET ceux de cette réponse : un fichier
+        # déclaré "NON réalisé" mais tout de même placé entre balises n'est jamais committé.
+        withdrawn = _withdrawn_paths(raw, list(merged) + [f["path"] for f in files])
+        for path in withdrawn:
+            merged.pop(path, None)
             not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
         for f in files:
-            if f["path"] not in faulty_paths:
+            if f["path"] not in faulty_paths and f["path"] not in withdrawn:
                 merged[f["path"]] = f
                 not_extracted.pop(f["path"], None)
         # Jamais de fichier à raccourci ou tronqué dans ce que le Développeur committera : il
@@ -888,6 +902,13 @@ class AppDevelopmentCrew():
             if not files and not_extracted:
                 return f"INFO : aucun fichier committable.{excluded_note}"
             if not files:
+                if getattr(crew_self, "_repo_target", None) is None:
+                    # En local, cet outil est le SEUL moyen d'écrire : aucun repli possible.
+                    return (
+                        "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
+                        "l'Analyste, rien n'a été écrit dans l'espace de travail local. Indique-le "
+                        "dans ton rapport (aucun fichier livré)."
+                    )
                 return (
                     "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
                     "l'Analyste. Si elle contient quand même du code, committe-le avec "
@@ -912,6 +933,9 @@ class AppDevelopmentCrew():
             crew_self._write_rejections.update(rejections)
             return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}"
 
+        # Sans cache : CrewAI resservirait sinon le résultat du 1er appel (même commit_message)
+        # sans rappeler GitHub, rendant inopérant le "retente une fois" après une erreur transitoire.
+        github_commit_analyst_files.cache_function = _never_cache
         return github_commit_analyst_files
 
     def _build_qa_verify_tool(self):
@@ -939,6 +963,8 @@ class AppDevelopmentCrew():
                 not_extracted=dict(getattr(crew_self, "_not_extracted", {}) or {}),
             )
 
+        # Sans argument, un 2e appel (après une correction) resservirait sinon l'ancien rapport.
+        qa_verify_delivered_files.cache_function = _never_cache
         return qa_verify_delivered_files
 
     def _build_local_read_tool(self):
