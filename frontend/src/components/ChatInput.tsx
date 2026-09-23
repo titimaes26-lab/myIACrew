@@ -278,28 +278,36 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
         ② Votre message
       </h3>
       <div style={{ display: 'flex', gap: '10px' }}>
-        <textarea
-          ref={textareaRef}
-          disabled={disabled}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Décrivez votre besoin ou répondez à l'agent..."
-          aria-label="Votre message"
-          style={{
-            flex: 1,
-            padding: '12px',
-            borderRadius: '6px',
-            border: '1px solid #ccc',
-            fontSize: '15px',
-            boxSizing: 'border-box',
-            resize: 'none',
-            overflowY: 'auto',
-            minHeight: `${MIN_TEXTAREA_HEIGHT}px`,
-            maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
-            fontFamily: 'inherit',
-          }}
-        />
+        {/* Masquée (pas seulement désactivée) pendant une exécution en cours : sur demande
+            explicite, pour laisser toute la place au bouton "Annuler" plutôt que d'afficher une
+            zone de texte grisée et inutilisable à côté. `text` reste en state local le temps du
+            masquage (pas de perte du brouillon en cours de saisie au moment de l'envoi, déjà vidé
+            par submit() de toute façon), donc la zone retrouve son contenu éventuel dès que
+            disabled redevient faux. */}
+        {!disabled && (
+          <textarea
+            ref={textareaRef}
+            disabled={disabled}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Décrivez votre besoin ou répondez à l'agent..."
+            aria-label="Votre message"
+            style={{
+              flex: 1,
+              padding: '12px',
+              borderRadius: '6px',
+              border: '1px solid #ccc',
+              fontSize: '15px',
+              boxSizing: 'border-box',
+              resize: 'none',
+              overflowY: 'auto',
+              minHeight: `${MIN_TEXTAREA_HEIGHT}px`,
+              maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
+              fontFamily: 'inherit',
+            }}
+          />
+        )}
         {disabled && cancellable ? (
           <button
             type="button"
