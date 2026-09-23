@@ -438,12 +438,20 @@ export function useConversation(accessToken: string, apiUrl: string) {
             effectiveWorkflow = report.request_type;
           } else if (pendingClarification.confidence === 0) {
             // Aucune des deux qualifications n'a abouti : plutôt que de lancer au hasard le
-            // workflow le plus coûteux, on laisse l'utilisateur choisir (pendingClarification est
-            // conservé par le catch ci-dessous, sa prochaine réponse reprendra cette demande).
-            throw new Error(
-              "Le type de demande n'a pas pu être déterminé automatiquement : choisis le type de "
-              + 'workflow manuellement, puis renvoie ta réponse.',
-            );
+            // workflow le plus coûteux, on redemande le type à l'utilisateur. La demande précisée
+            // (réponse comprise) devient la nouvelle demande en attente : rien de ce qui a été
+            // tapé n'est perdu, il suffit de choisir un type et de confirmer.
+            setPendingClarification({ originalRequest: clarifiedRequest, workflow: effectiveWorkflow, confidence: 0 });
+            setTurns((t) => t.map((turn) => (turn.id === tempId
+              ? {
+                ...turn,
+                status: 'clarifying',
+                agentSummary: "Le type de demande n'a pas pu être déterminé automatiquement.",
+                questions: ['Choisis le type de workflow ci-dessous, puis envoie un message (ex : « ok ») pour lancer la demande précisée.'],
+                updatedAt: new Date().toISOString(),
+              }
+              : turn)));
+            return;
           }
           setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: effectiveWorkflow } : turn)));
         }

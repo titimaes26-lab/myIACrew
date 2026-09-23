@@ -15,6 +15,8 @@ cq = pytest.importorskip("crewquestion")
     ("Verdict : ✅ GO", "GO"),
     ("Verdict : GO avec réserves", "GO avec réserves"),
     ("Verdict : `NO_GO`", "NO_GO"),
+    ("## Verdict\n\n**GO**", "GO"),
+    ("Verdict\nGO_AVEC_RESERVES", "GO_AVEC_RESERVES"),
 ])
 def test_qa_verdict_variants(text, expected):
     assert cq.QA_VERDICT.search(text).group(1) == expected
@@ -61,7 +63,10 @@ def test_backend_files_are_protected_when_cwd_is_backend(monkeypatch):
     monkeypatch.chdir(cq.BACKEND_DIR)
     assert cq._is_protected_local_target(cq.Path("main.py"))
     assert cq._is_protected_local_target(cq.Path("tests/test_crew_helpers.py"))
+    assert not cq._is_protected_local_target(cq.Path("tests/reports/qa_report.md"))
+    # Projet généré en local sous backend/ : ses fichiers restent modifiables.
     assert not cq._is_protected_local_target(cq.Path("src/App.tsx"))
+    assert not cq._is_protected_local_target(cq.Path("docs/specs_design.md"))
 
 
 def test_refused_local_write_is_reported_to_qa(tmp_path, monkeypatch):
@@ -100,3 +105,24 @@ def test_diagnostic_guardrail_excludes_shortcut_files_on_final_accept():
     ok, out = crew._diagnostic_guardrail(output)
     assert ok and "a.ts : NON réalisé" in out
     assert [f["path"] for f in crew._analyst_files] == ["b.ts"]
+
+
+def test_confidence_is_required_in_structured_output():
+    with pytest.raises(Exception):
+        cq.AnalysisReport(summary="s", request_type="FEATURE", is_clear=True)
+
+
+def test_github_rejections_are_reported_to_qa(monkeypatch):
+    crew = cq.AppDevelopmentCrew()
+    crew._reset_execution_state()
+    crew._analyst_files = [
+        {"path": "package.json", "content": "{ invalide"},
+        {"path": "src/a.ts", "content": "export {};\n"},
+    ]
+    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "OK : 1 fichier(s) écrit(s)")
+    crew._build_commit_analyst_files_tool().run(owner="o", repo="r", branch="b", commit_message="m")
+    assert set(crew._undelivered_paths) == {"package.json"}
+
+    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "ERREUR : collision avec un dossier")
+    crew._build_commit_analyst_files_tool().run(owner="o", repo="r", branch="b", commit_message="m")
+    assert "commit refusé" in crew._undelivered_paths["src/a.ts"]

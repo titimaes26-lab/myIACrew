@@ -149,3 +149,14 @@ def test_delivery_report_flags_absent_divergent_identical_and_unverifiable():
     assert "NON VÉRIFIABLE" in sections["limited.ts"] and "ABSENT [" not in sections["limited.ts"]
     assert "PRÉSENT" in sections["big.json"] and "NON VÉRIFIABLE" in sections["big.json"]
     assert "NON LIVRÉ" in sections["refused.py"] and "DIVERGENT" not in sections["refused.py"]
+
+
+def test_readme_starting_and_ending_with_fences_is_not_unwrapped():
+    readme = "```bash\nnpm i\n```\ntexte\n```js\nx\n```\n"
+    text = f"<<<FICHIER: README.md>>>\n{readme}<<<FIN_FICHIER>>>\n"
+    assert parse_file_blocks(text)[0]["content"] == readme
+
+
+def test_spread_style_comments_are_not_placeholders():
+    files = [{"path": "a.tsx", "content": "// ...rest is forwarded to the input\n// ...same props as Button\n"}]
+    assert find_placeholders(files) == []

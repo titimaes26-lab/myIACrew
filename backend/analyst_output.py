@@ -47,7 +47,8 @@ SHORTCUT_WORDS = (
     r"(reste|rest|code|existing|existant|inchang[ée]e?s?|unchanged|autres?|others?|same|"
     r"m[êe]me|previous|pr[ée]c[ée]dente?s?|etc|remaining|suite)(?![\w])"
 )
-LEADING_ELLIPSIS = re.compile(r"^(\.{3}|…)\s*($|[*/}>-]|" + SHORTCUT_WORDS + r")", re.IGNORECASE)
+# Un espace est exigé entre l'ellipse et le mot : "// ...rest is forwarded" décrit un spread.
+LEADING_ELLIPSIS = re.compile(r"^(\.{3}|…)(\s*$|\s*[*/}>-]|\s+" + SHORTCUT_WORDS + r")", re.IGNORECASE)
 SHORTCUT_ONLY = re.compile(
     r"^(\.{3}|…)?\s*(le\s+|the\s+)?"
     r"(reste du (code|fichier|composant)|code (existant|inchang[ée])|"
@@ -95,7 +96,7 @@ def _extension(path: str) -> str:
     return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
 
 
-def _strip_outer_fence(body: list[str]) -> list[str]:
+def _strip_outer_fence(body: list[str], prose: bool) -> list[str]:
     """Retire le bloc ``` qui encadre le contenu (utile à l'affichage Markdown du rapport), s'il
     l'encadre ENTIÈREMENT : ouverture en première ligne, clôture en dernière. Les blocs ```
     intérieurs (README, template literal) font partie du fichier et restent intacts."""
@@ -105,9 +106,30 @@ def _strip_outer_fence(body: list[str]) -> list[str]:
         return body
     opening = FENCE_LINE.match(body[first].strip())
     closing = body[last].strip()
-    if opening and set(closing) == {opening.group(1)[0]} and len(closing) >= len(opening.group(1)):
-        return body[first + 1:last]
-    return body
+    if not (opening and set(closing) == {opening.group(1)[0]} and len(closing) >= len(opening.group(1))):
+        return body
+    inner = body[first + 1:last]
+    # Un fichier de code ne commence jamais par une ligne ``` : c'est forcément l'enveloppe, même
+    # si le code contient lui-même un ``` isolé (template literal). Un fichier de texte (README),
+    # si : l'enveloppe n'est retirée que si l'intérieur reste une suite de blocs bien formée —
+    # un README qui commence par ```bash et finit par ``` n'est PAS encadré.
+    return inner if not prose or _fences_are_balanced(inner) else body
+
+
+def _fences_are_balanced(lines: list[str]) -> bool:
+    """Vrai si chaque bloc ouvert dans `lines` y est refermé (règles CommonMark : une ligne de
+    clôture est nue et au moins aussi longue que l'ouverture ; à l'intérieur d'un bloc, une
+    ligne ```lang n'est que du contenu)."""
+    open_fence: str | None = None
+    for line in lines:
+        fence = FENCE_LINE.match(line.strip())
+        if not fence:
+            continue
+        if open_fence is None:
+            open_fence = fence.group(1)
+        elif set(line.strip()) == {open_fence[0]} and len(line.strip()) >= len(open_fence):
+            open_fence = None
+    return open_fence is None
 
 
 def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
@@ -143,7 +165,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], list[str]]:
             continue
         if FILE_END.match(stripped):
             if current_path:
-                content = "\n".join(_strip_outer_fence(body))
+                content = "\n".join(_strip_outer_fence(body, _extension(current_path) in PROSE_EXTENSIONS))
                 files[current_path] = content + "\n" if content and not content.endswith("\n") else content
                 broken.pop(current_path, None)
             elif current_raw:

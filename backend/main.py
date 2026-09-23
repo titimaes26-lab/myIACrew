@@ -9,9 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
-from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, build_conversation_context, track_execution_metrics
+from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, build_conversation_context, track_execution_metrics
 from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
 from auth import get_current_user, close_http_client
 from github_tools import verify_github_delivery, get_branch_head_sha, GitHubVerificationUnavailable
@@ -775,12 +775,20 @@ def _load_qualification_context(conversation_id: int, user_id) -> str | None:
         conversation = session.get(Conversation, conversation_id)
         if not conversation or conversation.user_id != user_id:
             return None
-        prior_entries = session.exec(
+        # Seuls les MAX_PRIOR_TURNS_IN_CONTEXT derniers tours servent au contexte : inutile de
+        # relire tous les résultats (souvent volumineux) d'une longue conversation à chaque
+        # qualification — le nombre total suffit pour signaler les tours omis.
+        total = session.exec(
+            select(func.count()).select_from(ExecutionHistory)
+            .where(ExecutionHistory.conversation_id == conversation.id)
+        ).one()
+        recent = session.exec(
             select(ExecutionHistory)
             .where(ExecutionHistory.conversation_id == conversation.id)
-            .order_by(ExecutionHistory.created_at.asc())
+            .order_by(ExecutionHistory.created_at.desc())
+            .limit(MAX_PRIOR_TURNS_IN_CONTEXT)
         ).all()
-        return build_conversation_context(prior_entries)
+        return build_conversation_context(list(reversed(recent)), total_count=total)
 
 @app.post("/api/qualify", response_model=AnalysisReport)
 async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):

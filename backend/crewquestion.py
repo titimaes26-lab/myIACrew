@@ -42,7 +42,14 @@ from github_tools import (
     track_edit_failures,
     write_files_to_branch,
 )
-from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, build_delivery_report, format_manifest, review_diagnostic_output
+from analyst_output import (
+    FILE_ABSENT,
+    PRESENT_UNREADABLE,
+    build_delivery_report,
+    format_manifest,
+    normalize_path,
+    review_diagnostic_output,
+)
 
 # --- MÉTRIQUES & PAUSES ---
 class ExecutionMetrics:
@@ -188,8 +195,10 @@ class AnalysisReport(BaseModel):
         default=None, description="Deuxième catégorie la plus plausible, ou null si aucune."
     )
     request_type: RequestType = Field(description="Type de workflow à déclencher.")
+    # Obligatoire (pas de valeur par défaut) : un défaut à 1.0 ferait passer pour certaine une
+    # réponse qui omet ce champ, sans jamais déclencher le seuil de clarification.
     confidence: float = Field(
-        default=1.0, ge=0.0, le=1.0,
+        ge=0.0, le=1.0,
         description="Confiance dans request_type, de 0 à 1 (sous 0.6 : la demande doit être clarifiée).",
     )
     is_clear: bool = Field(description="Vrai si la demande est claire, Faux si des ambiguïtés existent.")
@@ -422,7 +431,7 @@ def _extract_prior_turn_summary(result_text: str) -> str:
 
 MAX_PRIOR_TURNS_IN_CONTEXT = 10
 
-def build_conversation_context(prior_entries) -> str:
+def build_conversation_context(prior_entries, total_count: Optional[int] = None) -> str:
     """Rappel textuel des tours précédents de cette conversation, donné en entrée aux
     tâches (voir tasksquestion.yaml, placeholder {conversation_context}).
 
@@ -439,10 +448,12 @@ def build_conversation_context(prior_entries) -> str:
         return "Aucun échange précédent dans cette conversation."
 
     recent_entries = prior_entries[-MAX_PRIOR_TURNS_IN_CONTEXT:]
+    # total_count : nombre réel de tours quand l'appelant n'a chargé que les plus récents.
+    total = max(total_count or 0, len(prior_entries))
     status_labels = {"success": "réussi", "failed": "échoué", "running": "en cours (probablement interrompu)"}
     lines = []
-    if len(prior_entries) > len(recent_entries):
-        lines.append(f"[{len(prior_entries) - len(recent_entries)} tour(s) plus ancien(s) omis pour rester concis]")
+    if total > len(recent_entries):
+        lines.append(f"[{total - len(recent_entries)} tour(s) plus ancien(s) omis pour rester concis]")
     for entry in recent_entries:
         status_label = status_labels.get(entry.status, entry.status)
         lines.append(f'- Demande : "{entry.user_request.strip()[:200]}" ({entry.workflow}, {status_label})')
@@ -499,20 +510,29 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
         print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}", flush=True)
 
 def _is_safe_local_path(path: str) -> bool:
-    candidate = Path(path)
-    return not candidate.is_absolute() and ".." not in candidate.parts
+    # Même règle que pour l'extraction (analyst_output.normalize_path) : relatif, sans "..".
+    return normalize_path(path) == path
 
-# Fichiers du backend lui-même, à toute profondeur (et tout .env ou dépôt git) : en mode local,
-# le dossier de travail est souvent celui du serveur, et un fichier livré nommé "main.py",
-# "tests/..." ou ".env" écraserait sinon le serveur en cours d'exécution. Tout AUTRE fichier
-# existant peut être mis à jour — sans quoi aucun BUGFIX/FEATURE local ne pourrait être livré.
+# Code du serveur lui-même : en mode local, le dossier de travail est celui du backend, et un
+# fichier livré nommé "main.py", "tests/..." ou ".env" écraserait sinon le serveur en cours
+# d'exécution. Sont protégés : les fichiers à la racine du backend (son code, sa config), ses
+# dossiers de code (tests/, __pycache__/), tout .env* et tout dépôt git. Les fichiers d'un projet
+# généré en local (ex: src/App.tsx) restent modifiables — sans quoi aucun BUGFIX/FEATURE local
+# sur un fichier existant ne pourrait être livré.
 BACKEND_DIR = Path(__file__).resolve().parent
+PROTECTED_BACKEND_SUBDIRS = {"tests", "__pycache__", ".venv", "venv"}
 
 def _is_protected_local_target(target: Path) -> bool:
     resolved = target.resolve()
     if resolved.name.startswith(".env") or ".git" in resolved.parts:
         return True
-    return resolved.exists() and (resolved == BACKEND_DIR or BACKEND_DIR in resolved.parents)
+    if resolved.parent == BACKEND_DIR:
+        return True
+    if BACKEND_DIR in resolved.parents:
+        top = resolved.relative_to(BACKEND_DIR).parts[0]
+        # tests/reports/ reçoit le rapport QA (output_file de qa_task) : pas du code du serveur.
+        return top in PROTECTED_BACKEND_SUBDIRS and resolved.relative_to(BACKEND_DIR).parts[:2] != ("tests", "reports")
+    return False
 
 def _write_files_locally(files: list[dict]) -> tuple[str, dict[str, str]]:
     """Pendant disque local de write_files_to_branch (mode sans repository cible).
@@ -565,8 +585,9 @@ def _read_local_file(path: str) -> tuple[str | None, str | None]:
 
 # Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO",
 # "Verdict : ✅ GO", "Verdict : GO avec réserves".
+# ... ou "## Verdict" en titre, suivi de "**GO**" sur une ligne suivante.
 QA_VERDICT = re.compile(
-    r"verdict[^:\n]{0,60}:\W{0,8}(GO[ _]AVEC[ _]R[ÉE]SERVES|NO[ _-]?GO|GO)\b", re.IGNORECASE
+    r"verdict[^:\n]{0,60}(?::|[ \t*]*\n)\s*\W{0,8}(GO[ _]AVEC[ _]R[ÉE]SERVES|NO[ _-]?GO|GO)\b", re.IGNORECASE
 )
 
 def _qa_verdict_guardrail(task_output):
@@ -790,7 +811,17 @@ class AppDevelopmentCrew():
                 message, refused = _write_files_locally(files)
                 crew_self._undelivered_paths.update(refused)
                 return f"{message}\nFichiers concernés :\n{manifest}{excluded_note}"
+            # Rejets connus AVANT l'envoi (même contrôle que write_files_to_branch) : notés pour
+            # que la QA les annonce NON LIVRÉS au lieu de relire l'ancienne version de la branche.
+            for f in files:
+                syntax_issue = _reject_invalid_syntax(f["path"], f["content"])
+                if syntax_issue:
+                    crew_self._undelivered_paths[f["path"]] = syntax_issue
             result = write_files_to_branch(owner, repo, branch, commit_message, files)
+            if not result.startswith("OK"):
+                # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
+                for f in files:
+                    crew_self._undelivered_paths.setdefault(f["path"], f"commit refusé : {result[:200]}")
             return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}"
 
         return github_commit_analyst_files
