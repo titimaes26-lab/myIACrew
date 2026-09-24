@@ -130,7 +130,13 @@ def normalize_path(raw: str) -> str | None:
 
 
 def _extension(path: str) -> str:
-    return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+    """Extension du fichier, en minuscules, ou "" s'il n'en a pas. Un nom de fichier qui
+    commence lui-même par un point ("`.env`", "`.gitignore`", "`.eslintrc`") n'a PAS
+    d'extension pour autant : seul un point situé APRÈS ce préfixe compte ("`.eslintrc.json`"
+    a bien l'extension "json")."""
+    basename = path.rsplit("/", 1)[-1]
+    stem = basename.lstrip(".")
+    return stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
 
 
 def _undecorate(stripped: str) -> str:
@@ -161,10 +167,13 @@ def _strip_outer_fence(body: list[str], prose: bool) -> tuple[list[str], str | N
         return bool(stripped) and set(stripped) == {opening.group(1)[0]} and len(stripped) >= len(opening.group(1))
 
     if not is_closing(body[last]):
-        if not prose and any(is_closing(line) for line in body[first + 1:]):
+        if any(is_closing(line) for line in body[first + 1:]):
             # Une clôture existe, mais du texte la suit avant <<<FIN_FICHIER>>> (une note de
             # l'Analyste ?) : impossible de savoir s'il fait partie du fichier — on le signale
-            # plutôt que de committer une note dans le code, ou de couper du vrai code.
+            # plutôt que de committer une note dans le code (ou dans un fichier texte), ou de
+            # couper du vrai contenu. Vrai pour le code ET le texte : la première ligne
+            # ressemble déjà à une ouverture de bloc (`opening` a matché ci-dessus), un README
+            # authentique commence rarement littéralement par une ligne de clôture ``` seule.
             return body, "texte après la clôture ``` du bloc de code : place la note hors des balises"
         # Ouverture sans clôture : la clôture a été écrite APRÈS la balise <<<FIN_FICHIER>>>.
         # Pour du code, la ligne ```lang n'en fait jamais partie ; pour du texte, seulement si
@@ -283,7 +292,11 @@ def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
         ext = _extension(f["path"])
         if ext in PROSE_EXTENSIONS:
             continue
-        hash_is_comment = ext in HASH_COMMENT_EXTENSIONS
+        # Sans extension du tout (".env", ".gitignore", "Dockerfile", "Makefile"...) : ces
+        # fichiers utilisent quasi toujours "#" comme commentaire, et aucun n'est dans
+        # PROSE_EXTENSIONS (déjà exclu ci-dessus) — les en priver de ce contrôle les laisserait
+        # committer tronqués sans jamais être détectés.
+        hash_is_comment = ext in HASH_COMMENT_EXTENSIONS or not ext
         for n, line in enumerate(f["content"].splitlines(), start=1):
             marker = COMMENT_MARKER.match(line)
             if not marker or (marker.group(1) == "#" and not hash_is_comment):

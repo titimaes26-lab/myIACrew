@@ -667,10 +667,13 @@ def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int,
         if not matched:
             break
         path, end = matched
-        if separator is _LIST_SEPARATOR:
-            gap = _LOOKAHEAD_GAP.match(text, end)
-            if NOT_DELIVERED_MARKER.match(text, gap.end()):
-                break
+        # Vérifié pour CHAQUE chemin réclamé, y compris le tout premier (pas seulement à partir
+        # du 2e via _LIST_SEPARATOR) : "Réalisé : src/a.ts NON réalisé" (un seul chemin, suivi
+        # SANS virgule d'une mention négative) ne doit pas plus réclamer src/a.ts que ne le
+        # ferait une liste à plusieurs éléments.
+        gap = _LOOKAHEAD_GAP.match(text, end)
+        if NOT_DELIVERED_MARKER.match(text, gap.end()):
+            break
         pos = end
         found.add(path)
         separator = _LIST_SEPARATOR  # une virgule n'introduit un chemin SUIVANT qu'après le 1er.
@@ -1083,6 +1086,12 @@ class AppDevelopmentCrew():
         return qa_verify_delivered_files
 
     def _build_local_read_tool(self):
+        # Mémoïsé : les 4 agents qui l'utilisent (Product Designer, Architecte, Diagnostic, QA)
+        # partagent la même instance d'outil au lieu d'en créer une fermeture dupliquée chacun.
+        cached = getattr(self, "_local_read_tool", None)
+        if cached is not None:
+            return cached
+
         crew_self = self
 
         @tool("read_a_files_content")
@@ -1106,6 +1115,7 @@ class AppDevelopmentCrew():
                 )
             return content if content.strip() else f"INFO : Le fichier '{file_path}' est vide."
 
+        self._local_read_tool = read_a_files_content
         return read_a_files_content
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)

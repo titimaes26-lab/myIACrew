@@ -124,6 +124,17 @@ def test_legitimate_comments_are_not_placeholders():
     assert [p for p, _, _ in find_placeholders([{"path": "app.py", "content": "# ... reste du code\n"}])] == ["app.py"]
 
 
+def test_dotfiles_without_real_extension_are_scanned_as_hash_comments():
+    # ".env", ".gitignore" etc. commencent par un point qui n'est PAS un séparateur d'extension :
+    # ce sont des fichiers sans extension, et ils utilisent quasi toujours "#" comme commentaire.
+    from analyst_output import _extension
+
+    assert _extension(".env") == ""
+    assert _extension(".eslintrc.json") == "json"
+    files = [{"path": ".env", "content": "API_KEY=1\n# ... reste inchangé\n"}]
+    assert [p for p, _, _ in find_placeholders(files)] == [".env"]
+
+
 def test_delivery_report_flags_absent_divergent_identical_and_unverifiable():
     files = [
         {"path": "same.json", "content": '{"a": 1}\n'},
@@ -326,3 +337,11 @@ def test_asymmetric_decoration_missing_closing_marker_is_recognized():
     # Ouverture décorée mais jamais refermée : FILE_START/FILE_END absorbent seuls le reste.
     text = "**<<<FICHIER: src/a.ts>>>\nx = 1\n<<<FIN_FICHIER>>>\n"
     assert parse_file_sections(text) == ([{"path": "src/a.ts", "content": "x = 1\n"}], {})
+
+
+def test_text_after_closing_fence_is_flagged_even_for_prose_files():
+    # Un fichier .md (PROSE_EXTENSIONS) avec une note d'Analyste après la clôture ``` doit être
+    # signalé comme inexploitable, exactement comme un fichier de code — pas committé tel quel.
+    text = "<<<FICHIER: README.md>>>\n```\n# Titre\n```\nNote hors sujet\n<<<FIN_FICHIER>>>\n"
+    files, broken = parse_file_sections(text)
+    assert files == [] and "README.md" in broken and "clôture" in broken["README.md"]

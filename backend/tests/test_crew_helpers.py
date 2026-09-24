@@ -276,6 +276,10 @@ def test_is_withdrawn_with_full_candidate_set():
     # une mauvaise raison, sans jamais passer par ce mécanisme).
     assert cq._withdrawn_paths("Réalisé : src/a.ts, src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
     assert cq._withdrawn_paths("Réalisé : src/a.ts src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
+    # Un SEUL chemin (pas de liste à la virgule) suivi directement d'une mention négative : le
+    # garde-fou du "regard en avant" doit s'appliquer dès le 1er chemin, pas seulement à partir
+    # du 2e élément d'une liste.
+    assert cq._withdrawn_paths("Réalisé : src/a.ts NON réalisé", ["src/a.ts"]) == {"src/a.ts"}
 
 
 @pytest.mark.parametrize("text", [
