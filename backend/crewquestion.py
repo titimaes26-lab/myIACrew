@@ -1176,7 +1176,7 @@ class AppDevelopmentCrew():
             f.write(md_content)
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str], None]] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
@@ -1222,6 +1222,16 @@ class AppDevelopmentCrew():
             nonlocal completed_count
             completed_count += 1
             quota_mgr.adaptive_pause(task_output)
+
+            # Persister la sortie complétée de l'agent pour affichage progressif
+            if on_task_output_complete is not None and completed_count <= len(selected_tasks):
+                task_obj = selected_tasks[completed_count - 1]
+                agent_name = (task_obj.agent.role or "Agent").strip()
+                # Extraire la sortie brute (même logique que _format_crew_result)
+                raw_output = getattr(task_output, "raw", None)
+                raw_output = raw_output if raw_output is not None else str(task_output)
+                on_task_output_complete(agent_name, raw_output)
+
             # Annonce la tâche SUIVANTE qui démarre (pas celle qui vient de finir) : rien à
             # annoncer après la dernière (le résultat est ensuite juste agrégé/résumé, sans
             # étape agent supplémentaire pour l'utilisateur).

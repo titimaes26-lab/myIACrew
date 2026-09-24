@@ -2,6 +2,7 @@ import asyncio
 import traceback
 import os
 import uuid
+import re
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -381,6 +382,30 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     except Exception as e:
         print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}", flush=True)
 
+def _persist_completed_agent(execution_id: int, agent_name: str, agent_output: str) -> None:
+    """Invoqué quand un agent complète sa tâche, pour accumuler les résultats progressifs.
+
+    Formate la sortie de l'agent en markdown et l'ajoute au champ result existant, permettant
+    au sondage /progress de retourner les agents complétés jusqu'à présent même pendant l'exécution.
+    Similaire à _persist_current_step : ouvre sa propre Session thread-safe et best-effort.
+    """
+    try:
+        with Session(engine) as agent_session:
+            entry = agent_session.get(ExecutionHistory, execution_id)
+            if entry is not None:
+                # Format identique à _format_crew_result dans crewquestion.py : sections séparées par "\n\n---\n\n"
+                agent_section = f"## {agent_name}\n\n{agent_output}"
+                if entry.result:
+                    # Append au résultat existant avec le séparateur standard
+                    entry.result = f"{entry.result}\n\n---\n\n{agent_section}"
+                else:
+                    # Première section : pas de séparateur au début
+                    entry.result = agent_section
+                agent_session.add(entry)
+                agent_session.commit()
+    except Exception as e:
+        print(f"AVERTISSEMENT : échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}", flush=True)
+
 async def _execute_crew_and_persist(
     db_entry_id: int,
     conversation_id: int,
@@ -593,6 +618,7 @@ async def _run_crew_and_persist(
                             },
                             request_type=data.target_workflow,
                             on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
+                            on_task_output_complete=lambda agent_name, output: _persist_completed_agent(db_entry.id, agent_name, output),
                         )
                 finally:
                     memory_ticker.cancel()
@@ -1023,7 +1049,6 @@ def _parse_completed_agents(result_text: str) -> dict[str, str]:
         agents_part = result_text
 
     # Découper par frontière '\n\n---\n\n## ' (le ## inclus fait partie du heading)
-    import re
     # Split sur le pattern exact : newline + --- + newline + ## (toute ligne de heading)
     sections = re.split(r'\n\n---\n\n## ', agents_part)
 
