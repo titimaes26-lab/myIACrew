@@ -1064,6 +1064,10 @@ def _parse_completed_agents(result_text: str) -> dict[str, str]:
             agent_name = lines[0].strip()
             content = ""
 
+        # Retirer les marqueurs ## du heading si présents (première section les conserve du split)
+        if agent_name.startswith('##'):
+            agent_name = agent_name[2:].strip()
+
         # Ne pas traiter comme agent si le heading ne ressemble pas à un rôle
         # (ex: un heading du contenu d'un agent, pas une vraie frontière)
         if agent_name and len(agent_name) > 2:
