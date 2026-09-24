@@ -78,4 +78,8 @@ export interface ChatTurn {
   // particulière dès que le sondage détecte la fin réelle de l'exécution (historyEntryToTurn
   // reconstruit alors ce tour depuis zéro, sans ce champ).
   dismissedLocally?: boolean;
+  // Résultats partiels des agents terminés, reçus progressivement via le sondage /progress
+  // (dict {agent_name: markdown_content}). Accumulé au fur et à mesure des completions,
+  // fusionné avec result final si présent.
+  completedAgents?: Record<string, string>;
 }

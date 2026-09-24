@@ -19,6 +19,7 @@ export interface ConversationProgress {
   id: number | null;
   status: string | null;
   current_step: string | null;
+  completed_agents?: Record<string, string>;
 }
 
 function authHeaders(accessToken: string): HeadersInit {

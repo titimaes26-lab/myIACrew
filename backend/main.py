@@ -1002,6 +1002,50 @@ async def get_conversation_messages(
     )
     return session.exec(statement).all()
 
+
+def _parse_completed_agents(result_text: str) -> dict[str, str]:
+    """Découpe le résultat combiné du crew en sections par agent.
+
+    Format : sections séparées par '\n\n---\n\n## Agent Name', frontière résumé marquée par
+    '<!--crew-summary-->' avant le heading '## Résumé'. Retourne un dict {agent_name: content}.
+    """
+    if not result_text:
+        return {}
+
+    # Chercher le sentinel résumé : '<!--crew-summary-->\n\n## Résumé'
+    agents = {}
+    summary_marker = "<!--crew-summary-->"
+
+    # Isoler la partie agents (avant le résumé)
+    if summary_marker in result_text:
+        agents_part = result_text[:result_text.index(summary_marker)]
+    else:
+        agents_part = result_text
+
+    # Découper par frontière '\n\n---\n\n## ' (le ## inclus fait partie du heading)
+    import re
+    # Split sur le pattern exact : newline + --- + newline + ## (toute ligne de heading)
+    sections = re.split(r'\n\n---\n\n## ', agents_part)
+
+    for section in sections:
+        if not section.strip():
+            continue
+
+        lines = section.split('\n', 1)
+        if len(lines) >= 2:
+            agent_name = lines[0].strip()
+            content = lines[1]
+        else:
+            agent_name = lines[0].strip()
+            content = ""
+
+        # Ne pas traiter comme agent si le heading ne ressemble pas à un rôle
+        # (ex: un heading du contenu d'un agent, pas une vraie frontière)
+        if agent_name and len(agent_name) > 2:
+            agents[agent_name] = f"## {agent_name}\n\n{content}" if content else f"## {agent_name}"
+
+    return agents
+
 @app.get("/api/conversations/{conversation_id}/progress")
 async def get_conversation_progress(
     conversation_id: int,
@@ -1010,26 +1054,32 @@ async def get_conversation_progress(
 ):
     """Sondage léger de la progression pendant qu'une exécution est en cours.
 
-    Ne sélectionne que 3 colonnes de la (au plus une, garanti côté serveur — voir le contrôle
-    de concurrence plus haut) exécution "running" de la conversation, plutôt que de réutiliser
-    get_conversation_messages : appelé toutes les quelques secondes par le frontend pendant
-    toute exécution, il ne doit pas retélécharger à chaque fois l'historique complet de la
-    conversation, résultats déjà terminés inclus (potentiellement volumineux sur un workflow
-    FEATURE/DESIGN_AND_DEV).
+    Retourne aussi les sections d'agents complétés jusqu'à présent, découpe du champ result,
+    pour affichage progressif des analyses d'agents au fur et à mesure de leur completion.
     """
     conversation = session.get(Conversation, conversation_id)
     if not conversation or conversation.user_id != user.get("id"):
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
 
     statement = (
-        select(ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.current_step)
+        select(ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.current_step, ExecutionHistory.result)
         .where(ExecutionHistory.conversation_id == conversation_id)
         .where(ExecutionHistory.status == "running")
     )
     row = session.exec(statement).first()
     if row is None:
-        return {"id": None, "status": None, "current_step": None}
-    return {"id": row[0], "status": row[1], "current_step": row[2]}
+        return {"id": None, "status": None, "current_step": None, "completed_agents": {}}
+
+    completed_agents = {}
+    if row[3]:  # if result is not None
+        completed_agents = _parse_completed_agents(row[3])
+
+    return {
+        "id": row[0],
+        "status": row[1],
+        "current_step": row[2],
+        "completed_agents": completed_agents,
+    }
 
 @app.get("/api/repo-targets")
 async def list_repo_targets(

@@ -5,6 +5,7 @@ import { parseCrewResult } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
+import AgentSummary from './AgentSummary';
 
 // Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer
 // dans le bundle que si un résultat d'agent est effectivement affiché.
@@ -62,10 +63,35 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   // l'un est modifié sans l'autre (ex: JSX étendu à un autre statut sans mettre à jour
   // la condition du useMemo), laissant `sections` vide pour un cas que le JSX affiche.
   const isSuccess = Boolean(turn.result) && turn.status === 'success';
+  const isRunningWithAgents = turn.status === 'running' && turn.completedAgents && Object.keys(turn.completedAgents).length > 0;
+
   // Le parsing par regex du résultat complet (qui peut contenir du code source entier sur
   // un workflow FEATURE/DESIGN_AND_DEV) ne doit être refait que si turn.result change, pas
   // à chaque rendu de ce composant.
-  const sections = useMemo(() => (isSuccess ? parseCrewResult(turn.result!) : []), [isSuccess, turn.result]);
+  // Affiche aussi les agents complétés progressivement pendant l'exécution (isRunningWithAgents).
+  const sections = useMemo(() => {
+    const allSections: ReturnType<typeof parseCrewResult> = [];
+
+    // Ajouter les agents progressivement reçus
+    if (turn.completedAgents) {
+      Object.entries(turn.completedAgents).forEach(([agentName, content]) => {
+        allSections.push({ agentName, content });
+      });
+    }
+
+    // Ajouter les sections finales du résultat complet (si succès)
+    if (isSuccess && turn.result) {
+      const finalSections = parseCrewResult(turn.result);
+      // Fusionner en évitant les doublons (certains agents peuvent être dans completedAgents ET dans result)
+      finalSections.forEach((section) => {
+        if (!allSections.some((s) => s.agentName === section.agentName)) {
+          allSections.push(section);
+        }
+      });
+    }
+
+    return allSections;
+  }, [isSuccess, turn.result, turn.completedAgents]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
@@ -150,7 +176,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           <p style={{ margin: 0, fontSize: '13px', color: '#666', fontStyle: 'italic' }}>{turn.result}</p>
         )}
 
-        {isSuccess && (
+        {(isSuccess || isRunningWithAgents) && (
           <Suspense fallback={<p style={{ margin: 0, fontSize: '13px', color: '#666' }}>Chargement du résultat...</p>}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {sections.map((section, i) => (
@@ -178,10 +204,14 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
                       fontSize: '13px',
                       fontWeight: 600,
                       color: '#444',
+                      justifyContent: 'space-between',
                     }}
                   >
-                    <span aria-hidden="true">{agentIcon(section.agentName ?? 'Résultat')}</span>
-                    <span>{section.agentName ?? 'Résultat'}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span aria-hidden="true">{agentIcon(section.agentName ?? 'Résultat')}</span>
+                      <span>{section.agentName ?? 'Résultat'}</span>
+                    </div>
+                    {section.agentName && <AgentSummary agentName={section.agentName} content={section.content} />}
                   </summary>
                   <div style={{ marginTop: '8px' }}>
                     <MarkdownRenderer content={section.content} />
