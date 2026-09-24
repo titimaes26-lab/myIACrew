@@ -24,6 +24,12 @@ os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY or ""
 os.environ["LITELLM_NUM_RETRIES"] = "7"
 os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 
+# --- CONSTANTES DE FORMAT MARKDOWN POUR LES AGENTS (PARTAGÉES AVEC MAIN.PY) ---
+AGENT_SECTION_SEPARATOR = "\n\n---\n\n"
+AGENT_SECTION_REGEX_PATTERN = r'\n\n---\n\n## '
+MAX_AGENT_OUTPUT_SIZE = 10_000_000  # 10MB par agent
+MAX_AGENT_NAME_LENGTH = 200
+
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.project.utils import cache as _crewai_memoize_cache
@@ -172,13 +178,15 @@ def _format_crew_result(result) -> str:
     à plusieurs tâches (ex: ANALYSE_ONLY = design_task puis architecture_task), le
     contenu produit par les tâches précédentes serait sinon silencieusement perdu et
     jamais renvoyé à l'utilisateur.
+
+    Format final: sections séparées par AGENT_SECTION_SEPARATOR ("\n\n---\n\n")
     """
     tasks_output = getattr(result, "tasks_output", None)
     if not tasks_output or len(tasks_output) <= 1:
         return str(result.raw) if hasattr(result, "raw") else str(result)
 
     sections = [f"## {agent_name}\n\n{raw}" for agent_name, raw in _iter_task_sections(result)]
-    return "\n\n---\n\n".join(sections)
+    return AGENT_SECTION_SEPARATOR.join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
 RequestType = Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"]
@@ -1176,7 +1184,7 @@ class AppDevelopmentCrew():
             f.write(md_content)
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str], None]] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
@@ -1222,6 +1230,24 @@ class AppDevelopmentCrew():
             nonlocal completed_count
             completed_count += 1
             quota_mgr.adaptive_pause(task_output)
+
+            # Persister la sortie complétée de l'agent pour affichage progressif
+            # Validation et nettoyage des données feront faits dans _persist_completed_agent (main.py)
+            if on_task_output_complete is not None and completed_count <= len(selected_tasks):
+                task_obj = selected_tasks[completed_count - 1]
+                agent_name = (task_obj.agent.role or "Agent").strip()
+                # Extraire la sortie brute (même logique que _format_crew_result)
+                raw_output = getattr(task_output, "raw", None)
+                raw_output = raw_output if raw_output is not None else str(task_output)
+                # Validation basique: éviter les None
+                if raw_output is None:
+                    raw_output = ""
+                try:
+                    on_task_output_complete(agent_name, raw_output)
+                except Exception as e:
+                    # Best-effort: ne pas laisser une erreur de persistance casser le workflow
+                    print(f"AVERTISSEMENT : échec du callback on_task_output_complete pour '{agent_name}' : {type(e).__name__}: {e}", flush=True)
+
             # Annonce la tâche SUIVANTE qui démarre (pas celle qui vient de finir) : rien à
             # annoncer après la dernière (le résultat est ensuite juste agrégé/résumé, sans
             # étape agent supplémentaire pour l'utilisateur).

@@ -149,15 +149,22 @@ export function useConversation(accessToken: string, apiUrl: string) {
           lastAppliedSeq = mySeq;
 
           if (progress.status === 'running') {
-            setTurns((t) => t.map((turn) => (
-              // Évite une nouvelle référence d'objet (et donc un re-rendu du ChatMessage
-              // mémoïsé correspondant) quand l'étape sondée est identique à celle déjà connue
-              // localement, ce qui est le cas courant : une étape CrewAI dure typiquement bien
-              // plus longtemps qu'un intervalle de sondage.
-              turn.status === 'running' && turn.currentStep !== progress.current_step
-                ? { ...turn, currentStep: progress.current_step }
-                : turn
-            )));
+            setTurns((t) => t.map((turn) => {
+              const hasUpdate = turn.currentStep !== progress.current_step ||
+                                Object.keys(progress.completed_agents || {}).length > 0;
+              if (turn.status === 'running' && hasUpdate) {
+                const newCompletedAgents = {
+                  ...(turn.completedAgents || {}),
+                  ...(progress.completed_agents || {}),
+                };
+                return {
+                  ...turn,
+                  currentStep: progress.current_step,
+                  completedAgents: newCompletedAgents,
+                };
+              }
+              return turn;
+            }));
             return;
           }
 
