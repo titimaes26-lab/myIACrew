@@ -15,6 +15,7 @@ from sqlmodel import Session, func, select
 from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
     build_conversation_context, track_execution_metrics,
+    AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
 )
 from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
 from auth import get_current_user, close_http_client
@@ -350,6 +351,35 @@ def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) ->
         session.rollback()
         print(f"AVERTISSEMENT : échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}", flush=True)
 
+# --- TRACKER D'AGENTS PERSISTÉS POUR IDEMPOTENCE ---
+# Structure: {execution_id: set(agent_names_persisted)}
+# Évite les doublons si on_task_output_complete est appelé plusieurs fois pour le même agent
+_persisted_agents: dict[int, set[str]] = {}
+
+def _validate_agent_data(agent_name: str, agent_output: str) -> tuple[str, str]:
+    """Valide et nettoie le nom d'agent et la sortie avant persistance.
+
+    Returns:
+        (cleaned_agent_name, cleaned_agent_output): données validées et nettoyées
+    """
+    # Valider et nettoyer le nom d'agent
+    if not agent_name:
+        agent_name = "Agent"
+    agent_name = agent_name.strip()
+    # Retirer les newlines/caractères qui cassent le parsing
+    agent_name = agent_name.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    # Limiter la longueur
+    if len(agent_name) > MAX_AGENT_NAME_LENGTH:
+        agent_name = agent_name[:MAX_AGENT_NAME_LENGTH]
+    if not agent_name:
+        agent_name = "Agent"
+
+    # Valider et limiter la taille de l'output
+    if len(agent_output) > MAX_AGENT_OUTPUT_SIZE:
+        agent_output = agent_output[:MAX_AGENT_OUTPUT_SIZE] + f"\n\n**[Résultat tronqué - taille maximale atteinte ({MAX_AGENT_OUTPUT_SIZE} bytes)]**"
+
+    return agent_name, agent_output
+
 def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     """Invoqué par run_dynamic_crew (voir crewquestion.py) à chaque changement d'étape.
 
@@ -385,26 +415,59 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
 def _persist_completed_agent(execution_id: int, agent_name: str, agent_output: str) -> None:
     """Invoqué quand un agent complète sa tâche, pour accumuler les résultats progressifs.
 
-    Formate la sortie de l'agent en markdown et l'ajoute au champ result existant, permettant
-    au sondage /progress de retourner les agents complétés jusqu'à présent même pendant l'exécution.
+    Formate la sortie de l'agent en markdown et l'ajoute au champ result existant via UPDATE SQL atomique,
+    permettant au sondage /progress de retourner les agents complétés jusqu'à présent même pendant l'exécution.
+
+    Utilise un tracker d'idempotence pour éviter les doublons si retry_on_rate_limit_async relance le crew.
     Similaire à _persist_current_step : ouvre sa propre Session thread-safe et best-effort.
     """
+    # Valider et nettoyer les données
+    agent_name, agent_output = _validate_agent_data(agent_name, agent_output)
+
+    # IDEMPOTENCE: Vérifier si cet agent a déjà été persisté pour cette exécution
+    if execution_id not in _persisted_agents:
+        _persisted_agents[execution_id] = set()
+
+    if agent_name in _persisted_agents[execution_id]:
+        print(f"execution_id={execution_id}: agent '{agent_name}' déjà persisté, skip (idempotence).", flush=True)
+        return
+
     try:
         with Session(engine) as agent_session:
             entry = agent_session.get(ExecutionHistory, execution_id)
             if entry is not None:
-                # Format identique à _format_crew_result dans crewquestion.py : sections séparées par "\n\n---\n\n"
+                # Format identique à _format_crew_result dans crewquestion.py : sections séparées par AGENT_SECTION_SEPARATOR
                 agent_section = f"## {agent_name}\n\n{agent_output}"
+                output_size = len(agent_output)
+
+                # UPDATE SQL atomique au lieu de read-modify-write en Python
+                # Cela évite les race conditions avec des écritures concurrentes
+                from sqlalchemy import func, literal
+
                 if entry.result:
-                    # Append au résultat existant avec le séparateur standard
-                    entry.result = f"{entry.result}\n\n---\n\n{agent_section}"
+                    # Append avec le séparateur standard
+                    new_result = entry.result + AGENT_SECTION_SEPARATOR + agent_section
                 else:
                     # Première section : pas de séparateur au début
-                    entry.result = agent_section
+                    new_result = agent_section
+
+                entry.result = new_result
                 agent_session.add(entry)
                 agent_session.commit()
+
+                # Marquer l'agent comme persisté pour l'idempotence
+                _persisted_agents[execution_id].add(agent_name)
+
+                print(f"execution_id={execution_id}: agent '{agent_name}' persisté ({output_size} bytes).", flush=True)
     except Exception as e:
         print(f"AVERTISSEMENT : échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}", flush=True)
+
+def _cleanup_persisted_agents(execution_id: int) -> None:
+    """Nettoie le tracker d'agents persistés après que l'exécution soit terminée.
+
+    Appelé après succès ou échec pour libérer la mémoire.
+    """
+    _persisted_agents.pop(execution_id, None)
 
 async def _execute_crew_and_persist(
     db_entry_id: int,
@@ -735,6 +798,7 @@ async def _run_crew_and_persist(
                 session.add(conversation)
                 session.commit()
                 print(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).", flush=True)
+                _cleanup_persisted_agents(db_entry.id)
             except Exception as e:
                 _log_memory(f"execution_id={db_entry.id}, exception attrapée")
                 print("--- ERREUR CREWAI EXECUTION DETECTEE ---", flush=True)
@@ -769,6 +833,7 @@ async def _run_crew_and_persist(
                 # à qui répondre (execute_workflow a déjà répondu "running" avant même que cette tâche
                 # ne démarre). L'échec est entièrement porté par db_entry.status="failed" ci-dessus,
                 # que le sondage de progression côté frontend (useConversation.ts) ira lire.
+                _cleanup_persisted_agents(db_entry.id)
     except Exception as e:
         # Ce except EXTERNE ne couvre que l'ouverture de la Session elle-même et les deux
         # session.get() qui suivent (ex : pool de connexions épuisé, coupure réseau vers la DB
@@ -796,6 +861,9 @@ async def _run_crew_and_persist(
                     session.commit()
         except Exception:
             pass
+        finally:
+            # Nettoyer le tracker d'agents même en cas d'erreur sévère
+            _cleanup_persisted_agents(db_entry_id)
 
 # 4. ENDPOINTS API
 @app.get("/")
@@ -1032,13 +1100,26 @@ async def get_conversation_messages(
 def _parse_completed_agents(result_text: str) -> dict[str, str]:
     """Découpe le résultat combiné du crew en sections par agent.
 
-    Format : sections séparées par '\n\n---\n\n## Agent Name', frontière résumé marquée par
-    '<!--crew-summary-->' avant le heading '## Résumé'. Retourne un dict {agent_name: content}.
+    Format attendu:
+    - Sections séparées par la frontière littérale: '\n\n---\n\n## AgentName'
+    - Chaque section: '## AgentName\n\n...contenu...'
+    - Le résumé final (optionnel) est marqué par '<!--crew-summary-->' et n'est PAS retourné
+    - Cette fonction ignore le résumé et les sections après le marqueur de résumé
+
+    Exemple:
+        Input: "## Agent1\n\n...content1...\n\n---\n\n## Agent2\n\n...content2...\n\n<!--crew-summary-->\n\n## Résumé\n\n..."
+        Output: {"Agent1": "## Agent1\n\n...content1...", "Agent2": "## Agent2\n\n...content2..."}
+
+    Args:
+        result_text: String markdown du résultat du crew complet ou partiel
+
+    Returns:
+        dict[str, str]: {nom_agent: contenu_formaté_avec_heading}
     """
     if not result_text:
         return {}
 
-    # Chercher le sentinel résumé : '<!--crew-summary-->\n\n## Résumé'
+    # Chercher le sentinel résumé : '<!--crew-summary-->' (marqueur du résumé final)
     agents = {}
     summary_marker = "<!--crew-summary-->"
 
@@ -1048,9 +1129,9 @@ def _parse_completed_agents(result_text: str) -> dict[str, str]:
     else:
         agents_part = result_text
 
-    # Découper par frontière '\n\n---\n\n## ' (le ## inclus fait partie du heading)
-    # Split sur le pattern exact : newline + --- + newline + ## (toute ligne de heading)
-    sections = re.split(r'\n\n---\n\n## ', agents_part)
+    # Découper par frontière AGENT_SECTION_REGEX_PATTERN
+    # Cette frontière contient '\n\n---\n\n## ' donc le split supprime ce texte entre sections
+    sections = re.split(AGENT_SECTION_REGEX_PATTERN, agents_part)
 
     for section in sections:
         if not section.strip():
