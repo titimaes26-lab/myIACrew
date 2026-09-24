@@ -37,7 +37,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // effectiveWorkflow, plus bas, se retrouverait lui-même élargi à string dès qu'il combine
   // cette valeur avec workflowType (typé WorkflowType), perdant la garantie à la
   // compilation que seule une des 4 catégories reconnues par le backend est envoyée.
-  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type'] } | null>(null);
+  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type']; fallback?: boolean } | null>(null);
   // Incrémenté à ces mêmes deux limites que workflowType ci-dessous (startNewConversation, et
   // loadConversation seulement quand il ne s'agit pas d'un no-op sur la conversation déjà
   // affichée) — PAS à chaque changement de conversationId : conversationId lui-même passe de
@@ -407,13 +407,54 @@ export function useConversation(accessToken: string, apiUrl: string) {
         // une toute nouvelle demande qui ferait perdre le contexte déjà donné par
         // l'utilisateur. Le tour "❓ Précisions nécessaires" n'a donc pas besoin d'être
         // annulé : il est répondu, comme dans le flux AUTO normal (reste en historique).
-        const effectiveWorkflow = workflowType === 'AUTO' ? pendingClarification.workflow : workflowType;
         // Combine la demande d'origine et la réponse plutôt que d'afficher seulement `text` (la
         // réponse) : ce tour n'a alors plus l'air de "Relancer" (Studio.tsx, via handleRetry, qui
         // préremplit la zone de saisie avec turn.userMessage) une demande tronquée réduite à sa
         // seule réponse de clarification — un agent avec accès en écriture GitHub recevrait sinon
         // un fragment hors contexte comme s'il s'agissait de la demande complète.
-        pushRunningTurn(effectiveWorkflow, `${pendingClarification.originalRequest}\n\nPrécisions apportées : ${text}`);
+        const clarifiedRequest = `${pendingClarification.originalRequest}\n\nPrécisions apportées : ${text}`;
+        let effectiveWorkflow: QualificationReport['request_type'] = pendingClarification.workflow;
+        if (workflowType !== 'AUTO') {
+          effectiveWorkflow = workflowType;
+          pushRunningTurn(effectiveWorkflow, clarifiedRequest);
+        } else {
+          // En AUTO, la réponse sert souvent justement à trancher la catégorie (la question
+          // posée est du type "X ou Y ?" quand la confiance était trop basse) : on requalifie
+          // la demande précisée au lieu de réutiliser le type provisoire. Pas de nouvelle
+          // clarification ici (is_clear ignoré), pour ne jamais boucler sur des questions.
+          pushRunningTurn(undefined, clarifiedRequest);
+          // Un échec de cette requalification (quota Gemini, erreur serveur) ne doit pas faire
+          // perdre la réponse : on retombe sur le type provisoire, comme avant cette étape.
+          let report: QualificationReport | null = null;
+          try {
+            report = await api.qualify(clarifiedRequest, conversationId, controller.signal);
+          } catch (qualifyErr) {
+            if (isAbortError(qualifyErr)) throw qualifyErr;
+          }
+          if (myGeneration !== conversationGenerationRef.current) return;
+          // fallback : repli "qualification impossible" du backend (DESIGN_AND_DEV par défaut, le
+          // workflow le plus coûteux), jamais un vrai choix.
+          if (report && !report.fallback) {
+            effectiveWorkflow = report.request_type;
+          } else if (pendingClarification.fallback) {
+            // Aucune des deux qualifications n'a abouti : plutôt que de lancer au hasard le
+            // workflow le plus coûteux, on redemande le type à l'utilisateur. La demande précisée
+            // (réponse comprise) devient la nouvelle demande en attente : rien de ce qui a été
+            // tapé n'est perdu, il suffit de choisir un type et de confirmer.
+            setPendingClarification({ originalRequest: clarifiedRequest, workflow: effectiveWorkflow, fallback: true });
+            setTurns((t) => t.map((turn) => (turn.id === tempId
+              ? {
+                ...turn,
+                status: 'clarifying',
+                agentSummary: "Le type de demande n'a pas pu être déterminé automatiquement.",
+                questions: ['Choisis le type de workflow ci-dessous, puis envoie un message (ex : « ok ») pour lancer la demande précisée.'],
+                updatedAt: new Date().toISOString(),
+              }
+              : turn)));
+            return;
+          }
+          setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: effectiveWorkflow } : turn)));
+        }
         const data = await api.execute({
           ...executePayload,
           user_request: pendingClarification.originalRequest,
@@ -442,7 +483,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       }
 
       pushRunningTurn();
-      const report = await api.qualify(text, controller.signal);
+      const report = await api.qualify(text, conversationId, controller.signal);
       // Abandonné si une navigation vers une autre conversation a eu lieu pendant cet await :
       // sans ce garde-fou, la suite (setPendingClarification notamment, état global non
       // propre à une conversation) modifierait à tort l'état de la conversation désormais
@@ -450,7 +491,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       if (myGeneration !== conversationGenerationRef.current) return;
 
       if (!report.is_clear) {
-        setPendingClarification({ originalRequest: text, workflow: report.request_type });
+        setPendingClarification({ originalRequest: text, workflow: report.request_type, fallback: report.fallback });
         setTurns((t) => t.map((turn) => (turn.id === tempId
           ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, questions: report.questions, updatedAt: new Date().toISOString() }
           : turn)));

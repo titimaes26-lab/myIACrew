@@ -27,8 +27,8 @@ os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.project.utils import cache as _crewai_memoize_cache
-from crewai_tools import FileWriterTool
-from tools import read_a_files_content, check_syntax
+from crewai.tools import tool
+from tools import check_syntax
 from github_tools import (
     github_read_file,
     github_list_directory,
@@ -36,7 +36,20 @@ from github_tools import (
     github_write_file,
     github_write_files,
     github_open_pull_request,
+    _reject_invalid_syntax,
+    make_file_fetcher,
     track_edit_failures,
+    write_files_to_branch,
+)
+from analyst_output import (
+    FILE_ABSENT,
+    FILE_BLOCKS,
+    NOT_DELIVERED_MARKER,
+    PRESENT_UNREADABLE,
+    build_delivery_report,
+    format_manifest,
+    normalize_path,
+    review_diagnostic_output,
 )
 
 # --- MÉTRIQUES & PAUSES ---
@@ -168,17 +181,124 @@ def _format_crew_result(result) -> str:
     return "\n\n---\n\n".join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
+RequestType = Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"]
+
 class AnalysisReport(BaseModel):
+    # Ordre des champs volontaire : le modèle remplit le JSON dans cet ordre, donc il rédige sa
+    # justification (reasoning) et envisage une alternative AVANT de trancher request_type, puis
+    # évalue sa confiance APRÈS — plutôt que de choisir d'abord et de rationaliser ensuite.
     summary: str = Field(description="Résumé en 2-3 phrases de ce que l'agent a compris de la demande.")
-    is_clear: bool = Field(description="Vrai si la demande est claire, Faux si des ambiguïtés existent.")
-    request_type: Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"] = Field(
-        description="Type de workflow à déclencher."
+    reasoning: str = Field(
+        default="",
+        description="Indices relevés dans la demande (et le contexte) et règle de la grille de décision appliquée.",
     )
+    alternative_type: Optional[RequestType] = Field(
+        default=None, description="Deuxième catégorie la plus plausible, ou null si aucune."
+    )
+    request_type: RequestType = Field(description="Type de workflow à déclencher.")
+    # Obligatoire (pas de valeur par défaut) : un défaut à 1.0 ferait passer pour certaine une
+    # réponse qui omet ce champ, sans jamais déclencher le seuil de clarification.
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="Confiance dans request_type, de 0 à 1 (sous 0.6 : la demande doit être clarifiée).",
+    )
+    is_clear: bool = Field(description="Vrai si la demande est claire, Faux si des ambiguïtés existent.")
     questions: List[str] = Field(default_factory=list, description="Liste de 2 à 4 questions si la demande est floue.")
 
+class QualificationResult(AnalysisReport):
+    """Réponse de /api/qualify : AnalysisReport + un indicateur EXPLICITE de repli. Séparé du
+    modèle demandé au LLM (output_pydantic) pour que celui-ci ne puisse jamais le remplir."""
+    fallback: bool = Field(
+        default=False,
+        description="Vrai si la qualification automatique a échoué : request_type n'est alors qu'un défaut.",
+    )
+
+# Sous ce seuil, la qualification est jugée trop incertaine pour lancer un workflow coûteux
+# (jusqu'à 5 agents) sur une catégorie peut-être fausse : on pose plutôt des questions.
+QUALIFICATION_CONFIDENCE_THRESHOLD = 0.6
+
+_WORKFLOW_LABELS = {
+    "ANALYSE_ONLY": "une analyse/des spécifications sans code",
+    "BUGFIX": "la correction d'un bug",
+    "FEATURE": "l'ajout d'une fonctionnalité à un projet existant",
+    "DESIGN_AND_DEV": "la conception et le développement complets d'un nouveau produit",
+}
+
+def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
+    """Force une clarification quand le modèle n'est pas assez sûr de sa catégorie, et garantit
+    qu'une demande jugée floue s'accompagne toujours d'au moins une question à poser."""
+    if report.confidence < QUALIFICATION_CONFIDENCE_THRESHOLD:
+        report.is_clear = False
+    if not report.is_clear and not report.questions:
+        alternative = report.alternative_type if report.alternative_type != report.request_type else None
+        if alternative:
+            report.questions = [
+                f"Attends-tu plutôt {_WORKFLOW_LABELS[report.request_type]} ou "
+                f"{_WORKFLOW_LABELS[alternative]} ?"
+            ]
+        else:
+            report.questions = [
+                "Peux-tu préciser le résultat attendu : " + ", ".join(_WORKFLOW_LABELS.values()) + " ?"
+            ]
+    return report
+
+_REQUEST_TYPES = set(RequestType.__args__)
+
+def _as_bool(value: Any) -> bool:
+    """bool() tel quel ferait de la chaîne "false" (fréquente dans un JSON extrait à la main) un True."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "vrai", "oui", "yes", "1")
+    return bool(value)
+
+def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
+    """Reconstruit un AnalysisReport champ par champ depuis un JSON extrait à la main, en
+    corrigeant les écarts courants du modèle (confiance en pourcentage, alternative hors liste)
+    au lieu de tout rejeter pour un seul champ. None si request_type lui-même est inexploitable.
+    """
+    if not isinstance(data, dict):
+        return None
+    request_type = str(data.get("request_type", "")).strip().upper()
+    if request_type not in _REQUEST_TYPES:
+        return None
+    alternative = str(data.get("alternative_type") or "").strip().upper()
+    try:
+        confidence = float(data.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        # Absente ou illisible = incertaine (0.5), pas 1.0 : un JSON récupéré à la main
+        # depuis une sortie mal formée ne mérite pas d'être cru sur parole.
+        confidence = 0.5
+    # Le prompt demande 0 à 1 ; les écarts courants sont une note sur 10 ou un pourcentage.
+    # Au-delà, la valeur n'a pas de sens : traitée comme inconnue (0.5).
+    if 1 < confidence <= 10:
+        confidence /= 10
+    elif 10 < confidence <= 100:
+        confidence /= 100
+    elif confidence > 100:
+        confidence = 0.5
+    questions = data.get("questions") or []
+    return AnalysisReport(
+        summary=str(data.get("summary") or "Analyse effectuée."),
+        reasoning=str(data.get("reasoning") or ""),
+        alternative_type=alternative if alternative in _REQUEST_TYPES else None,
+        request_type=request_type,
+        confidence=min(max(confidence, 0.0), 1.0),
+        is_clear=_as_bool(data.get("is_clear", False)),
+        questions=[str(q) for q in questions] if isinstance(questions, list) else [],
+    )
+
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
-gemini_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.7, request_timeout=120)
-file_write_tool = FileWriterTool()
+
+def _make_llm(temperature: float) -> LLM:
+    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=120)
+
+# Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
+# vérifier demande de la constance ; seule la conception fonctionnelle gagne à rester créative.
+qualification_llm = _make_llm(0.1)
+designer_llm = _make_llm(0.5)
+architect_llm = _make_llm(0.3)
+diagnostic_llm = _make_llm(0.2)
+developer_llm = _make_llm(0.0)
+qa_llm = _make_llm(0.2)
 
 # Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
 # du reste sans ambiguïté (voir parseCrewResult.ts). Un simple titre "## Résumé" pourrait
@@ -325,7 +445,7 @@ def _extract_prior_turn_summary(result_text: str) -> str:
 
 MAX_PRIOR_TURNS_IN_CONTEXT = 10
 
-def build_conversation_context(prior_entries) -> str:
+def build_conversation_context(prior_entries, total_count: Optional[int] = None) -> str:
     """Rappel textuel des tours précédents de cette conversation, donné en entrée aux
     tâches (voir tasksquestion.yaml, placeholder {conversation_context}).
 
@@ -342,10 +462,12 @@ def build_conversation_context(prior_entries) -> str:
         return "Aucun échange précédent dans cette conversation."
 
     recent_entries = prior_entries[-MAX_PRIOR_TURNS_IN_CONTEXT:]
+    # total_count : nombre réel de tours quand l'appelant n'a chargé que les plus récents.
+    total = max(total_count or 0, len(prior_entries))
     status_labels = {"success": "réussi", "failed": "échoué", "running": "en cours (probablement interrompu)"}
     lines = []
-    if len(prior_entries) > len(recent_entries):
-        lines.append(f"[{len(prior_entries) - len(recent_entries)} tour(s) plus ancien(s) omis pour rester concis]")
+    if total > len(recent_entries):
+        lines.append(f"[{total - len(recent_entries)} tour(s) plus ancien(s) omis pour rester concis]")
     for entry in recent_entries:
         status_label = status_labels.get(entry.status, entry.status)
         lines.append(f'- Demande : "{entry.user_request.strip()[:200]}" ({entry.workflow}, {status_label})')
@@ -401,6 +523,234 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
         # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
         print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}", flush=True)
 
+# Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
+# de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
+# cours d'exécution. Chaque conversation a son propre sous-dossier (dérivé de son id, stable d'un
+# tour à l'autre) : deux conversations ne s'écrasent jamais, et un tour de suivi ("corrige ça")
+# relit bien ce que le tour précédent a livré.
+# LIMITE CONNUE (pas un bug) : ce dossier est VIDE au premier tour d'une conversation. Un
+# BUGFIX/FEATURE en mode local ne peut donc pas lire un code préexistant qui n'aurait pas déjà
+# été livré par un tour précédent de CETTE MÊME conversation — le mode local convient surtout à
+# un DESIGN_AND_DEV qui part de zéro. Corriger ça demanderait un dossier projet local en lecture
+# seule, configurable par l'utilisateur (hors périmètre pour l'instant).
+BACKEND_DIR = Path(__file__).resolve().parent
+LOCAL_WORKSPACE_DIR = Path(os.getenv("LOCAL_WORKSPACE_DIR") or BACKEND_DIR / "workspace").resolve()
+
+def _conversation_workspace(conversation_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", conversation_id or "").strip(".-")
+    return LOCAL_WORKSPACE_DIR / (f"conversation-{safe}" if safe else "sans-conversation")
+
+def _local_target(workspace: Path, path: str) -> Path | None:
+    """Chemin absolu dans `workspace`, ou None s'il en sortirait (".."). Un préfixe "./" ou "/"
+    (fréquent sous la plume d'un LLM) est normalisé plutôt que refusé."""
+    normalized = normalize_path(path)
+    if normalized is None:
+        return None
+    root = workspace.resolve()
+    target = (root / normalized).resolve()
+    return target if root in target.parents else None
+
+def _write_files_locally(workspace: Path, files: list[dict], rejected_sink: dict[str, str]) -> str:
+    """Pendant disque local de write_files_to_branch (mode sans repository cible), confiné à
+    `workspace`. Les fichiers NON écrits sont ajoutés à rejected_sink ({chemin: raison})."""
+    written = []
+    for f in files:
+        path, content = f["path"], f["content"]
+        target = _local_target(workspace, path)
+        if target is None:
+            rejected_sink[path] = "chemin hors de l'espace de travail local refusé"
+            continue
+        syntax_issue = _reject_invalid_syntax(path, content)
+        if syntax_issue:
+            rejected_sink[path] = syntax_issue
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            written.append(path)
+        except Exception as e:
+            rejected_sink[path] = f"{type(e).__name__}: {e}"
+    # Comme write_files_to_branch : aucun fichier écrit est une ERREUR, jamais un "OK : 0" que
+    # le Développeur lirait comme un succès (règle "OK : passe à l'étape suivante").
+    message = (
+        f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local."
+        if written or not files
+        else f"ERREUR : aucun fichier écrit dans l'espace de travail local ({len(files)} rejeté(s))."
+    )
+    refused = {p: r for p, r in rejected_sink.items() if p in {f["path"] for f in files}}
+    if refused:
+        message += f"\nREJETÉS ({len(refused)}) — non écrits :\n" + "\n".join(
+            f"- '{p}' : {reason}" for p, reason in refused.items()
+        )
+    return message
+
+def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None]:
+    target = _local_target(workspace, path)
+    if target is None:
+        return None, "chemin hors de l'espace de travail local"
+    try:
+        return target.read_text(encoding="utf-8"), None
+    except FileNotFoundError:
+        return None, f"{FILE_ABSENT} : '{path}' n'existe pas dans l'espace de travail local"
+    except IsADirectoryError:
+        return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
+    except UnicodeDecodeError:
+        return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+MAX_RETRY_CONTEXT_CHARS = 4000
+
+def _never_cache(_args: Any = None, _result: Any = None) -> bool:
+    return False
+
+def _cache_success_only(_args: Any = None, result: Any = None) -> bool:
+    return str(result or "").startswith("OK")
+
+# CrewAI refuse d'exécuter deux fois de suite un appel d'outil IDENTIQUE (mode ReAct), cache ou
+# non : pour réessayer après une erreur transitoire, les arguments doivent changer.
+_RETRY_HINT = (
+    "\nPour réessayer après une erreur transitoire, rappelle cet outil avec un commit_message "
+    "légèrement différent (ex: ajoute « (2e essai) ») : un appel identique serait refusé."
+)
+
+_NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
+# Mention POSITIVE ("src/a.ts réalisé, src/b.ts NON réalisé") : ce qui la précède appartient à
+# une autre proposition. Plus fiable qu'une ponctuation (",", "|" d'un tableau Markdown...).
+_DONE_POSITIVE = re.compile(r"(?<!non\s)(?<!non\s\s)\br[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)", re.IGNORECASE)
+# Séparateur exigé entre un mot positif/négatif et le PREMIER chemin qui le suit ("Réalisé :
+# src/a.ts", "NON réalisé — src/b.ts") : au moins un signe de ponctuation (jamais du simple
+# espace seul), pour qu'une phrase sans rapport ("src/a.ts réalisé src/b.ts NON réalisé", sans
+# aucune ponctuation entre les deux chemins) ne fasse jamais réclamer par erreur le second par
+# la mention positive du premier. Entre deux chemins d'une même liste ("src/a.ts, src/c.ts"),
+# la virgule suffit (voir _LIST_SEPARATOR, qui ne sert qu'à partir du 2e chemin).
+_ADJACENT_PATH_SEPARATOR = re.compile(r"\s*[:—–-]\s*")
+# Une VRAIE virgule est exigée pour continuer une liste déjà commencée (jamais du simple
+# espace) : sans ça, "Réalisé : src/a.ts src/b.ts NON réalisé" (séparés par un espace, sans
+# virgule) ferait réclamer src/b.ts par la mention positive AVANT même d'atteindre "NON
+# réalisé", qui devait pourtant le retirer.
+_LIST_SEPARATOR = re.compile(r"\s*,\s*")
+
+
+# Écart toléré entre un chemin qu'on s'apprête à réclamer POUR UNE LISTE et une mention NON
+# réalisé qui le suivrait de près : un simple espace suffit ici (contrairement à
+# _ADJACENT_PATH_SEPARATOR, qui sert à RÉCLAMER un chemin, pas seulement à regarder devant soi).
+_LOOKAHEAD_GAP = re.compile(r"\s{0,3}")
+
+
+def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int, set[str]]:
+    """Consomme, à partir de `start`, une liste de chemins séparés par des virgules
+    ("src/a.ts, src/c.ts") tant qu'un chemin candidat suit immédiatement (au plus un séparateur
+    court entre deux). Renvoie (position juste après le dernier chemin consommé, chemins
+    trouvés) : ces chemins sont "réclamés" par le mot qui précède `start`, jamais disponibles
+    pour un retrait/une conservation décidé par une AUTRE mention plus loin sur la ligne.
+
+    `text` doit être la ligne COMPLÈTE (pas tronquée à la mention en cours) : un chemin de la
+    liste (à partir du 2e, jamais le 1er) directement suivi d'une mention "NON réalisé" lui
+    appartient probablement plutôt qu'à la liste positive qui précède ("Réalisé : src/a.ts,
+    src/b.ts NON réalisé" — la virgule ne fait pas de src/b.ts un 2e fichier réalisé) : la
+    consommation s'arrête AVANT de le réclamer, il sera jugé par SA propre mention.
+    """
+    found: set[str] = set()
+    pos = start
+    separator = _ADJACENT_PATH_SEPARATOR
+    while True:
+        sep = separator.match(text, pos)
+        if sep is None:
+            # _ADJACENT_PATH_SEPARATOR (1er chemin) exige une vraie ponctuation, contrairement à
+            # _LIST_SEPARATOR (chemins suivants) : aucune ici, la liste s'arrête.
+            break
+        matched = next(
+            ((path, m.end()) for path, pattern in patterns.items() if (m := pattern.match(text, sep.end()))),
+            None,
+        )
+        if not matched:
+            break
+        path, end = matched
+        # Vérifié pour CHAQUE chemin réclamé, y compris le tout premier (pas seulement à partir
+        # du 2e via _LIST_SEPARATOR) : "Réalisé : src/a.ts NON réalisé" (un seul chemin, suivi
+        # SANS virgule d'une mention négative) ne doit pas plus réclamer src/a.ts que ne le
+        # ferait une liste à plusieurs éléments.
+        gap = _LOOKAHEAD_GAP.match(text, end)
+        if NOT_DELIVERED_MARKER.match(text, gap.end()):
+            break
+        pos = end
+        found.add(path)
+        separator = _LIST_SEPARATOR  # une virgule n'introduit un chemin SUIVANT qu'après le 1er.
+    return pos, found
+
+
+def _withdrawn_paths(text: str, candidates) -> set[str]:
+    """Chemins de `candidates` que `text` déclare "NON réalisé" (retrait explicite), en une
+    seule passe. Un chemin est retiré s'il figure, délimité exactement (pas "src/App.tsx.bak"
+    pour "src/App.tsx", "./" ou "/" initial toléré), dans la même proposition que la mention,
+    AVANT elle ("src/a.ts, src/b.ts — NON réalisés", une ligne de tableau "| src/a.ts | NON
+    réalisé |") OU APRÈS elle ("NON réalisé : src/b.ts, src/d.ts (raison)"). Une mention positive
+    ("réalisé") immédiatement suivie d'UNE OU PLUSIEURS de ses chemins ("Réalisé : src/a.ts,
+    src/c.ts. NON réalisé : src/b.ts") les réclame tous, jamais retirables par une mention plus
+    loin sur la ligne — ni "src/a.ts" dans "src/a.ts réalisé, src/b.ts NON réalisé". Une mention
+    niée ("rien de NON réalisé") et le contenu des fichiers livrés (entre balises) sont ignorés."""
+    patterns = {
+        path: re.compile(r"(?<![\w./-])(?:\./|/)?" + re.escape(path) + r"(?![\w/-]|\.\w)")
+        for path in candidates
+    }
+    withdrawn: set[str] = set()
+    for line in FILE_BLOCKS.sub("", text).splitlines():
+        for match in NOT_DELIVERED_MARKER.finditer(line):
+            before = line[:match.start()]
+            if _NEGATION_BEFORE.search(before):
+                continue
+            positives = list(_DONE_POSITIVE.finditer(before))
+            cut = positives[-1].end() if positives else 0
+            if positives:
+                # Le mot positif est-il immédiatement suivi d'un ou plusieurs chemins ? Si oui,
+                # ils sont à lui — on étend la coupure pour les exclure de `clause` (docstring).
+                # `line` COMPLÈTE (pas `before`, tronquée pile avant la mention en cours) : sans
+                # ça, _consume_adjacent_paths ne pourrait jamais voir la mention NON réalisé qui
+                # suit pour interrompre à temps une liste ambiguë (voir sa docstring). `cut` ne
+                # peut de toute façon jamais dépasser `match.start()` : la liste s'arrête net dès
+                # que le séparateur ou le chemin suivant se heurte à la mention elle-même.
+                cut, _claimed = _consume_adjacent_paths(line, cut, patterns)
+            clause = before[cut:]
+            withdrawn.update(path for path, pattern in patterns.items() if pattern.search(clause))
+            # Côté "après" : seulement les chemins IMMÉDIATEMENT adjacents à la mention (une
+            # liste à la virgule y compris) — jamais un chemin cité plus loin dans une raison
+            # entre parenthèses ("NON réalisé (remplacé par src/new.ts)"), qui décrit autre
+            # chose que ce qui est retiré.
+            _, after_claimed = _consume_adjacent_paths(line, match.end(), patterns)
+            withdrawn.update(after_claimed)
+    return withdrawn
+
+# Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
+# "Verdict : ✅ GO", "Verdict : GO avec réserves", "Verdict : NON GO", "| Verdict | GO |" (ligne
+# de tableau Markdown), ou "## Verdict" en titre suivi de "**GO**" sur une ligne suivante.
+# Pour écarter les mentions fortuites ("verdict: No go-live possible", "... :\nGo figure"), une
+# valeur qui n'est pas en MAJUSCULES ne doit être suivie ni d'un tiret collé ni d'un mot en
+# minuscules ; en MAJUSCULES (la forme demandée à la QA), tout est accepté ("NO_GO car ...").
+_VERDICT_VALUES = r"GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO"
+# Deux formes de séparateur, DISTINCTES pour ne pas se gêner l'une l'autre : ":"/tiret dans une
+# marge large (60 car., "|" toléré dedans — ex: "Verdict (2 échecs | tolérés) : GO", un "|"
+# incident dans le texte ne doit jamais empêcher d'atteindre le ":" voulu plus loin) ; "|" d'un
+# tableau Markdown seulement TOUT PRÈS de "verdict" (8 car., sans ":" ni "|" avant lui, la
+# cellule d'un tableau n'en contenant normalement aucun) — ex: "| Verdict | GO |".
+QA_VERDICT = re.compile(
+    r"(?i:verdict)(?:[^:\n—–=-]{0,60}[:—–=]|[^|:\n]{0,8}\||[ \t*]*\r?\n)\s*\W{0,8}"
+    r"(?:(?P<eol>(?i:" + _VERDICT_VALUES + r"))(?![\w-])(?![ \t]+[a-zà-ÿ])"
+    r"|(?P<upper>" + _VERDICT_VALUES + r")(?![\w-]))",
+)
+
+def _qa_verdict_guardrail(task_output):
+    """Garantit un verdict QA lisible sans relancer l'agent (une relance QA coûterait jusqu'à
+    10 appels d'outils) : sans verdict explicite, on l'ajoute comme NON FOURNI, à traiter en
+    NO_GO, plutôt que de laisser l'utilisateur deviner la conclusion."""
+    raw = getattr(task_output, "raw", "") or ""
+    if QA_VERDICT.search(raw):
+        return True, task_output
+    return True, (
+        f"{raw}\n\n**Verdict : NON FOURNI** — la QA n'a pas conclu explicitement : à considérer "
+        "comme NO_GO tant qu'une vérification humaine n'a pas eu lieu."
+    )
+
 # --- CREW BASE ---
 @CrewBase
 class AppDevelopmentCrew():
@@ -409,22 +759,24 @@ class AppDevelopmentCrew():
 
     @agent
     def qualification_agent(self) -> Agent:
-        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=gemini_llm, max_iter=2, verbose=True)
+        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=qualification_llm, max_iter=2, verbose=True)
 
     @agent
     def product_designer_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['product_designer_agent'],
-            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=3, verbose=True,
+            # Sans file_write_tool : son livrable est le texte de sa réponse (sauvegardé via
+            # output_file), un outil d'écriture ne faisait que le distraire de son raisonnement.
+            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
+            llm=designer_llm, max_iter=3, verbose=True,
         )
 
     @agent
     def architect_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['architect_agent'],
-            tools=[read_a_files_content, file_write_tool, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=3, verbose=True,
+            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
+            llm=architect_llm, max_iter=3, verbose=True,
         )
 
     @agent
@@ -440,8 +792,12 @@ class AppDevelopmentCrew():
             # l'autre (auparavant une seule tâche/agent partageait un budget unique entre les
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
-            tools=[read_a_files_content, github_read_file, github_list_directory],
-            llm=gemini_llm, max_iter=5, verbose=True,
+            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
+            llm=diagnostic_llm, max_iter=5, verbose=True,
+            # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus
+            # critique du pipeline, dont tout le code livré dépend. Une seule passe de plan
+            # (max_reasoning_attempts=1) pour rester raisonnable face au quota Gemini.
+            reasoning=True, max_reasoning_attempts=1,
         )
 
     @agent
@@ -462,8 +818,15 @@ class AppDevelopmentCrew():
             # old_string/new_string, seulement le contenu complet de chaque fichier : github_write_file/
             # github_write_files (qui n'ont besoin d'aucune lecture préalable) couvrent donc tous les
             # cas réels de cette tâche.
+            # github_commit_analyst_files en premier : il committe les fichiers déjà extraits
+            # en Python de la sortie de l'Analyste (voir _build_commit_analyst_files_tool), sans
+            # que le LLM ait à recopier leur contenu — github_write_file(s) restent le repli.
             tools=[
-                file_write_tool, check_syntax,
+                # Sans file_write_tool : en local, github_commit_analyst_files écrit dans l'espace
+                # de travail dédié (LOCAL_WORKSPACE_DIR) ; file_write_tool écrirait n'importe où,
+                # y compris sur le code du serveur.
+                self._build_commit_analyst_files_tool(),
+                check_syntax,
                 github_create_branch, github_write_file, github_write_files,
                 github_open_pull_request,
             ],
@@ -473,14 +836,20 @@ class AppDevelopmentCrew():
             # open_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
             # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
             # entier dans le même budget.
-            llm=gemini_llm, max_iter=6, verbose=True,
+            llm=developer_llm, max_iter=6, verbose=True,
         )
 
     @agent
     def qa_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['qa_agent'],
-            tools=[read_a_files_content, file_write_tool, check_syntax, github_read_file, github_list_directory],
+            # Sans file_write_tool : la QA vérifie, elle n'écrit jamais. qa_verify_delivered_files
+            # compare en un seul appel chaque fichier de l'Analyste à la branche (présence, diff
+            # exact, check_syntax), ce qui libère le budget pour la conformité fonctionnelle.
+            tools=[
+                self._build_qa_verify_tool(),
+                self._build_local_read_tool(), check_syntax, github_read_file, github_list_directory,
+            ],
             # 10 et non 5 : lire un fichier PUIS le vérifier avec check_syntax est déjà 2 appels
             # par fichier modifié, avant même le rapport final — 5 ne couvrait donc que ~2
             # fichiers. Depuis github_write_files (voir developer_agent), development_task peut
@@ -489,7 +858,7 @@ class AppDevelopmentCrew():
             # (elle doit alors signaler explicitement lesquels restent non vérifiés, voir
             # tasksquestion.yaml), donc ce budget n'a pas besoin de suivre la taille du lot — juste
             # d'en couvrir davantage qu'avant sans pour autant viser l'exhaustivité.
-            llm=gemini_llm, max_iter=10, verbose=True,
+            llm=qa_llm, max_iter=10, verbose=True,
         )
 
     @task
@@ -506,7 +875,11 @@ class AppDevelopmentCrew():
 
     @task
     def diagnostic_task(self) -> Task:
-        return Task(config=self.tasks_config['diagnostic_task'], agent=self.diagnostic_agent(), output_file='docs/diagnostic_plan.md')
+        return Task(
+            config=self.tasks_config['diagnostic_task'], agent=self.diagnostic_agent(),
+            output_file='docs/diagnostic_plan.md',
+            guardrail=self._diagnostic_guardrail, guardrail_max_retries=1,
+        )
 
     @task
     def development_task(self) -> Task:
@@ -514,15 +887,256 @@ class AppDevelopmentCrew():
 
     @task
     def qa_task(self) -> Task:
-        return Task(config=self.tasks_config['qa_task'], agent=self.qa_agent(), output_file='tests/reports/qa_report.md')
+        return Task(
+            config=self.tasks_config['qa_task'], agent=self.qa_agent(),
+            output_file='tests/reports/qa_report.md',
+            guardrail=_qa_verdict_guardrail,
+        )
+
+    # --- Outils et guardrails propres à UNE exécution ---
+    # Ils lisent self._analyst_files, rempli par _diagnostic_guardrail et remis à zéro au début
+    # de chaque run_dynamic_crew. Portée par instance (et non un global) : main.py crée un
+    # AppDevelopmentCrew() dédié à chaque exécution, donc deux conversations concurrentes ne
+    # partagent jamais ces fichiers. Pas de ContextVar non plus : CrewAI peut exécuter les
+    # outils dans un pool de threads qui ne recopie pas le contexte courant.
+
+    def _reset_execution_state(self, inputs: Optional[dict] = None) -> None:
+        inputs = inputs or {}
+        owner, repo = inputs.get("repo_owner") or "", inputs.get("repo_name") or ""
+        # Cible FIXÉE par l'exécution (jamais par les arguments que le LLM passe aux outils) :
+        # un owner vide passé par erreur ne doit jamais détourner un run GitHub vers le disque.
+        self._work_branch = inputs.get("work_branch") or ""
+        self._repo_target = (owner, repo) if owner and repo else None
+        # Par conversation (et non par branche : en mode local, work_branch est toujours vide).
+        self._workspace = _conversation_workspace(str(inputs.get("conversation_id") or ""))
+        # Fichiers committables, fusionnés au fil des tentatives de l'Analyste (voir le guardrail).
+        self._analyst_files = []
+        # {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables
+        # (raccourci "// ... reste du code", balise de fin manquante, chemin invalide).
+        self._not_extracted = {}
+        # {chemin: raison} des fichiers refusés à l'écriture lors du DERNIER commit qui les
+        # concernait : un commit ultérieur réussi efface leur entrée.
+        self._write_rejections = {}
+        self._diagnostic_guardrail_failures = 0
+
+    def _diagnostic_retry_context(self) -> str:
+        """Specs/architecture reçues par diagnostic_task : CrewAI ne les repasse PAS à l'agent
+        quand un guardrail le fait recommencer (seuls l'erreur et sa réponse précédente le sont),
+        alors qu'une réécriture complète doit rester alignée dessus."""
+        parts = []
+        context = self.diagnostic_task().context
+        # Hors run_dynamic_crew, CrewAI laisse ici une sentinelle "non spécifié", non itérable.
+        for context_task in context if isinstance(context, list) else []:
+            raw = getattr(getattr(context_task, "output", None), "raw", "") or ""
+            if raw:
+                parts.append(raw[:MAX_RETRY_CONTEXT_CHARS])
+        return ("\n\nRappel du contexte reçu (specs/architecture) :\n" + "\n---\n".join(parts)) if parts else ""
+
+    def _diagnostic_guardrail(self, task_output):
+        """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun fichier, balise de fin
+        manquante, commentaires de type "// ... reste du code") pour qu'il la corrige ; à la 2e
+        tentative, accepte en signalant le problème plutôt que de faire échouer tout le crew
+        (CrewAI lève une exception quand un guardrail échoue au-delà de guardrail_max_retries).
+
+        Les fichiers sains sont FUSIONNÉS d'une tentative à l'autre : une réponse corrigée qui ne
+        reprend que les fichiers fautifs ne fait pas perdre les fichiers sains de la première —
+        sauf ceux qu'elle retire explicitement (chemin suivi de "NON réalisé").
+        """
+        raw = getattr(task_output, "raw", "") or ""
+        files, issue, faulty_paths, broken = review_diagnostic_output(raw)
+        merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
+        not_extracted = dict(getattr(self, "_not_extracted", {}))
+        delivered_now = {f["path"] for f in files}
+        withdrawn = _withdrawn_paths(raw, list(merged) + sorted(delivered_now))
+        # Fichier d'une tentative PRÉCÉDENTE déclaré "NON réalisé" : retrait explicite.
+        for path in withdrawn - delivered_now:
+            merged.pop(path, None)
+            not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
+        # Fichier livré DANS cette réponse ET déclaré "NON réalisé" : ambigu ("NON réalisé" peut
+        # décrire autre chose que le fichier). On ne tranche pas en silence : l'Analyste est
+        # invité à clarifier ; s'il ne le fait pas, le fichier est EXCLU (et signalé) — committer
+        # une version peut-être partielle par-dessus le vrai fichier est pire que ne rien committer.
+        ambiguous = sorted(withdrawn & delivered_now)
+        if ambiguous:
+            clarification = (
+                "Fichier(s) à la fois livré(s) entre balises ET déclaré(s) 'NON réalisé' : "
+                + ", ".join(ambiguous)
+                + ". Retire leurs balises s'ils ne sont vraiment pas réalisés, ou reformule la ligne "
+                "du plan qui les mentionne."
+            )
+            issue = f"{issue}\n\n{clarification}" if issue else clarification
+        for f in files:
+            if f["path"] not in faulty_paths:
+                merged[f["path"]] = f
+                not_extracted.pop(f["path"], None)
+        # Jamais de fichier à raccourci ou tronqué dans ce que le Développeur committera : il
+        # écraserait le vrai fichier par une version incomplète. Une version SAINE d'une tentative
+        # précédente reste en revanche committable.
+        for path, reason in [(p, "contenu incomplet (commentaire de raccourci)") for p in faulty_paths] + list(broken.items()):
+            if path not in merged:
+                not_extracted[path] = reason
+        self._analyst_files = list(merged.values())
+        self._not_extracted = not_extracted
+        if issue is None:
+            return True, task_output
+        self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1
+        if self._diagnostic_guardrail_failures <= 1:
+            return False, (
+                f"{issue}\n\nRenvoie ta réponse COMPLÈTE, avec TOUS les fichiers entre balises "
+                f"(y compris ceux qui étaient déjà corrects).{self._diagnostic_retry_context()}"
+            )
+        for path in ambiguous:
+            merged.pop(path, None)
+            not_extracted[path] = "livré mais déclaré NON réalisé, ambiguïté non levée"
+        self._analyst_files = list(merged.values())
+        self._not_extracted = not_extracted
+        excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
+        return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
+
+    def _build_commit_analyst_files_tool(self):
+        crew_self = self
+
+        @tool("github_commit_analyst_files")
+        def github_commit_analyst_files(commit_message: str) -> str:
+            """
+            Committe EN UN SEUL APPEL tous les fichiers rédigés par l'Analyste Diagnostic Technique,
+            extraits automatiquement de sa réponse (balises <<<FICHIER: ...>>>) : tu n'as
+            PAS à recopier leur contenu. À utiliser EN PRIORITÉ, après github_create_branch.
+            Le repository, la branche de travail (ou, sans repository cible, l'espace de travail
+            local) sont ceux de l'exécution en cours : tu n'as pas à les fournir.
+            Mêmes garde-fous que github_write_files (branche principale refusée, fichiers
+            Python/JSON/YAML invalides rejetés et listés dans une section REJETÉS).
+            Arguments:
+                commit_message (str): message de commit.
+            """
+            files = list(getattr(crew_self, "_analyst_files", []) or [])
+            not_extracted = dict(getattr(crew_self, "_not_extracted", {}) or {})
+            excluded_note = (
+                "\nEXCLUS (non committables) : "
+                + "; ".join(f"{p} ({reason})" for p, reason in sorted(not_extracted.items()))
+                + ". Ne les committe JAMAIS, avec aucun outil : liste-les comme non livrés."
+            ) if not_extracted else ""
+            if not files and not_extracted:
+                return f"INFO : aucun fichier committable.{excluded_note}"
+            if not files:
+                if getattr(crew_self, "_repo_target", None) is None:
+                    # En local, cet outil est le SEUL moyen d'écrire : aucun repli possible.
+                    return (
+                        "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
+                        "l'Analyste, rien n'a été écrit dans l'espace de travail local. Indique-le "
+                        "dans ton rapport (aucun fichier livré)."
+                    )
+                return (
+                    "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
+                    "l'Analyste. Si elle contient quand même du code, committe-le avec "
+                    "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
+                )
+            manifest = format_manifest(files)
+            rejections: dict[str, str] = {}
+            target = getattr(crew_self, "_repo_target", None)
+            if target is None:
+                result = _write_files_locally(crew_self._workspace, files, rejections)
+            else:
+                owner, repo = target
+                result = write_files_to_branch(owner, repo, crew_self._work_branch, commit_message, files, rejections)
+                if not result.startswith("OK"):
+                    # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
+                    for f in files:
+                        rejections.setdefault(f["path"], f"commit refusé : {result[:200]}")
+            # Cet appel fait foi pour SES fichiers : un échec précédent réparé par ce commit est
+            # oublié, un nouveau refus est retenu (voir qa_verify_delivered_files).
+            for f in files:
+                crew_self._write_rejections.pop(f["path"], None)
+            crew_self._write_rejections.update(rejections)
+            retry_hint = "" if result.startswith("OK") else _RETRY_HINT
+            return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}{retry_hint}"
+
+        # Seul un SUCCÈS est mis en cache : un 2e appel après un "OK" ne réécrit pas tous les
+        # fichiers, mais une erreur n'est jamais resservie (voir aussi _RETRY_HINT).
+        github_commit_analyst_files.cache_function = _cache_success_only
+        return github_commit_analyst_files
+
+    def _build_qa_verify_tool(self):
+        crew_self = self
+
+        @tool("qa_verify_delivered_files")
+        def qa_verify_delivered_files() -> str:
+            """
+            Vérifie EN UN SEUL APPEL chaque fichier rédigé par l'Analyste : présence réelle sur la
+            branche de travail (ou dans l'espace de travail local), comparaison EXACTE (diff) avec
+            la version de l'Analyste, et check_syntax sur le contenu réellement présent — ainsi que
+            les fichiers annoncés mais jamais committables. Chaque résultat est une preuve outillée
+            [vérifié outil]. Aucun argument : la cible est celle de l'exécution en cours.
+            """
+            files = list(getattr(crew_self, "_analyst_files", []) or [])
+            target = getattr(crew_self, "_repo_target", None)
+            if target is None:
+                workspace = crew_self._workspace
+                fetch = lambda path: _read_local_file(workspace, path)  # noqa: E731
+            else:
+                fetch = make_file_fetcher(target[0], target[1], crew_self._work_branch)
+            return build_delivery_report(
+                files, fetch,
+                write_rejections=dict(getattr(crew_self, "_write_rejections", {}) or {}),
+                not_extracted=dict(getattr(crew_self, "_not_extracted", {}) or {}),
+            )
+
+        # Sans argument, un 2e appel (après une correction) resservirait sinon l'ancien rapport.
+        qa_verify_delivered_files.cache_function = _never_cache
+        return qa_verify_delivered_files
+
+    def _build_local_read_tool(self):
+        # Mémoïsé : les 4 agents qui l'utilisent (Product Designer, Architecte, Diagnostic, QA)
+        # partagent la même instance d'outil au lieu d'en créer une fermeture dupliquée chacun.
+        cached = getattr(self, "_local_read_tool", None)
+        if cached is not None:
+            return cached
+
+        crew_self = self
+
+        @tool("read_a_files_content")
+        def read_a_files_content(file_path: str) -> str:
+            """
+            Lit le contenu d'un fichier de l'espace de travail LOCAL de cette conversation (mode
+            sans repository GitHub cible). Avec un repository cible, utilise github_read_file.
+            Arguments:
+                file_path (str): chemin relatif du fichier (ex: 'src/App.tsx' ou 'index.html').
+            """
+            if getattr(crew_self, "_repo_target", None) is not None:
+                return (
+                    "INFO : un repository GitHub cible est défini pour cette exécution : lis ses "
+                    "fichiers avec github_read_file, pas sur le disque local."
+                )
+            content, error = _read_local_file(crew_self._workspace, file_path)
+            if content is None:
+                return (
+                    f"ERREUR_FICHIER_INEXISTANT : {error}. Inutile de réessayer la lecture de ce "
+                    "fichier exact : note cette absence dans ton rapport et poursuis ton analyse."
+                )
+            return content if content.strip() else f"INFO : Le fichier '{file_path}' est vide."
+
+        self._local_read_tool = read_a_files_content
+        return read_a_files_content
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
-    async def analyze_user_request(self, user_prompt: str) -> AnalysisReport:
+    async def analyze_user_request(self, user_prompt: str, conversation_context: str = "") -> QualificationResult:
         qualif_agent = self.qualification_agent()
         task_prompt = f"""
         Tu es le Spécialiste en Qualification / Senior Product Owner.
-        Voici la demande : "{user_prompt}"
-        Remplis le rapport JSON structuré : summary, is_clear, request_type, questions.
+        Voici la demande actuelle : "{user_prompt}"
+
+        Tours précédents de cette conversation (pour interpréter un message de suivi comme
+        "corrige ça" ou "ajoute aussi Y" ; ne décide JAMAIS sur ce seul contexte si la demande
+        actuelle dit autre chose) :
+        {conversation_context or "Aucun échange précédent."}
+
+        Applique la grille de décision de ta fiche, dans cet ordre :
+        1. summary : ce que tu as compris.
+        2. reasoning : les indices précis relevés dans la demande et la règle appliquée.
+        3. alternative_type : la 2e catégorie la plus plausible (ou null).
+        4. request_type : ta décision.
+        5. confidence : de 0 à 1. Sous {QUALIFICATION_CONFIDENCE_THRESHOLD}, is_clear doit être false.
+        6. is_clear, puis questions (2 à 4, fermées si possible) si is_clear est false.
         """
         analysis_task = Task(description=task_prompt, expected_output="Schéma JSON AnalysisReport.", agent=qualif_agent, output_pydantic=AnalysisReport)
         analysis_crew = Crew(agents=[qualif_agent], tasks=[analysis_task], process=Process.sequential, verbose=False)
@@ -532,23 +1146,27 @@ class AppDevelopmentCrew():
         quota_mgr.last_execution_time = time.time()
 
         if hasattr(result, 'pydantic') and result.pydantic is not None:
-            return result.pydantic
+            return QualificationResult(**_enforce_confidence_threshold(result.pydantic).model_dump())
 
         raw_output = str(result.raw) if hasattr(result, 'raw') else str(result)
         try:
             match = re.search(r'\{.*\}', raw_output, re.DOTALL)
             if match:
-                data = json.loads(match.group(0))
-                return AnalysisReport(
-                    summary=data.get("summary", "Analyse effectuée."),
-                    is_clear=bool(data.get("is_clear", True)),
-                    request_type=data.get("request_type", "DESIGN_AND_DEV"),
-                    questions=data.get("questions", [])
-                )
+                report = _coerce_analysis_report(json.loads(match.group(0)))
+                if report is not None:
+                    return QualificationResult(**_enforce_confidence_threshold(report).model_dump())
         except Exception:
             pass
 
-        return AnalysisReport(summary=f"Analyse : {user_prompt}", is_clear=True, request_type="DESIGN_AND_DEV", questions=[])
+        # Qualification impossible : on demande plutôt que de lancer au hasard le workflow le
+        # plus long (DESIGN_AND_DEV, 5 agents) sur une catégorie que rien ne justifie.
+        return QualificationResult(fallback=True, **_enforce_confidence_threshold(AnalysisReport(
+            summary=f"Analyse : {user_prompt}",
+            reasoning="La qualification automatique n'a pas produit de résultat exploitable.",
+            request_type="DESIGN_AND_DEV",
+            confidence=0.0,
+            is_clear=False,
+        )).model_dump())
 
     def save_analysis_report(self, report: AnalysisReport, user_prompt: str, filepath: str = "docs/qualification_report.md"):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -576,6 +1194,23 @@ class AppDevelopmentCrew():
             selected = [('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
         else:
             selected = [('design', self.design_task()), ('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
+
+        # Contexte EXPLICITE par tâche au lieu du défaut CrewAI (toutes les sorties précédentes) :
+        # chaque agent reçoit ce dont il a besoin pour raisonner, et pas plus. Le Développeur ne
+        # reçoit que le code de l'Analyste (specs/architecture ne feraient que diluer ce qu'il doit
+        # committer) ; la QA reçoit les critères d'acceptation du Designer en plus du code et du
+        # rapport de commit, pour juger la conformité fonctionnelle.
+        tasks_by_key = dict(selected)
+        context_plan = {
+            'architecture': ['design'],
+            'diagnostic': ['design', 'architecture'],
+            'development': ['diagnostic'],
+            'qa': ['design', 'diagnostic', 'development'],
+        }
+        for key, task_obj in selected:
+            wanted = [tasks_by_key[k] for k in context_plan.get(key, []) if k in tasks_by_key]
+            task_obj.context = wanted if wanted else None
+        self._reset_execution_state(inputs)
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]

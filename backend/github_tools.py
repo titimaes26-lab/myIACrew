@@ -1,14 +1,16 @@
+import base64
 import json
 import os
 import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from crewai.tools import tool
 from github import Auth, Github, GithubException, InputGitTreeElement
 
+from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
 from tools import check_syntax_content
 
 
@@ -153,6 +155,78 @@ def _record_edit_success(owner: str, repo: str, path: str, branch: str) -> None:
             counts.pop((owner, repo, path, branch), None)
 
 
+def _decode_content_file(gh_repo, content_file, path: str) -> tuple[str | None, str | None]:
+    """(contenu, erreur) pour un ContentFile déjà récupéré via get_contents : gère le repli sur
+    le blob git pour les fichiers > 1 Mo (get_contents n'en renvoie alors pas le contenu) et un
+    encodage non UTF-8. Factorée pour que `github_read_file` et `make_file_fetcher` partagent
+    exactement le même comportement plutôt que de dupliquer cette logique."""
+    try:
+        raw = content_file.decoded_content
+    except Exception:
+        # Fichier > 1 Mo : get_contents ne renvoie pas son contenu, le blob git oui. Une erreur
+        # de CET appel (réseau, quota) rend le fichier non vérifiable, pas illisible.
+        try:
+            raw = base64.b64decode(gh_repo.get_git_blob(content_file.sha).content)
+        except GithubException as e:
+            return None, _github_error(e)
+        except Exception as e:
+            return None, f"ERREUR : {e}"
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
+
+
+def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tuple[str | None, str | None]]:
+    """Fonction path -> (contenu, None) ou (None, raison), pour un usage Python interne (voir
+    qa_verify_delivered_files, crewquestion.py), sans passer par l'objet Tool crewai.
+
+    Le dépôt est résolu UNE fois pour toutes les lectures (un seul get_repo, au lieu d'un par
+    fichier). Un fichier qui existe mais n'a pas pu être décodé (au-delà de 1 Mo l'API ne
+    renvoie pas son contenu, ou contenu non UTF-8) est signalé par PRESENT_UNREADABLE, pour que
+    la QA ne le déclare jamais ABSENT à tort.
+    """
+    try:
+        gh_repo = _get_repo(owner, repo)
+    except GithubException as e:
+        error = (
+            f"ERREUR : le repository {owner}/{repo} est introuvable ou inaccessible avec ce jeton"
+            if e.status == 404 else _github_error(e)
+        )
+        return lambda path: (None, error)
+    except Exception as e:
+        error = f"ERREUR : {e}"
+        return lambda path: (None, error)
+    try:
+        # Branche vérifiée d'abord : sans elle, chaque lecture renverrait 404 et TOUS les fichiers
+        # passeraient pour absents, alors que c'est la branche qui manque (non vérifiable).
+        gh_repo.get_branch(branch)
+    except GithubException as e:
+        error = (
+            f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}"
+            if e.status == 404 else _github_error(e)
+        )
+        return lambda path: (None, error)
+    except Exception as e:
+        error = f"ERREUR : {e}"
+        return lambda path: (None, error)
+
+    def fetch(path: str) -> tuple[str | None, str | None]:
+        try:
+            content_file = gh_repo.get_contents(path, ref=branch)
+        except GithubException as e:
+            if e.status == 404:
+                return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur la branche '{branch}'"
+            return None, _github_error(e)
+        except Exception as e:
+            return None, f"ERREUR : {e}"
+        if isinstance(content_file, list):
+            return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
+        return _decode_content_file(gh_repo, content_file, path)
+
+    return fetch
+
+
 @tool("github_read_file")
 def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> str:
     """
@@ -168,7 +242,14 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
         content_file = gh_repo.get_contents(path, ref=branch)
         if isinstance(content_file, list):
             return f"ERREUR : '{path}' est un dossier, pas un fichier. Utilise github_list_directory."
-        return content_file.decoded_content.decode("utf-8")
+        # _decode_content_file : gère aussi le repli sur le blob git pour les fichiers > 1 Mo,
+        # que decoded_content seul ne renvoie pas (voir make_file_fetcher, qui partage ce code).
+        content, error = _decode_content_file(gh_repo, content_file, path)
+        if content is None:
+            # `error` est déjà formaté ("ERREUR_GITHUB : ...", "ERREUR : ...") sauf pour
+            # PRESENT_UNREADABLE, qui n'a pas ce préfixe : ne jamais l'imbriquer deux fois.
+            return error if error.startswith("ERREUR") else f"ERREUR : {error}"
+        return content
     except GithubException as e:
         if e.status == 404:
             return (
@@ -298,10 +379,11 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             "path" (chemin dans le repo) et "content" (contenu complet du fichier). Exemple :
             '[{"path": "src/App.tsx", "content": "..."}, {"path": "package.json", "content": "..."}]'
     """
+    # Vérifiée AVANT le JSON : sur 'main', l'agent doit apprendre que la branche est interdite,
+    # pas qu'il faut corriger son JSON (il retenterait alors sur la même branche).
     rejection = _reject_protected_branch(branch)
     if rejection:
         return rejection
-
     try:
         files = json.loads(files_json)
     except json.JSONDecodeError as e:
@@ -311,8 +393,24 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             "Si cette erreur se reproduit (contenu difficile à échapper correctement en JSON), "
             "n'insiste pas : bascule sur des appels séparés à github_write_file, un par fichier."
         )
+    return write_files_to_branch(owner, repo, branch, commit_message, files)
+
+
+def write_files_to_branch(
+    owner: str, repo: str, branch: str, commit_message: str, files,
+    rejected_sink: dict[str, str] | None = None,
+) -> str:
+    """Implémentation de github_write_files, factorée en fonction Python pure pour être aussi
+    appelée par github_commit_analyst_files (crewquestion.py) avec les fichiers extraits en
+    Python de la sortie de diagnostic_task — mêmes garde-fous (branche protégée, syntaxe,
+    collision avec un dossier), sans passer par un JSON rédigé par le LLM.
+    rejected_sink reçoit {chemin: raison} des fichiers rejetés par la vérification syntaxique,
+    pour que l'appelant n'ait pas à refaire ce contrôle."""
+    rejection = _reject_protected_branch(branch)
+    if rejection:
+        return rejection
     if not isinstance(files, list) or not files:
-        return 'ERREUR : files_json doit être une liste JSON non vide de {"path": ..., "content": ...}.'
+        return 'ERREUR : la liste des fichiers doit être non vide, chaque élément {"path": ..., "content": ...}.'
 
     # Validé intégralement AVANT le premier appel réseau : un chemin dupliqué ou un élément mal
     # formé découvert à mi-parcours (ex: après avoir déjà créé des blobs pour les premiers
@@ -322,9 +420,9 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
     paths_seen = set()
     for f in files:
         if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not isinstance(f.get("content"), str):
-            return 'ERREUR : chaque élément de files_json doit être un objet avec "path" (str) et "content" (str).'
+            return 'ERREUR : chaque fichier doit être un objet avec "path" (str) et "content" (str).'
         if f["path"] in paths_seen:
-            return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans files_json, chaque chemin doit être unique."
+            return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans la liste, chaque chemin doit être unique."
         paths_seen.add(f["path"])
 
     # Filtre les fichiers dont le contenu échoue check_syntax_content (garde-fou contre une
@@ -339,6 +437,8 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
     for f in files:
         issue = _reject_invalid_syntax(f["path"], f["content"])
         (rejected.append((f["path"], issue)) if issue else valid_files.append(f))
+    if rejected_sink is not None:
+        rejected_sink.update(dict(rejected))
 
     if not valid_files:
         lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)
@@ -424,7 +524,7 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             return (
                 f"{message} La branche '{branch}' a été mise à jour par un autre appel entretemps : "
                 "aucun fichier de CET appel n'a été perdu, il n'a simplement pas encore été appliqué. "
-                "Retente ce même appel github_write_files tel quel."
+                "Retente ce même appel tel quel."
             )
         return message
     except Exception as e:

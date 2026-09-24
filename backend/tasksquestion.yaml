@@ -32,14 +32,32 @@ design_task:
     (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour t'appuyer sur le code existant
     avant de rédiger les specs.
 
+    Avec un repository cible, commence par UN `github_list_directory` à la racine puis, s'il existe,
+    lis le README ou le PRD : note ce qui existe déjà et ce qui manque par rapport à la demande,
+    plutôt que de spécifier comme si le projet partait de zéro.
+
+    Raisonne dans cet ordre, sans sauter d'étape :
+    1. Besoin réel : reformule en 2-3 phrases le problème que la demande cherche à résoudre.
+    2. Utilisateurs / joueurs : qui utilise quoi, dans quel but.
+    3. Fonctionnalités, classées MoSCoW (Must / Should / Could / Won't) : le "Must" forme le MVP à
+       livrer d'abord ; garde-le assez petit pour être codé en une seule passe.
+    4. Règles et cas limites : valeurs extrêmes, états vides, erreurs, conditions de victoire/défaite
+       pour un jeu, validations pour une application.
+    5. Critères d'acceptation TESTABLES pour chaque fonctionnalité "Must", au format
+       "Étant donné ... / Quand ... / Alors ..." : la QA s'en servira pour juger la livraison.
+    Tout point que la demande ne tranche pas va dans une section "Hypothèses retenues" (ce que tu as
+    supposé et pourquoi), jamais comblé en silence.
+
     Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
     d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
     auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
     ne s'est produit. Si tu inclus un exemple de code illustratif, indique explicitement qu'il s'agit
     d'un exemple non exécuté.
   expected_output: >
-    Un document de spécifications clair détaillant, selon le cas, les mécaniques de jeu ou les
-    fonctionnalités applicatives, ainsi que les composants d'interface requis.
+    Un document de spécifications avec, dans cet ordre : "Besoin", "Utilisateurs", "Existant" (si un
+    repository est fourni), "Fonctionnalités (MoSCoW)", "Règles et cas limites", "Critères
+    d'acceptation" (Étant donné / Quand / Alors, pour chaque fonctionnalité Must), "Hypothèses
+    retenues" et les composants d'interface requis.
   agent: product_designer_agent
 
 architecture_task:
@@ -64,6 +82,18 @@ architecture_task:
     Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
     (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour analyser l'arborescence réelle du projet.
 
+    Raisonne dans cet ordre :
+    1. Existant : décris l'arborescence et les composants RÉELLEMENT lus (ou "projet vide / aucun
+       repository" s'il n'y en a pas). N'invente jamais un fichier que tu n'as pas vu.
+    2. Cible : ce qui change par rapport à l'existant (ajouts, modifications, suppressions), en
+       préférant une évolution ciblée à une refonte.
+    3. Décisions : pour chaque choix structurant (gestion d'état, découpage, bibliothèque), une
+       ligne "Décision : ... | Alternative écartée : ... | Pourquoi : ...".
+    4. Taille : aucun composant UI au-delà d'environ 200 lignes, aucun fichier de logique au-delà
+       d'environ 300 lignes — l'Analyste devra réécrire chaque fichier EN ENTIER sans le tronquer.
+    5. Auto-vérification : chaque fonctionnalité (ou critère d'acceptation) des specs est couverte
+       par au moins un composant, et aucun composant n'est orphelin. Signale tout écart.
+
     Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
     d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
     auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
@@ -71,7 +101,10 @@ architecture_task:
     indique explicitement qu'il s'agit d'un exemple non exécuté et n'y fais figurer aucune donnée
     GitHub factice qui pourrait passer pour réelle.
   expected_output: >
-    L'arborescence complète du projet et l'interface TypeScript des principaux composants.
+    Les sections "Existant", "Cible" (arborescence et hiérarchie des composants, avec l'interface
+    TypeScript des principaux composants), "Décisions" (une ligne Décision / Alternative écartée /
+    Pourquoi par choix), "Fichiers à créer ou modifier" (un fichier par ligne au format
+    "- CRÉER|MODIFIER <chemin> : <rôle en une phrase>") et "Vérification de couverture".
   agent: architect_agent
 
 diagnostic_task:
@@ -86,6 +119,16 @@ diagnostic_task:
     avant : sans la demande rappelée ci-dessus, tu n'aurais aucune information sur ce qui a été
     demandé, le contexte de conversation plus bas ne couvrant que les tours PRÉCÉDENTS, jamais la
     demande en cours.
+
+    Méthode de raisonnement (obligatoire) :
+    1. Hypothèses : AVANT toute lecture, liste 2 à 3 hypothèses de cause (ou, pour une
+       fonctionnalité, les points d'intégration possibles), classées de la plus à la moins probable.
+       Si l'Architecte a fourni une section "Fichiers à créer ou modifier", pars de cette liste.
+    2. Lectures ciblées : choisis les lectures qui départagent le mieux ces hypothèses (pas celles
+       qui confirment seulement la première).
+    3. Conclusion : retiens une hypothèse et écris une section "Traçabilité" : symptôme décrit →
+       cause identifiée (fichier et fonction/ligne) → changement apporté. Pour une fonctionnalité :
+       besoin → fichiers touchés → comportement obtenu.
 
     Détermine la cause réelle du bug (ou ce que la fonctionnalité demandée nécessite), puis rédige le
     CODE SOURCE COMPLET des fichiers à créer ou modifier. Ce code sera committé TEL QUEL par la tâche
@@ -129,22 +172,37 @@ diagnostic_task:
     lecture.
 
     Énonce d'abord la liste des fichiers que tu comptes créer ou modifier et une justification d'une
-    ligne pour chacun, puis pour CHACUN un titre "### Fichier : <chemin>" suivi d'un bloc de code
-    contenant l'intégralité de son contenu — pas un extrait, pas un résumé — pour que la tâche
-    suivante puisse le committer sans la moindre ambiguïté sur quel contenu va dans quel fichier.
+    ligne pour chacun, puis livre CHAQUE fichier entre deux balises, chacune SEULE sur sa ligne :
+    d'abord la ligne "<<<FICHIER: chemin/relatif.ext>>>", puis un bloc de code contenant
+    l'intégralité de son contenu — pas un extrait, pas un résumé —, puis la ligne
+    "<<<FIN_FICHIER>>>". Exemple pour src/App.tsx : une ligne "<<<FICHIER: src/App.tsx>>>", une
+    ligne "```tsx", tout le code, une ligne "```", une ligne "<<<FIN_FICHIER>>>".
+    Ces balises sont lues AUTOMATIQUEMENT (en Python) pour committer les fichiers : seul ce qui est
+    entre elles est committé, et un fichier sans sa balise de fin est considéré comme tronqué et
+    n'est pas committé. N'utilise ces balises QUE pour le contenu FINAL et complet d'un fichier :
+    pour citer du code existant (diagnostic, traçabilité, auto-revue), écris un bloc de code
+    normal, sans balises.
+    Un contrôle automatique refuse ta réponse si un fichier contient un commentaire de raccourci
+    ("// ...", "// ... reste", "reste du code inchangé", "code existant") : tu devras alors la
+    refaire.
+
+    Avant de rendre ta réponse, fais une AUTO-REVUE de chaque fichier et termine par une section
+    "Auto-revue" d'une ligne par fichier : imports tous présents et utilisés, exports réellement
+    consommés, types cohérents entre fichiers, fichier complet de la première à la dernière ligne.
     ATTENTION pour un fichier déjà volumineux dont tu ne changes qu'une petite partie : la tâche
     suivante n'a AUCUN moyen de vérifier ou compléter ce que tu écris ici — ni de lire le fichier
     original, ni d'appliquer une modification partielle — elle committe tel quel, intégralement,
     exactement ce que tu lui fournis. Si tu risques de ne pas pouvoir réécrire ce fichier EN ENTIER
-    sans le tronquer, N'INCLUS PAS de bloc de code pour lui : committer une version coupée (donc
+    sans le tronquer, NE LE METS PAS entre balises : committer une version coupée (donc
     corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
     ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
     ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
   expected_output: >
-    Le plan (liste des fichiers prévus et leur justification, avec un signalement explicite pour
-    tout fichier où le contenu complet n'a pas pu être fourni sans risque de troncature), puis pour
-    chacun un titre "### Fichier : <chemin>" suivi du code source COMPLET et directement utilisable
-    de ce fichier.
+    Les hypothèses classées, la section "Traçabilité", le plan (liste des fichiers prévus et leur
+    justification, avec un signalement explicite "NON réalisé" pour tout fichier où le contenu
+    complet n'a pas pu être fourni sans risque de troncature), puis chaque fichier entre une ligne
+    "<<<FICHIER: chemin/du/fichier>>>" et une ligne "<<<FIN_FICHIER>>>", avec son code source COMPLET et
+    directement utilisable, et enfin la section "Auto-revue".
   agent: diagnostic_agent
 
 development_task:
@@ -163,7 +221,14 @@ development_task:
     1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch} (un
        seul appel, idempotent : si la branche existe déjà, l'outil te le confirme sans erreur, tu
        peux l'utiliser directement).
-    2. DÈS QUE PLUS DE 2-3 FICHIERS doivent être créés ou intégralement réécrits, utilise
+    2. Appelle `github_commit_analyst_files` (un seul argument : commit_message ; le repository
+       et la branche {work_branch} sont fixés par l'exécution) : il committe EN UN SEUL APPEL tous
+       les fichiers de l'Analyste, extraits
+       automatiquement de sa réponse — tu n'as RIEN à recopier, donc aucun risque de troncature. Sa
+       réponse liste les fichiers committés (et les éventuels REJETÉS) : c'est ta source de vérité
+       pour ton rapport. Ne passe aux outils ci-dessous QUE si cet outil indique qu'aucun fichier
+       n'a pu être extrait alors que l'Analyste a bien fourni du code.
+       Repli uniquement : DÈS QUE PLUS DE 2-3 FICHIERS doivent être créés ou intégralement réécrits, utilise
        `github_write_files` : il committe TOUS ces fichiers EN UN SEUL appel d'outil, quel que soit
        leur nombre — c'est TA PRIORITÉ ABSOLUE, avant tout `check_syntax`. Un lot jamais committé (0
        fichier réellement présent sur GitHub) est bien pire qu'un lot committé avec une imperfection
@@ -192,16 +257,27 @@ development_task:
        (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant
        les changements (reprends le plan de l'Analyste).
     Ne modifie jamais directement la branche {base_branch}.
-    Sans repository cible (travail sur disque local), utilise `file_write_tool` pour écrire chaque
-    fichier fourni par l'Analyste, sans en modifier le contenu.
+    Sans repository cible (travail local), appelle aussi `github_commit_analyst_files` : il écrit
+    alors les fichiers de l'Analyste dans l'espace de travail local de la conversation. C'est
+    le SEUL moyen d'écrire en local : si l'outil n'a rien pu extraire, indique-le dans ton rapport.
+
+    Réaction aux réponses des outils (ne jamais improviser autre chose) :
+    - "OK" : passe à l'étape suivante.
+    - "INFO : la branche ... existe déjà" : continue avec cette branche.
+    - Fichier REJETÉ ou "ERREUR : écriture refusée" : ne retente pas, note-le comme non livré avec
+      la raison exacte, passe au suivant.
+    - Erreur réseau/GitHub transitoire ou "non fast-forward" : retente UNE seule fois, avec un
+      commit_message légèrement différent (un appel strictement identique serait refusé).
+    - Toute autre erreur : note-la telle quelle dans ton rapport et continue avec le reste.
 
     Si tu approches de la limite d'appels d'outils disponibles avant d'avoir committé tous les
     fichiers fournis par l'Analyste, priorise un sous-ensemble cohérent et fonctionnel (jamais un
     fichier à moitié écrit ni une branche sans commit) plutôt que de tout laisser incomplet, et
     indique EXPLICITEMENT dans ton rapport final la liste des fichiers non committés.
   expected_output: >
-    La confirmation, fichier par fichier, de ce qui a été committé (ou non, avec la raison), et si un
-    repository cible était fourni, l'URL de la Pull Request créée.
+    Un rapport au format fixe : "Plan d'exécution" (fichiers attendus d'après l'Analyste),
+    "Committés" (un chemin par ligne), "Non livrés" (chemin : raison exacte, ou "aucun"), "Pull
+    Request" (URL renvoyée par l'outil, ou la raison de son absence).
   agent: developer_agent
 
 qa_task:
@@ -210,6 +286,13 @@ qa_task:
     ---
     {user_request}
     ---
+
+    PREMIÈRE ACTION : appelle `qa_verify_delivered_files` (sans argument : il inspecte la branche
+    {work_branch}, ou l'espace de travail local sans repository cible). En UN appel, il vérifie
+    pour CHAQUE fichier de l'Analyste sa présence réelle, l'identité exacte (diff) avec la version
+    de l'Analyste et check_syntax — ce qui couvre les vérifications 1 et 2 ci-dessous pour ces
+    fichiers sans relecture. Ne relis ensuite individuellement (github_read_file) QUE les fichiers
+    nécessaires pour juger la conformité fonctionnelle ou ceux que cet outil n'a pas couverts.
 
     Revois le code produit par le Développeur (le plan et le contenu complet rédigés par
     l'Analyste, committés tels quels par le Développeur — voir leurs rapports respectifs). Ne
@@ -240,7 +323,9 @@ qa_task:
     fichiers que ton budget le permet en priorisant les plus à risque (logique complexe, fichiers
     de configuration structurants comme `package.json`/`tsconfig.json`) plutôt que de t'arrêter à
     mi-chemin sans jamais conclure — liste EXPLICITEMENT dans ton rapport les fichiers que tu
-    n'as pas pu vérifier, faute de budget restant.
+    n'as pas pu vérifier, faute de budget restant. Ordre de priorité imposé : 1) configuration
+    (`package.json`, `tsconfig.json`, `vite.config.*`), 2) point d'entrée (`index.html`,
+    `src/main.tsx`), 3) logique métier, 4) composants d'interface.
 
     Si un repository cible est fourni, tu n'as pas d'outil pour vérifier toi-même qu'une Pull
     Request a réellement été ouverte : dis-le clairement dans ton rapport plutôt que de confirmer
@@ -255,6 +340,14 @@ qa_task:
     correctif qui traite un symptôme différent du bug décrit, une fonctionnalité qui ne couvre
     qu'une partie de ce qui était demandé). Si tu identifies un tel écart, signale-le explicitement
     dans ta conclusion, même si tout le reste (syntaxe, fichiers réellement présents) est correct.
+    Pour ce jugement, pars des "Critères d'acceptation" du Designer s'ils figurent dans ton
+    contexte ; sinon, reformule d'abord toi-même 2 à 5 critères vérifiables à partir de la demande.
+    Évalue chacun : OK, KO ou NON VÉRIFIABLE, avec la preuve.
+
+    Étiquette CHAQUE affirmation de ton rapport : [vérifié outil] si elle repose sur un résultat
+    d'outil (qa_verify_delivered_files, check_syntax, github_read_file), [lecture] si elle repose
+    seulement sur ta lecture du code ou des rapports. Ne présente jamais une [lecture] comme une
+    preuve.
 
     Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
@@ -262,8 +355,10 @@ qa_task:
     Contexte repository :
     {repo_instructions}
   expected_output: >
-    Un rapport de validation QA listant, pour chaque fichier vérifié, le résultat exact de
-    `check_syntax` ET la confirmation (ou l'infirmation) de ce que le Développeur prétend avoir
-    fait, une évaluation de la correspondance entre le résultat livré et la demande initiale, puis
-    une conclusion sur la mise en production ou une liste de correctifs mineurs.
+    Un rapport de validation QA au format fixe : "Fichiers vérifiés" (pour chacun : présence,
+    identité avec l'Analyste, résultat exact de check_syntax, chaque point étiqueté [vérifié outil]
+    ou [lecture]), "Critères d'acceptation" (tableau Critère | Statut OK/KO/NON VÉRIFIABLE |
+    Preuve), "Problèmes bloquants", "Problèmes mineurs", "Fichiers non vérifiés", puis une
+    dernière ligne exactement au format "Verdict : GO", "Verdict : GO_AVEC_RESERVES" ou
+    "Verdict : NO_GO".
   agent: qa_agent

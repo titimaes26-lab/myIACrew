@@ -9,9 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
-from crewquestion import AppDevelopmentCrew, AnalysisReport, CrewStepError, build_conversation_context, track_execution_metrics
+from crewquestion import (
+    AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
+    build_conversation_context, track_execution_metrics,
+)
 from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
 from auth import get_current_user, close_http_client
 from github_tools import verify_github_delivery, get_branch_head_sha, GitHubVerificationUnavailable
@@ -175,6 +178,7 @@ crew_instance = AppDevelopmentCrew()
 
 class UserRequestInput(BaseModel):
     user_request: str
+    conversation_id: Optional[int] = None
 
 class WorkflowExecutionInput(BaseModel):
     user_request: str
@@ -546,6 +550,9 @@ async def _run_crew_and_persist(
                                 # et les tâches interpolent toujours {base_branch} même dans ce cas.
                                 'base_branch': normalized_base_branch or 'main',
                                 'work_branch': work_branch,
+                                # Isole l'espace de travail LOCAL de chaque conversation (mode sans
+                                # repository cible, où work_branch est vide) — voir _reset_execution_state.
+                                'conversation_id': str(conversation_id),
                                 'repo_instructions': (
                                     f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
                                     f"Branche de base : {normalized_base_branch}\n"
@@ -573,7 +580,15 @@ async def _run_crew_and_persist(
                                         f"sur branch={normalized_base_branch} en attendant."
                                     )
                                     if has_repo_target
-                                    else "Aucun repository GitHub cible fourni : n'utilise aucun outil github_*, travaille uniquement sur le disque local."
+                                    else (
+                                        "Aucun repository GitHub cible fourni : travaille uniquement dans "
+                                        "l'espace de travail local de cette conversation (chemins de fichiers "
+                                        "relatifs, lus avec read_a_files_content). Cet espace est VIDE au premier "
+                                        "tour d'une conversation : ne présume jamais qu'un fichier non livré par "
+                                        "un tour précédent de cette même conversation existe déjà. N'utilise "
+                                        "aucun outil github_* SAUF github_commit_analyst_files et "
+                                        "qa_verify_delivered_files, qui agissent alors sur cet espace de travail."
+                                    )
                                 ),
                             },
                             request_type=data.target_workflow,
@@ -761,11 +776,42 @@ async def _run_crew_and_persist(
 def read_root():
     return {"status": "API CrewAI opérationnelle"}
 
-@app.post("/api/qualify", response_model=AnalysisReport)
+def _load_qualification_context(conversation_id: int, user_id) -> str | None:
+    """Rappel des tours précédents pour /api/qualify, ou None si la conversation est introuvable
+    ou n'appartient pas à cet utilisateur. Synchrone (accès DB bloquant) : à appeler via
+    asyncio.to_thread, avec sa propre Session, pour ne pas bloquer la boucle asyncio."""
+    with Session(engine) as session:
+        conversation = session.get(Conversation, conversation_id)
+        if not conversation or conversation.user_id != user_id:
+            return None
+        # Seuls les MAX_PRIOR_TURNS_IN_CONTEXT derniers tours servent au contexte : inutile de
+        # relire tous les résultats (souvent volumineux) d'une longue conversation à chaque
+        # qualification — le nombre total suffit pour signaler les tours omis.
+        total = session.exec(
+            select(func.count()).select_from(ExecutionHistory)
+            .where(ExecutionHistory.conversation_id == conversation.id)
+        ).one()
+        recent = session.exec(
+            select(ExecutionHistory)
+            .where(ExecutionHistory.conversation_id == conversation.id)
+            .order_by(ExecutionHistory.created_at.desc())
+            .limit(MAX_PRIOR_TURNS_IN_CONTEXT)
+        ).all()
+        return build_conversation_context(list(reversed(recent)), total_count=total)
+
+@app.post("/api/qualify", response_model=QualificationResult)
 async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):
     """Étape 1 : Qualification du besoin"""
+    # Tours précédents de la conversation : sans eux, un message de suivi ("corrige ça",
+    # "ajoute aussi Y") est qualifié hors contexte, souvent en DESIGN_AND_DEV par défaut.
+    conversation_context = ""
+    if data.conversation_id is not None:
+        loaded = await asyncio.to_thread(_load_qualification_context, data.conversation_id, user.get("id"))
+        if loaded is None:
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+        conversation_context = loaded
     try:
-        report = await crew_instance.analyze_user_request(data.user_request)
+        report = await crew_instance.analyze_user_request(data.user_request, conversation_context)
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:
