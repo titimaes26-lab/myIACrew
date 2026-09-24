@@ -155,6 +155,28 @@ def _record_edit_success(owner: str, repo: str, path: str, branch: str) -> None:
             counts.pop((owner, repo, path, branch), None)
 
 
+def _decode_content_file(gh_repo, content_file, path: str) -> tuple[str | None, str | None]:
+    """(contenu, erreur) pour un ContentFile déjà récupéré via get_contents : gère le repli sur
+    le blob git pour les fichiers > 1 Mo (get_contents n'en renvoie alors pas le contenu) et un
+    encodage non UTF-8. Factorée pour que `github_read_file` et `make_file_fetcher` partagent
+    exactement le même comportement plutôt que de dupliquer cette logique."""
+    try:
+        raw = content_file.decoded_content
+    except Exception:
+        # Fichier > 1 Mo : get_contents ne renvoie pas son contenu, le blob git oui. Une erreur
+        # de CET appel (réseau, quota) rend le fichier non vérifiable, pas illisible.
+        try:
+            raw = base64.b64decode(gh_repo.get_git_blob(content_file.sha).content)
+        except GithubException as e:
+            return None, _github_error(e)
+        except Exception as e:
+            return None, f"ERREUR : {e}"
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
+
+
 def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tuple[str | None, str | None]]:
     """Fonction path -> (contenu, None) ou (None, raison), pour un usage Python interne (voir
     qa_verify_delivered_files, crewquestion.py), sans passer par l'objet Tool crewai.
@@ -200,21 +222,7 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
             return None, f"ERREUR : {e}"
         if isinstance(content_file, list):
             return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
-        try:
-            raw = content_file.decoded_content
-        except Exception:
-            # Fichier > 1 Mo : get_contents ne renvoie pas son contenu, le blob git oui. Une erreur
-            # de CET appel (réseau, quota) rend le fichier non vérifiable, pas illisible.
-            try:
-                raw = base64.b64decode(gh_repo.get_git_blob(content_file.sha).content)
-            except GithubException as e:
-                return None, _github_error(e)
-            except Exception as e:
-                return None, f"ERREUR : {e}"
-        try:
-            return raw.decode("utf-8"), None
-        except UnicodeDecodeError:
-            return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
+        return _decode_content_file(gh_repo, content_file, path)
 
     return fetch
 
@@ -234,7 +242,12 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
         content_file = gh_repo.get_contents(path, ref=branch)
         if isinstance(content_file, list):
             return f"ERREUR : '{path}' est un dossier, pas un fichier. Utilise github_list_directory."
-        return content_file.decoded_content.decode("utf-8")
+        # _decode_content_file : gère aussi le repli sur le blob git pour les fichiers > 1 Mo,
+        # que decoded_content seul ne renvoie pas (voir make_file_fetcher, qui partage ce code).
+        content, error = _decode_content_file(gh_repo, content_file, path)
+        if content is None:
+            return f"ERREUR : {error}"
+        return content
     except GithubException as e:
         if e.status == 404:
             return (

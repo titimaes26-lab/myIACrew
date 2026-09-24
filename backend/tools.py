@@ -1,35 +1,7 @@
 import ast
 import json
-import os
 import yaml
 from crewai.tools import tool
-
-@tool("read_a_files_content")
-def read_a_files_content(file_path: str) -> str:
-    """
-    Lit le contenu d'un fichier sur le disque.
-    Arguments:
-        file_path (str): Le chemin du fichier (ex: 'src/App.tsx' ou 'index.html').
-    """
-    try:
-        normalized_path = os.path.normpath(file_path)
-        
-        if not os.path.exists(normalized_path):
-            return (
-                f"ERREUR_FICHIER_INEXISTANT : Le fichier '{file_path}' n'existe pas sur le disque. "
-                "Inutile de réessayer la lecture de ce fichier exact. "
-                "Consigne : Note cette absence dans ton rapport et poursuis ton analyse."
-            )
-            
-        with open(normalized_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            return content if content.strip() else f"INFO : Le fichier '{file_path}' est vide."
-            
-    except Exception as e:
-        return (
-            f"ERREUR_LECTURE : Impossible de lire le fichier '{file_path}'. "
-            f"Détail : {str(e)}. Ne réessaie pas d'ouvrir ce fichier."
-        )
 
 # "<" est volontairement absent : dans ce dépôt (React/TSX), un "/" suit presque
 # toujours "<" comme fermeture de balise JSX (`</A>`), jamais comme opérateur "inférieur
@@ -231,7 +203,7 @@ def check_syntax_content(content: str, file_path: str) -> str:
 def check_syntax(content: str, file_path: str) -> str:
     """
     Vérifie STATIQUEMENT (sans jamais exécuter le code) la validité syntaxique d'un
-    contenu de fichier déjà récupéré (via read_a_files_content ou github_read_file).
+    contenu de fichier déjà récupéré (via l'outil de lecture local ou github_read_file).
     Pour Python/JSON/YAML, la vérification est exacte (vrai parseur). Pour
     JS/TS/JSX/TSX, c'est une heuristique d'équilibrage de délimiteurs, pas une vraie
     compilation : à utiliser en complément de ta relecture, jamais comme preuve

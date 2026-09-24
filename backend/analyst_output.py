@@ -23,6 +23,12 @@ from typing import Callable
 
 from tools import check_syntax_content
 
+# Un LLM entoure parfois la balise de mise en forme Markdown ("**<<<FICHIER: x>>>**",
+# "`<<<FIN_FICHIER>>>`") : retirée avant de reconnaître la balise (voir _undecorate), pour ne
+# jamais la traiter comme du texte ordinaire — silencieusement invisible à FILE_START/FILE_END
+# ET à MARKER_LIKE, qui exigent tous trois que la ligne commence littéralement par "<<<".
+_LINE_DECORATION = re.compile(r"^(\*{1,2}|_{1,2}|`{1,3})(.+)\1$")
+
 # Le texte éventuel après ">>>" ("(nouveau)") est ignoré plutôt que de faire rater la balise.
 FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
 # Toute ligne qui RESSEMBLE à une balise sans être reconnue est signalée, jamais ignorée en silence.
@@ -122,6 +128,14 @@ def _extension(path: str) -> str:
     return path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
 
 
+def _undecorate(stripped: str) -> str:
+    """Retire une mise en forme Markdown qui encadre TOUTE la ligne, symétriquement (même
+    marqueur au début et à la fin) : "**<<<FICHIER: x>>>**" devient "<<<FICHIER: x>>>". Une
+    ligne de contenu normale (qui ne commence pas par ce marqueur) n'est jamais affectée."""
+    m = _LINE_DECORATION.match(stripped)
+    return m.group(2) if m else stripped
+
+
 def _strip_outer_fence(body: list[str], prose: bool) -> tuple[list[str], str | None]:
     """(contenu, problème éventuel) : retire le bloc ``` qui encadre le contenu (utile à
     l'affichage Markdown du rapport), s'il l'encadre ENTIÈREMENT : ouverture en première ligne,
@@ -203,7 +217,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
         broken[key] = reason
 
     for line in (text or "").splitlines():
-        stripped = line.strip()
+        stripped = _undecorate(line.strip())
         start = FILE_START.match(stripped)
         if start:
             in_malformed = False

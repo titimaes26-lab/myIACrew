@@ -37,6 +37,7 @@ def new_crew(owner="", repo="", branch="feature/x"):
     ("Verdict : go", "go"),
     ("Verdict : Go ✅", "Go"),
     ("Verdict : No go, 2 bloquants", "No go"),
+    ("| Verdict | GO |", "GO"),
 ])
 def test_qa_verdict_variants(text, expected):
     match = cq.QA_VERDICT.search(text)
@@ -232,6 +233,16 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     ("Fichiers src/a.ts — tâches NON réalisées : aucune", "src/a.ts", False),
     ("- src/a.ts réalisé, src/b.ts NON réalisé", "src/a.ts", False),
     ("<<<FICHIER: src/a.ts>>>\n// src/a.ts NON réalisé\n<<<FIN_FICHIER>>>", "src/a.ts", False),
+    # Chemin APRÈS la mention (pas seulement avant) : "NON réalisé : <chemin> (raison)".
+    ("NON réalisé : src/b.ts (trop volumineux)", "src/b.ts", True),
+    # Ordre inversé "mot-clé : chemin" (pas "chemin mot-clé") : le mot positif "Réalisé"
+    # réclame IMMÉDIATEMENT son propre chemin, qui ne doit pas se faire retirer par la
+    # mention négative suivante sur la même ligne.
+    ("Réalisé : src/a.ts. NON réalisé : src/b.ts", "src/a.ts", False),
+    ("Réalisé : src/a.ts. NON réalisé : src/b.ts", "src/b.ts", True),
+    # La raison entre parenthèses ne doit jamais être prise pour un 2e chemin retiré.
+    ("- src/old.ts : NON réalisé (remplacé par src/new.ts)", "src/new.ts", False),
+    ("- src/old.ts : NON réalisé (remplacé par src/new.ts)", "src/old.ts", True),
 ])
 def test_is_withdrawn(text, path, expected):
     assert (path in cq._withdrawn_paths(text, [path])) is expected

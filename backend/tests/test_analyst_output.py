@@ -281,3 +281,26 @@ def test_withdrawal_mentions_inside_indented_file_bodies_are_ignored():
     from analyst_output import FILE_BLOCKS
     text = "   <<<FICHIER: README.md>>>\n   - src/b.ts : NON réalisé (suivi)\n   <<<FIN_FICHIER>>>\n"
     assert "NON réalisé" not in FILE_BLOCKS.sub("", text)
+
+
+def test_bold_decorated_markers_are_recognized():
+    text = "**<<<FICHIER: src/a.ts>>>**\nexport const a = 1;\n**<<<FIN_FICHIER>>>**\n"
+    assert parse_file_sections(text) == ([{"path": "src/a.ts", "content": "export const a = 1;\n"}], {})
+
+
+def test_backtick_decorated_markers_are_recognized():
+    text = "`<<<FICHIER: a.py>>>`\nx = 1\n`<<<FIN_FICHIER>>>`\n"
+    assert parse_file_sections(text) == ([{"path": "a.py", "content": "x = 1\n"}], {})
+
+
+def test_normal_bold_content_line_is_not_treated_as_a_marker():
+    # _undecorate ne s'applique qu'à la RECONNAISSANCE de balise : le contenu réel du fichier
+    # (une ligne en gras ordinaire) reste inchangé.
+    text = "<<<FICHIER: a.py>>>\n**bold content**\n<<<FIN_FICHIER>>>\n"
+    assert parse_file_sections(text) == ([{"path": "a.py", "content": "**bold content**\n"}], {})
+
+
+def test_decorated_malformed_marker_is_reported_not_silently_dropped():
+    text = "**<<<FICHIER a.py>>>**\nx = 1\n"
+    files, broken = parse_file_sections(text)
+    assert files == [] and broken

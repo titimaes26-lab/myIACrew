@@ -583,9 +583,11 @@ async def _run_crew_and_persist(
                                     else (
                                         "Aucun repository GitHub cible fourni : travaille uniquement dans "
                                         "l'espace de travail local de cette conversation (chemins de fichiers "
-                                        "relatifs, lus avec read_a_files_content). N'utilise aucun outil github_* "
-                                        "SAUF github_commit_analyst_files et qa_verify_delivered_files, qui "
-                                        "agissent alors sur cet espace de travail."
+                                        "relatifs, lus avec read_a_files_content). Cet espace est VIDE au premier "
+                                        "tour d'une conversation : ne présume jamais qu'un fichier non livré par "
+                                        "un tour précédent de cette même conversation existe déjà. N'utilise "
+                                        "aucun outil github_* SAUF github_commit_analyst_files et "
+                                        "qa_verify_delivered_files, qui agissent alors sur cet espace de travail."
                                     )
                                 ),
                             },
