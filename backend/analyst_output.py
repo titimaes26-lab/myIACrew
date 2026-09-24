@@ -26,11 +26,14 @@ from tools import check_syntax_content
 # Un LLM entoure parfois la balise de mise en forme Markdown ("**<<<FICHIER: x>>>**",
 # "`<<<FIN_FICHIER>>>`") : retirée avant de reconnaître la balise (voir _undecorate), pour ne
 # jamais la traiter comme du texte ordinaire — silencieusement invisible à FILE_START/FILE_END
-# ET à MARKER_LIKE, qui exigent tous trois que la ligne commence littéralement par "<<<". La
-# clôture de la décoration (non gourmande) peut être suivie d'un reste ("**<<<FICHIER: x>>>**
-# (nouveau)") : ce reste est conservé après le contenu déshabillé, FILE_START/FILE_END tolérant
-# eux-mêmes déjà du texte après ">>>".
-_LINE_DECORATION = re.compile(r"^(\*{1,2}|_{1,2}|`{1,3})(.+?)\1(.*)$")
+# ET à MARKER_LIKE, qui exigent tous trois que la ligne commence littéralement par "<<<".
+# {1,3} pour * et _ (pas seulement {1,2}) : couvre aussi l'emphase forte+italique ("***x***").
+# Contenu GREEDY (pas ".+?") : la clôture retenue est alors la DERNIÈRE occurrence du même
+# marqueur dans la ligne, jamais la première rencontrée — sans ça, "_<<<FIN_FICHIER>>>_" (un
+# "_" existant DÉJÀ dans "FIN_FICHIER" avant même la vraie clôture) tronquerait la balise au
+# mauvais endroit. Un reste après cette clôture ("**<<<FICHIER: x>>>** (nouveau)") est conservé,
+# FILE_START/FILE_END tolérant eux-mêmes déjà du texte après ">>>".
+_LINE_DECORATION = re.compile(r"^(\*{1,3}|_{1,3}|`{1,3})(.+)\1(.*)$")
 
 # Le texte éventuel après ">>>" ("(nouveau)") est ignoré plutôt que de faire rater la balise.
 FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)

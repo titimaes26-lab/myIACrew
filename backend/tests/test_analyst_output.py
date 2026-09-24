@@ -309,3 +309,14 @@ def test_decorated_malformed_marker_is_reported_not_silently_dropped():
 def test_decorated_marker_with_trailing_note_is_recognized():
     text = "**<<<FICHIER: a.ts>>>** (nouveau)\nx=1\n**<<<FIN_FICHIER>>>**\n"
     assert parse_file_sections(text) == ([{"path": "a.ts", "content": "x=1\n"}], {})
+
+
+def test_italic_underscore_marker_is_not_truncated_by_the_embedded_underscore():
+    # "FIN_FICHIER" contient déjà un "_" : la clôture italique ne doit pas être confondue avec lui.
+    text = "_<<<FICHIER: a.py>>>_\nx = 1\n_<<<FIN_FICHIER>>>_\n"
+    assert parse_file_sections(text) == ([{"path": "a.py", "content": "x = 1\n"}], {})
+
+
+def test_triple_asterisk_bold_italic_marker_is_recognized():
+    text = "***<<<FICHIER: a.py>>>***\nx = 1\n***<<<FIN_FICHIER>>>***\n"
+    assert parse_file_sections(text) == ([{"path": "a.py", "content": "x = 1\n"}], {})
