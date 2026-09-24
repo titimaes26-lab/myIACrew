@@ -24,16 +24,15 @@ from typing import Callable
 from tools import check_syntax_content
 
 # Un LLM entoure parfois la balise de mise en forme Markdown ("**<<<FICHIER: x>>>**",
-# "`<<<FIN_FICHIER>>>`") : retirée avant de reconnaître la balise (voir _undecorate), pour ne
-# jamais la traiter comme du texte ordinaire — silencieusement invisible à FILE_START/FILE_END
-# ET à MARKER_LIKE, qui exigent tous trois que la ligne commence littéralement par "<<<".
-# {1,3} pour * et _ (pas seulement {1,2}) : couvre aussi l'emphase forte+italique ("***x***").
-# Contenu GREEDY (pas ".+?") : la clôture retenue est alors la DERNIÈRE occurrence du même
-# marqueur dans la ligne, jamais la première rencontrée — sans ça, "_<<<FIN_FICHIER>>>_" (un
-# "_" existant DÉJÀ dans "FIN_FICHIER" avant même la vraie clôture) tronquerait la balise au
-# mauvais endroit. Un reste après cette clôture ("**<<<FICHIER: x>>>** (nouveau)") est conservé,
-# FILE_START/FILE_END tolérant eux-mêmes déjà du texte après ">>>".
-_LINE_DECORATION = re.compile(r"^(\*{1,3}|_{1,3}|`{1,3})(.+)\1(.*)$")
+# "`<<<FIN_FICHIER>>>`", ou même de façon ASYMÉTRIQUE — "**<<<FICHIER: x>>>" sans clôture) :
+# seule l'OUVERTURE de la décoration est retirée avant de reconnaître la balise (voir
+# _undecorate) — jamais sa clôture, qu'il n'est pas nécessaire de chercher : FILE_START et
+# FILE_END acceptent déjà n'importe quel texte après ">>>" (leur `.*$` final), qui absorbe donc
+# de lui-même une clôture "**"/"_"/backtick éventuelle, symétrique ou non, avec ou sans texte
+# après elle ("**<<<FICHIER: x>>>** (nouveau)"). Une ligne de contenu ordinaire qui commence par
+# hasard par ces caractères (ex: une clôture ``` de bloc de code) n'est jamais affectée : si le
+# retrait ne fait pas apparaître "<<<" en tête, _undecorate revient au texte d'origine.
+_LEADING_DECORATION = re.compile(r"^(\*{1,3}|_{1,3}|`{1,3})")
 
 # Le texte éventuel après ">>>" ("(nouveau)") est ignoré plutôt que de faire rater la balise.
 FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
@@ -135,13 +134,13 @@ def _extension(path: str) -> str:
 
 
 def _undecorate(stripped: str) -> str:
-    """Retire une mise en forme Markdown qui encadre le DÉBUT de la ligne, symétriquement (même
-    marqueur ouvrant/fermant) : "**<<<FICHIER: x>>>**" devient "<<<FICHIER: x>>>", et
-    "**<<<FICHIER: x>>>** (nouveau)" devient "<<<FICHIER: x>>> (nouveau)" (reste conservé après
-    la clôture). Une ligne de contenu normale (qui ne commence pas par ce marqueur) n'est jamais
-    affectée."""
-    m = _LINE_DECORATION.match(stripped)
-    return m.group(2) + m.group(3) if m else stripped
+    """Retire une mise en forme Markdown en tête de ligne SEULEMENT si le résultat révèle une
+    balise ("**<<<FICHIER: x>>>**" ou même "**<<<FICHIER: x>>>" sans clôture deviennent
+    "<<<FICHIER: x>>>[**]") : une clôture éventuelle, symétrique ou non, n'a jamais besoin d'être
+    retirée séparément (voir le commentaire de _LEADING_DECORATION). Une ligne de contenu normale
+    (dont le retrait ne fait pas apparaître "<<<" en tête) n'est jamais affectée."""
+    s = _LEADING_DECORATION.sub("", stripped, count=1)
+    return s if s.startswith("<<<") else stripped
 
 
 def _strip_outer_fence(body: list[str], prose: bool) -> tuple[list[str], str | None]:

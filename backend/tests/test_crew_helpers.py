@@ -252,10 +252,6 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     ("NON réalisé : src/b.ts, src/d.ts (trop gros)", "src/b.ts", True),
     # Aucune ponctuation entre deux fichiers : pas de "réclamation" par erreur du 2e.
     ("src/a.ts réalisé src/b.ts NON réalisé", "src/b.ts", True),
-    # Liste à la virgule après un mot positif, mais dont le DERNIER élément est en
-    # réalité la cible de la mention négative qui suit directement (avec ou sans virgule).
-    ("Réalisé : src/a.ts, src/b.ts NON réalisé", "src/b.ts", True),
-    ("Réalisé : src/a.ts src/b.ts NON réalisé", "src/b.ts", True),
 ])
 def test_is_withdrawn(text, path, expected):
     assert (path in cq._withdrawn_paths(text, [path])) is expected
@@ -273,6 +269,13 @@ def test_is_withdrawn_with_full_candidate_set():
     assert withdrawn == {"src/b.ts"}
     withdrawn = cq._withdrawn_paths("NON réalisé : src/b.ts, src/d.ts (trop gros)", ["src/b.ts", "src/d.ts"])
     assert withdrawn == {"src/b.ts", "src/d.ts"}
+    # Liste à la virgule après un mot positif dont le DERNIER élément est en réalité la cible
+    # de la mention négative qui le suit directement (avec ou sans virgule) : seul le test avec
+    # les DEUX chemins candidats exerce vraiment le "regard en avant" de _consume_adjacent_paths
+    # (un seul candidat laisserait la recherche brute sur `clause` donner la même réponse pour
+    # une mauvaise raison, sans jamais passer par ce mécanisme).
+    assert cq._withdrawn_paths("Réalisé : src/a.ts, src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
+    assert cq._withdrawn_paths("Réalisé : src/a.ts src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
 
 
 @pytest.mark.parametrize("text", [

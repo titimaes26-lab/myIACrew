@@ -320,3 +320,9 @@ def test_italic_underscore_marker_is_not_truncated_by_the_embedded_underscore():
 def test_triple_asterisk_bold_italic_marker_is_recognized():
     text = "***<<<FICHIER: a.py>>>***\nx = 1\n***<<<FIN_FICHIER>>>***\n"
     assert parse_file_sections(text) == ([{"path": "a.py", "content": "x = 1\n"}], {})
+
+
+def test_asymmetric_decoration_missing_closing_marker_is_recognized():
+    # Ouverture décorée mais jamais refermée : FILE_START/FILE_END absorbent seuls le reste.
+    text = "**<<<FICHIER: src/a.ts>>>\nx = 1\n<<<FIN_FICHIER>>>\n"
+    assert parse_file_sections(text) == ([{"path": "src/a.ts", "content": "x = 1\n"}], {})
