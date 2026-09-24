@@ -26,8 +26,11 @@ from tools import check_syntax_content
 # Un LLM entoure parfois la balise de mise en forme Markdown ("**<<<FICHIER: x>>>**",
 # "`<<<FIN_FICHIER>>>`") : retirée avant de reconnaître la balise (voir _undecorate), pour ne
 # jamais la traiter comme du texte ordinaire — silencieusement invisible à FILE_START/FILE_END
-# ET à MARKER_LIKE, qui exigent tous trois que la ligne commence littéralement par "<<<".
-_LINE_DECORATION = re.compile(r"^(\*{1,2}|_{1,2}|`{1,3})(.+)\1$")
+# ET à MARKER_LIKE, qui exigent tous trois que la ligne commence littéralement par "<<<". La
+# clôture de la décoration (non gourmande) peut être suivie d'un reste ("**<<<FICHIER: x>>>**
+# (nouveau)") : ce reste est conservé après le contenu déshabillé, FILE_START/FILE_END tolérant
+# eux-mêmes déjà du texte après ">>>".
+_LINE_DECORATION = re.compile(r"^(\*{1,2}|_{1,2}|`{1,3})(.+?)\1(.*)$")
 
 # Le texte éventuel après ">>>" ("(nouveau)") est ignoré plutôt que de faire rater la balise.
 FILE_START = re.compile(r"^<<<\s*FICHIER\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
@@ -129,11 +132,13 @@ def _extension(path: str) -> str:
 
 
 def _undecorate(stripped: str) -> str:
-    """Retire une mise en forme Markdown qui encadre TOUTE la ligne, symétriquement (même
-    marqueur au début et à la fin) : "**<<<FICHIER: x>>>**" devient "<<<FICHIER: x>>>". Une
-    ligne de contenu normale (qui ne commence pas par ce marqueur) n'est jamais affectée."""
+    """Retire une mise en forme Markdown qui encadre le DÉBUT de la ligne, symétriquement (même
+    marqueur ouvrant/fermant) : "**<<<FICHIER: x>>>**" devient "<<<FICHIER: x>>>", et
+    "**<<<FICHIER: x>>>** (nouveau)" devient "<<<FICHIER: x>>> (nouveau)" (reste conservé après
+    la clôture). Une ligne de contenu normale (qui ne commence pas par ce marqueur) n'est jamais
+    affectée."""
     m = _LINE_DECORATION.match(stripped)
-    return m.group(2) if m else stripped
+    return m.group(2) + m.group(3) if m else stripped
 
 
 def _strip_outer_fence(body: list[str], prose: bool) -> tuple[list[str], str | None]:

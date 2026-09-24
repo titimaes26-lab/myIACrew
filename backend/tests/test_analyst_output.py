@@ -304,3 +304,8 @@ def test_decorated_malformed_marker_is_reported_not_silently_dropped():
     text = "**<<<FICHIER a.py>>>**\nx = 1\n"
     files, broken = parse_file_sections(text)
     assert files == [] and broken
+
+
+def test_decorated_marker_with_trailing_note_is_recognized():
+    text = "**<<<FICHIER: a.ts>>>** (nouveau)\nx=1\n**<<<FIN_FICHIER>>>**\n"
+    assert parse_file_sections(text) == ([{"path": "a.ts", "content": "x=1\n"}], {})

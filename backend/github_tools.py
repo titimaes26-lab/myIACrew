@@ -246,7 +246,9 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
         # que decoded_content seul ne renvoie pas (voir make_file_fetcher, qui partage ce code).
         content, error = _decode_content_file(gh_repo, content_file, path)
         if content is None:
-            return f"ERREUR : {error}"
+            # `error` est déjà formaté ("ERREUR_GITHUB : ...", "ERREUR : ...") sauf pour
+            # PRESENT_UNREADABLE, qui n'a pas ce préfixe : ne jamais l'imbriquer deux fois.
+            return error if error.startswith("ERREUR") else f"ERREUR : {error}"
         return content
     except GithubException as e:
         if e.status == 404:

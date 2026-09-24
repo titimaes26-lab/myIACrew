@@ -618,11 +618,13 @@ _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$"
 # Mention POSITIVE ("src/a.ts réalisé, src/b.ts NON réalisé") : ce qui la précède appartient à
 # une autre proposition. Plus fiable qu'une ponctuation (",", "|" d'un tableau Markdown...).
 _DONE_POSITIVE = re.compile(r"(?<!non\s)(?<!non\s\s)\br[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)", re.IGNORECASE)
-# Séparateur toléré entre deux chemins d'une même liste ("src/a.ts, src/c.ts") ou entre un mot
-# positif/négatif et le premier chemin qui le suit immédiatement ("Réalisé : src/a.ts",
-# "NON réalisé : src/b.ts, src/d.ts") : la virgule n'est acceptée qu'ENTRE deux chemins déjà
-# consommés (voir _consume_adjacent_paths), jamais pour le tout premier séparateur.
-_ADJACENT_PATH_SEPARATOR = re.compile(r"[\s:—–-]{0,5}")
+# Séparateur exigé entre un mot positif/négatif et le PREMIER chemin qui le suit ("Réalisé :
+# src/a.ts", "NON réalisé — src/b.ts") : au moins un signe de ponctuation (jamais du simple
+# espace seul), pour qu'une phrase sans rapport ("src/a.ts réalisé src/b.ts NON réalisé", sans
+# aucune ponctuation entre les deux chemins) ne fasse jamais réclamer par erreur le second par
+# la mention positive du premier. Entre deux chemins d'une même liste ("src/a.ts, src/c.ts"),
+# la virgule suffit (voir _LIST_SEPARATOR, qui ne sert qu'à partir du 2e chemin).
+_ADJACENT_PATH_SEPARATOR = re.compile(r"\s*[:—–-]\s*")
 _LIST_SEPARATOR = re.compile(r"[\s,:—–-]{0,5}")
 
 
@@ -637,6 +639,10 @@ def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int,
     separator = _ADJACENT_PATH_SEPARATOR
     while True:
         sep = separator.match(text, pos)
+        if sep is None:
+            # _ADJACENT_PATH_SEPARATOR (1er chemin) exige une vraie ponctuation, contrairement à
+            # _LIST_SEPARATOR (chemins suivants) : aucune ici, la liste s'arrête.
+            break
         matched = next(
             ((path, m.end()) for path, pattern in patterns.items() if (m := pattern.match(text, sep.end()))),
             None,

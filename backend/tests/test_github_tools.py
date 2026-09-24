@@ -74,3 +74,11 @@ def test_github_read_file_uses_blob_fallback_for_large_files(monkeypatch):
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
     result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
     assert result == "grand fichier\n"
+
+
+def test_github_read_file_does_not_double_prefix_blob_fallback_errors(monkeypatch):
+    repo = FakeRepo(blob_error=GithubException(403, {"message": "API rate limit exceeded"}, None))
+    monkeypatch.setattr(gt, "_get_repo", lambda owner, r: repo)
+    monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
+    result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
+    assert result.count("ERREUR") == 1 and "ERREUR : ERREUR" not in result

@@ -250,6 +250,8 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     ("Réalisé : src/a.ts, src/c.ts. NON réalisé : src/b.ts (trop complexe).", "src/b.ts", True),
     # Plusieurs chemins listés APRÈS une même mention négative sont tous retirés.
     ("NON réalisé : src/b.ts, src/d.ts (trop gros)", "src/b.ts", True),
+    # Aucune ponctuation entre deux fichiers : pas de "réclamation" par erreur du 2e.
+    ("src/a.ts réalisé src/b.ts NON réalisé", "src/b.ts", True),
 ])
 def test_is_withdrawn(text, path, expected):
     assert (path in cq._withdrawn_paths(text, [path])) is expected
