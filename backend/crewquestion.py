@@ -171,7 +171,7 @@ def _iter_task_sections(result):
         raw = raw if raw is not None else str(task_output)
         yield agent_name, raw
 
-def _format_crew_result(result) -> str:
+def _format_crew_result(result, task_durations: Optional[dict[str, float]] = None) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
     result.raw ne reflète que la sortie de la dernière tâche du crew. Pour un workflow
@@ -179,13 +179,26 @@ def _format_crew_result(result) -> str:
     contenu produit par les tâches précédentes serait sinon silencieusement perdu et
     jamais renvoyé à l'utilisateur.
 
+    task_durations : mapping optionnel agent_name -> secondes d'exécution (voir
+    run_dynamic_crew, construit depuis Task.execution_duration). Quand une durée est
+    connue pour un agent, elle est encodée juste après son heading via le même marqueur
+    HTML que celui écrit par _persist_completed_agent (main.py), pour que le frontend
+    n'ait qu'une seule logique d'extraction à implémenter, que la section vienne du
+    polling progressif ou de ce résultat final.
+
     Format final: sections séparées par AGENT_SECTION_SEPARATOR ("\n\n---\n\n")
     """
     tasks_output = getattr(result, "tasks_output", None)
     if not tasks_output or len(tasks_output) <= 1:
         return str(result.raw) if hasattr(result, "raw") else str(result)
 
-    sections = [f"## {agent_name}\n\n{raw}" for agent_name, raw in _iter_task_sections(result)]
+    sections = []
+    for agent_name, raw in _iter_task_sections(result):
+        duration = (task_durations or {}).get(agent_name)
+        if duration is not None:
+            sections.append(f"## {agent_name}\n<!--agent-duration:{duration:.2f}-->\n\n{raw}")
+        else:
+            sections.append(f"## {agent_name}\n\n{raw}")
     return AGENT_SECTION_SEPARATOR.join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
@@ -1184,7 +1197,7 @@ class AppDevelopmentCrew():
             f.write(md_content)
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str], None]] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
@@ -1242,8 +1255,11 @@ class AppDevelopmentCrew():
                 # Validation basique: éviter les None
                 if raw_output is None:
                     raw_output = ""
+                # task_obj.execution_duration : propriété CrewAI (start_time/end_time posés
+                # en interne pendant task_obj.execute()), None si l'un des deux est absent.
+                duration = task_obj.execution_duration
                 try:
-                    on_task_output_complete(agent_name, raw_output)
+                    on_task_output_complete(agent_name, raw_output, duration)
                 except Exception as e:
                     # Best-effort: ne pas laisser une erreur de persistance casser le workflow
                     print(f"AVERTISSEMENT : échec du callback on_task_output_complete pour '{agent_name}' : {type(e).__name__}: {e}", flush=True)
@@ -1349,7 +1365,17 @@ class AppDevelopmentCrew():
             for t in selected_tasks:
                 t.callback = None
 
-        formatted = _format_crew_result(result)
+        # Construit APRÈS la boucle t.callback = None ci-dessus (qui ne touche pas aux
+        # timestamps internes) : execution_duration reste valide pour chaque Task déjà
+        # exécutée. Ignore les agents sans durée connue (ex: tâche jamais exécutée après
+        # un échec en cours de route, voir le except plus haut) plutôt que d'y mettre None
+        # explicitement dans le dict, pour que _format_crew_result n'ait qu'un seul test.
+        task_durations = {
+            t.agent.role.strip(): t.execution_duration
+            for t in selected_tasks
+            if t.execution_duration is not None
+        }
+        formatted = _format_crew_result(result, task_durations)
 
         # last_execution_time n'est délibérément pas remis à jour avant cet appel :
         # on_task_complete() (task_callback ci-dessus) l'a déjà fait à la fin de la

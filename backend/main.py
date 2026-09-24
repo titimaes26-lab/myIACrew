@@ -356,11 +356,15 @@ def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) ->
 # Évite les doublons si on_task_output_complete est appelé plusieurs fois pour le même agent
 _persisted_agents: dict[int, set[str]] = {}
 
-def _validate_agent_data(agent_name: str, agent_output: str) -> tuple[str, str]:
-    """Valide et nettoie le nom d'agent et la sortie avant persistance.
+def _validate_agent_data(
+    agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
+) -> tuple[str, str, Optional[float]]:
+    """Valide et nettoie le nom d'agent, la sortie et la durée avant persistance.
 
     Returns:
-        (cleaned_agent_name, cleaned_agent_output): données validées et nettoyées
+        (cleaned_agent_name, cleaned_agent_output, cleaned_duration_seconds): données
+        validées et nettoyées. cleaned_duration_seconds est None si la valeur reçue
+        n'est pas un nombre fini et positif (durée manquante, NaN, infini, négative).
     """
     # Valider et nettoyer le nom d'agent
     if not agent_name:
@@ -378,7 +382,15 @@ def _validate_agent_data(agent_name: str, agent_output: str) -> tuple[str, str]:
     if len(agent_output) > MAX_AGENT_OUTPUT_SIZE:
         agent_output = agent_output[:MAX_AGENT_OUTPUT_SIZE] + f"\n\n**[Résultat tronqué - taille maximale atteinte ({MAX_AGENT_OUTPUT_SIZE} bytes)]**"
 
-    return agent_name, agent_output
+    # Valider la durée : uniquement un nombre fini >= 0, sinon considérée absente plutôt
+    # que persistée telle quelle (ex: NaN/infini improbables mais pas impossibles selon
+    # l'implémentation de execution_duration côté CrewAI).
+    if not isinstance(duration_seconds, (int, float)) or isinstance(duration_seconds, bool):
+        duration_seconds = None
+    elif not (duration_seconds == duration_seconds) or duration_seconds in (float("inf"), float("-inf")) or duration_seconds < 0:
+        duration_seconds = None
+
+    return agent_name, agent_output, duration_seconds
 
 def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     """Invoqué par run_dynamic_crew (voir crewquestion.py) à chaque changement d'étape.
@@ -412,17 +424,24 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     except Exception as e:
         print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}", flush=True)
 
-def _persist_completed_agent(execution_id: int, agent_name: str, agent_output: str) -> None:
+def _persist_completed_agent(
+    execution_id: int, agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
+) -> None:
     """Invoqué quand un agent complète sa tâche, pour accumuler les résultats progressifs.
 
     Formate la sortie de l'agent en markdown et l'ajoute au champ result existant via UPDATE SQL atomique,
     permettant au sondage /progress de retourner les agents complétés jusqu'à présent même pendant l'exécution.
 
+    duration_seconds (temps d'exécution de l'agent, voir Task.execution_duration dans
+    crewquestion.py) est encodé, quand connu, via le même marqueur HTML que celui écrit
+    par _format_crew_result pour le résultat final — une seule logique d'extraction côté
+    frontend suffit alors, que la section vienne du polling progressif ou du résultat final.
+
     Utilise un tracker d'idempotence pour éviter les doublons si retry_on_rate_limit_async relance le crew.
     Similaire à _persist_current_step : ouvre sa propre Session thread-safe et best-effort.
     """
     # Valider et nettoyer les données
-    agent_name, agent_output = _validate_agent_data(agent_name, agent_output)
+    agent_name, agent_output, duration_seconds = _validate_agent_data(agent_name, agent_output, duration_seconds)
 
     # IDEMPOTENCE: Vérifier si cet agent a déjà été persisté pour cette exécution
     if execution_id not in _persisted_agents:
@@ -437,7 +456,10 @@ def _persist_completed_agent(execution_id: int, agent_name: str, agent_output: s
             entry = agent_session.get(ExecutionHistory, execution_id)
             if entry is not None:
                 # Format identique à _format_crew_result dans crewquestion.py : sections séparées par AGENT_SECTION_SEPARATOR
-                agent_section = f"## {agent_name}\n\n{agent_output}"
+                if duration_seconds is not None:
+                    agent_section = f"## {agent_name}\n<!--agent-duration:{duration_seconds:.2f}-->\n\n{agent_output}"
+                else:
+                    agent_section = f"## {agent_name}\n\n{agent_output}"
                 output_size = len(agent_output)
 
                 # UPDATE SQL atomique au lieu de read-modify-write en Python
@@ -681,7 +703,7 @@ async def _run_crew_and_persist(
                             },
                             request_type=data.target_workflow,
                             on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
-                            on_task_output_complete=lambda agent_name, output: _persist_completed_agent(db_entry.id, agent_name, output),
+                            on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(db_entry.id, agent_name, output, duration),
                         )
                 finally:
                     memory_ticker.cancel()
