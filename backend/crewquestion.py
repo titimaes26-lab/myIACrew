@@ -625,7 +625,17 @@ _DONE_POSITIVE = re.compile(r"(?<!non\s)(?<!non\s\s)\br[ée]alis[ée]e?s?(?:\(e?
 # la mention positive du premier. Entre deux chemins d'une même liste ("src/a.ts, src/c.ts"),
 # la virgule suffit (voir _LIST_SEPARATOR, qui ne sert qu'à partir du 2e chemin).
 _ADJACENT_PATH_SEPARATOR = re.compile(r"\s*[:—–-]\s*")
-_LIST_SEPARATOR = re.compile(r"[\s,:—–-]{0,5}")
+# Une VRAIE virgule est exigée pour continuer une liste déjà commencée (jamais du simple
+# espace) : sans ça, "Réalisé : src/a.ts src/b.ts NON réalisé" (séparés par un espace, sans
+# virgule) ferait réclamer src/b.ts par la mention positive AVANT même d'atteindre "NON
+# réalisé", qui devait pourtant le retirer.
+_LIST_SEPARATOR = re.compile(r"\s*,\s*")
+
+
+# Écart toléré entre un chemin qu'on s'apprête à réclamer POUR UNE LISTE et une mention NON
+# réalisé qui le suivrait de près : un simple espace suffit ici (contrairement à
+# _ADJACENT_PATH_SEPARATOR, qui sert à RÉCLAMER un chemin, pas seulement à regarder devant soi).
+_LOOKAHEAD_GAP = re.compile(r"\s{0,3}")
 
 
 def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int, set[str]]:
@@ -633,7 +643,14 @@ def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int,
     ("src/a.ts, src/c.ts") tant qu'un chemin candidat suit immédiatement (au plus un séparateur
     court entre deux). Renvoie (position juste après le dernier chemin consommé, chemins
     trouvés) : ces chemins sont "réclamés" par le mot qui précède `start`, jamais disponibles
-    pour un retrait/une conservation décidé par une AUTRE mention plus loin sur la ligne."""
+    pour un retrait/une conservation décidé par une AUTRE mention plus loin sur la ligne.
+
+    `text` doit être la ligne COMPLÈTE (pas tronquée à la mention en cours) : un chemin de la
+    liste (à partir du 2e, jamais le 1er) directement suivi d'une mention "NON réalisé" lui
+    appartient probablement plutôt qu'à la liste positive qui précède ("Réalisé : src/a.ts,
+    src/b.ts NON réalisé" — la virgule ne fait pas de src/b.ts un 2e fichier réalisé) : la
+    consommation s'arrête AVANT de le réclamer, il sera jugé par SA propre mention.
+    """
     found: set[str] = set()
     pos = start
     separator = _ADJACENT_PATH_SEPARATOR
@@ -649,7 +666,12 @@ def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int,
         )
         if not matched:
             break
-        path, pos = matched
+        path, end = matched
+        if separator is _LIST_SEPARATOR:
+            gap = _LOOKAHEAD_GAP.match(text, end)
+            if NOT_DELIVERED_MARKER.match(text, gap.end()):
+                break
+        pos = end
         found.add(path)
         separator = _LIST_SEPARATOR  # une virgule n'introduit un chemin SUIVANT qu'après le 1er.
     return pos, found
@@ -680,7 +702,12 @@ def _withdrawn_paths(text: str, candidates) -> set[str]:
             if positives:
                 # Le mot positif est-il immédiatement suivi d'un ou plusieurs chemins ? Si oui,
                 # ils sont à lui — on étend la coupure pour les exclure de `clause` (docstring).
-                cut, _claimed = _consume_adjacent_paths(before, cut, patterns)
+                # `line` COMPLÈTE (pas `before`, tronquée pile avant la mention en cours) : sans
+                # ça, _consume_adjacent_paths ne pourrait jamais voir la mention NON réalisé qui
+                # suit pour interrompre à temps une liste ambiguë (voir sa docstring). `cut` ne
+                # peut de toute façon jamais dépasser `match.start()` : la liste s'arrête net dès
+                # que le séparateur ou le chemin suivant se heurte à la mention elle-même.
+                cut, _claimed = _consume_adjacent_paths(line, cut, patterns)
             clause = before[cut:]
             withdrawn.update(path for path, pattern in patterns.items() if pattern.search(clause))
             # Côté "après" : seulement les chemins IMMÉDIATEMENT adjacents à la mention (une
