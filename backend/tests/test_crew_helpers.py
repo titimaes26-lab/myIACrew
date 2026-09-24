@@ -38,6 +38,7 @@ def new_crew(owner="", repo="", branch="feature/x"):
     ("Verdict : Go ✅", "Go"),
     ("Verdict : No go, 2 bloquants", "No go"),
     ("| Verdict | GO |", "GO"),
+    ("Verdict (2 échecs mineurs | tolérés) : GO", "GO"),
 ])
 def test_qa_verdict_variants(text, expected):
     match = cq.QA_VERDICT.search(text)
@@ -243,9 +244,29 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     # La raison entre parenthèses ne doit jamais être prise pour un 2e chemin retiré.
     ("- src/old.ts : NON réalisé (remplacé par src/new.ts)", "src/new.ts", False),
     ("- src/old.ts : NON réalisé (remplacé par src/new.ts)", "src/old.ts", True),
+    # Plusieurs chemins réclamés par un mot positif ("Réalisé : a, c") ne sont pas
+    # récupérables par une mention négative plus loin sur la même ligne.
+    ("Réalisé : src/a.ts, src/c.ts. NON réalisé : src/b.ts (trop complexe).", "src/a.ts", False),
+    ("Réalisé : src/a.ts, src/c.ts. NON réalisé : src/b.ts (trop complexe).", "src/b.ts", True),
+    # Plusieurs chemins listés APRÈS une même mention négative sont tous retirés.
+    ("NON réalisé : src/b.ts, src/d.ts (trop gros)", "src/b.ts", True),
 ])
 def test_is_withdrawn(text, path, expected):
     assert (path in cq._withdrawn_paths(text, [path])) is expected
+
+
+def test_is_withdrawn_with_full_candidate_set():
+    # _withdrawn_paths est TOUJOURS appelée en production avec l'ensemble des chemins connus
+    # (voir _diagnostic_guardrail : list(merged) + sorted(delivered_now)) — ces deux cas de
+    # liste ne peuvent être jugés correctement qu'avec les DEUX chemins comme candidats : un
+    # chemin absent des candidats ne peut pas être "traversé" pour continuer la liste.
+    withdrawn = cq._withdrawn_paths(
+        "Réalisé : src/a.ts, src/c.ts. NON réalisé : src/b.ts (trop complexe).",
+        ["src/a.ts", "src/b.ts", "src/c.ts"],
+    )
+    assert withdrawn == {"src/b.ts"}
+    withdrawn = cq._withdrawn_paths("NON réalisé : src/b.ts, src/d.ts (trop gros)", ["src/b.ts", "src/d.ts"])
+    assert withdrawn == {"src/b.ts", "src/d.ts"}
 
 
 @pytest.mark.parametrize("text", [

@@ -618,21 +618,47 @@ _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$"
 # Mention POSITIVE ("src/a.ts réalisé, src/b.ts NON réalisé") : ce qui la précède appartient à
 # une autre proposition. Plus fiable qu'une ponctuation (",", "|" d'un tableau Markdown...).
 _DONE_POSITIVE = re.compile(r"(?<!non\s)(?<!non\s\s)\br[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)", re.IGNORECASE)
-# Séparateur toléré entre un mot positif et le chemin qui le suit immédiatement ("Réalisé :
-# src/a.ts", "Réalisé — src/a.ts") : ce chemin est "réclamé" par la mention positive, jamais
-# disponible pour un retrait plus loin sur la même ligne (voir le point 1 de _withdrawn_paths).
-_POSITIVE_PATH_SEPARATOR = re.compile(r"[\s:—–-]{0,5}")
+# Séparateur toléré entre deux chemins d'une même liste ("src/a.ts, src/c.ts") ou entre un mot
+# positif/négatif et le premier chemin qui le suit immédiatement ("Réalisé : src/a.ts",
+# "NON réalisé : src/b.ts, src/d.ts") : la virgule n'est acceptée qu'ENTRE deux chemins déjà
+# consommés (voir _consume_adjacent_paths), jamais pour le tout premier séparateur.
+_ADJACENT_PATH_SEPARATOR = re.compile(r"[\s:—–-]{0,5}")
+_LIST_SEPARATOR = re.compile(r"[\s,:—–-]{0,5}")
+
+
+def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int, set[str]]:
+    """Consomme, à partir de `start`, une liste de chemins séparés par des virgules
+    ("src/a.ts, src/c.ts") tant qu'un chemin candidat suit immédiatement (au plus un séparateur
+    court entre deux). Renvoie (position juste après le dernier chemin consommé, chemins
+    trouvés) : ces chemins sont "réclamés" par le mot qui précède `start`, jamais disponibles
+    pour un retrait/une conservation décidé par une AUTRE mention plus loin sur la ligne."""
+    found: set[str] = set()
+    pos = start
+    separator = _ADJACENT_PATH_SEPARATOR
+    while True:
+        sep = separator.match(text, pos)
+        matched = next(
+            ((path, m.end()) for path, pattern in patterns.items() if (m := pattern.match(text, sep.end()))),
+            None,
+        )
+        if not matched:
+            break
+        path, pos = matched
+        found.add(path)
+        separator = _LIST_SEPARATOR  # une virgule n'introduit un chemin SUIVANT qu'après le 1er.
+    return pos, found
+
 
 def _withdrawn_paths(text: str, candidates) -> set[str]:
     """Chemins de `candidates` que `text` déclare "NON réalisé" (retrait explicite), en une
     seule passe. Un chemin est retiré s'il figure, délimité exactement (pas "src/App.tsx.bak"
     pour "src/App.tsx", "./" ou "/" initial toléré), dans la même proposition que la mention,
     AVANT elle ("src/a.ts, src/b.ts — NON réalisés", une ligne de tableau "| src/a.ts | NON
-    réalisé |") OU APRÈS elle ("NON réalisé : src/b.ts (raison)"). Une mention positive
-    ("réalisé") immédiatement suivie de SON chemin ("Réalisé : src/a.ts. NON réalisé : ...")
-    réclame ce chemin, qui n'est alors jamais retirable par une mention plus loin sur la ligne —
-    ni "src/a.ts" dans "src/a.ts réalisé, src/b.ts NON réalisé". Une mention niée ("rien de NON
-    réalisé") et le contenu des fichiers livrés (entre balises) sont ignorés."""
+    réalisé |") OU APRÈS elle ("NON réalisé : src/b.ts, src/d.ts (raison)"). Une mention positive
+    ("réalisé") immédiatement suivie d'UNE OU PLUSIEURS de ses chemins ("Réalisé : src/a.ts,
+    src/c.ts. NON réalisé : src/b.ts") les réclame tous, jamais retirables par une mention plus
+    loin sur la ligne — ni "src/a.ts" dans "src/a.ts réalisé, src/b.ts NON réalisé". Une mention
+    niée ("rien de NON réalisé") et le contenu des fichiers livrés (entre balises) sont ignorés."""
     patterns = {
         path: re.compile(r"(?<![\w./-])(?:\./|/)?" + re.escape(path) + r"(?![\w/-]|\.\w)")
         for path in candidates
@@ -646,26 +672,17 @@ def _withdrawn_paths(text: str, candidates) -> set[str]:
             positives = list(_DONE_POSITIVE.finditer(before))
             cut = positives[-1].end() if positives else 0
             if positives:
-                # Le mot positif est-il immédiatement suivi d'un chemin ? Si oui, ce chemin est
-                # à lui — on étend la coupure pour l'exclure de `clause` (voir docstring).
-                tail = before[cut:]
-                sep = _POSITIVE_PATH_SEPARATOR.match(tail)
-                for path, pattern in patterns.items():
-                    claimed = pattern.match(tail, sep.end())
-                    if claimed:
-                        cut += claimed.end()
-                        break
+                # Le mot positif est-il immédiatement suivi d'un ou plusieurs chemins ? Si oui,
+                # ils sont à lui — on étend la coupure pour les exclure de `clause` (docstring).
+                cut, _claimed = _consume_adjacent_paths(before, cut, patterns)
             clause = before[cut:]
             withdrawn.update(path for path, pattern in patterns.items() if pattern.search(clause))
-            # Côté "après" : seulement un chemin IMMÉDIATEMENT adjacent ("NON réalisé : src/b.ts",
-            # séparé au plus par un ":"/tiret/espace) — jamais un chemin cité plus loin dans une
-            # raison entre parenthèses ("NON réalisé (remplacé par src/new.ts)"), qui décrit
-            # autre chose que ce qui est retiré.
-            after_start = match.end()
-            after_sep = _POSITIVE_PATH_SEPARATOR.match(line, after_start)
-            for path, pattern in patterns.items():
-                if pattern.match(line, after_sep.end()):
-                    withdrawn.add(path)
+            # Côté "après" : seulement les chemins IMMÉDIATEMENT adjacents à la mention (une
+            # liste à la virgule y compris) — jamais un chemin cité plus loin dans une raison
+            # entre parenthèses ("NON réalisé (remplacé par src/new.ts)"), qui décrit autre
+            # chose que ce qui est retiré.
+            _, after_claimed = _consume_adjacent_paths(line, match.end(), patterns)
+            withdrawn.update(after_claimed)
     return withdrawn
 
 # Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
@@ -675,8 +692,13 @@ def _withdrawn_paths(text: str, candidates) -> set[str]:
 # valeur qui n'est pas en MAJUSCULES ne doit être suivie ni d'un tiret collé ni d'un mot en
 # minuscules ; en MAJUSCULES (la forme demandée à la QA), tout est accepté ("NO_GO car ...").
 _VERDICT_VALUES = r"GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO"
+# Deux formes de séparateur, DISTINCTES pour ne pas se gêner l'une l'autre : ":"/tiret dans une
+# marge large (60 car., "|" toléré dedans — ex: "Verdict (2 échecs | tolérés) : GO", un "|"
+# incident dans le texte ne doit jamais empêcher d'atteindre le ":" voulu plus loin) ; "|" d'un
+# tableau Markdown seulement TOUT PRÈS de "verdict" (8 car., sans ":" ni "|" avant lui, la
+# cellule d'un tableau n'en contenant normalement aucun) — ex: "| Verdict | GO |".
 QA_VERDICT = re.compile(
-    r"(?i:verdict)[^:\n—–=|-]{0,60}(?:[:—–=|]|[ \t*]*\r?\n)\s*\W{0,8}"
+    r"(?i:verdict)(?:[^:\n—–=-]{0,60}[:—–=]|[^|:\n]{0,8}\||[ \t*]*\r?\n)\s*\W{0,8}"
     r"(?:(?P<eol>(?i:" + _VERDICT_VALUES + r"))(?![\w-])(?![ \t]+[a-zà-ÿ])"
     r"|(?P<upper>" + _VERDICT_VALUES + r")(?![\w-]))",
 )
