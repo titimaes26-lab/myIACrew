@@ -1,6 +1,29 @@
 export interface CrewResultSection {
   agentName: string | null;
   content: string;
+  // Temps d'exécution de l'agent en secondes (Task.execution_duration côté CrewAI),
+  // extrait du marqueur <!--agent-duration:...--> écrit par le backend (voir
+  // extractAgentDuration) ; absent si l'agent n'a pas encore terminé ou si la durée
+  // n'a pas pu être mesurée.
+  durationSeconds?: number | null;
+}
+
+// Marqueur écrit par le backend (_persist_completed_agent/_format_crew_result, voir
+// backend/main.py et backend/crewquestion.py) juste après le heading "## AgentName" de
+// chaque section, quand la durée d'exécution de l'agent est connue. Pas ancré en début de
+// chaîne : selon l'origine de la section (résultat final déjà découpé par toSection, ou
+// valeur brute de turn.completedAgents qui commence encore par "## AgentName\n\n", voir
+// ChatMessage.tsx), le marqueur peut ne pas être en toute première position.
+const DURATION_MARKER = /<!--agent-duration:([\d.]+)-->\n*/;
+
+export function extractAgentDuration(raw: string): { durationSeconds: number | null; content: string } {
+  const match = raw.match(DURATION_MARKER);
+  if (!match || match.index === undefined) {
+    return { durationSeconds: null, content: raw };
+  }
+  const durationSeconds = parseFloat(match[1]);
+  const content = raw.slice(0, match.index) + raw.slice(match.index + match[0].length);
+  return { durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null, content };
 }
 
 // Rôles déclarés dans backend/agentsquestion.yaml : seul un titre "## <rôle exact>"
@@ -43,9 +66,11 @@ function isKnownAgentHeading(headingText: string): boolean {
 function toSection(chunk: string): CrewResultSection {
   const match = chunk.match(AGENT_HEADING);
   if (match) {
-    return { agentName: match[1].trim(), content: match[2].trim() };
+    const { durationSeconds, content } = extractAgentDuration(match[2].trim());
+    return { agentName: match[1].trim(), content, durationSeconds };
   }
-  return { agentName: null, content: chunk };
+  const { durationSeconds, content } = extractAgentDuration(chunk);
+  return { agentName: null, content, durationSeconds };
 }
 
 function parseAgentSections(raw: string): CrewResultSection[] {

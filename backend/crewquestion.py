@@ -96,6 +96,21 @@ def track_execution_metrics():
     finally:
         _current_metrics.reset(token)
 
+# Partagés entre retry_on_rate_limit_async (ci-dessous, utilisé par analyze_user_request) et le
+# retry résumable de run_dynamic_crew (plus bas) : une seule définition de "qu'est-ce qu'une
+# erreur transitoire" et "combien de temps attendre", pour que les deux mécanismes de retry ne
+# puissent jamais diverger silencieusement si l'un est mis à jour (ex: nouveau message d'erreur
+# Gemini à reconnaître) sans que l'autre le soit.
+def _is_retryable_error(err_msg: str) -> bool:
+    return any(marker in err_msg for marker in (
+        "429", "resource_exhausted", "rate limit", "quota",
+        "503", "unavailable", "high demand", "overloaded",
+    ))
+
+def _compute_backoff_wait(err_msg: str, retries: int, base_delay: float) -> float:
+    match = re.search(r'retry after (\d+(\.\d+)?)', err_msg)
+    return float(match.group(1)) + 2.0 if match else base_delay * (2 ** (retries - 1))
+
 def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
@@ -109,16 +124,11 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     err_msg = str(e).lower()
-                    is_retryable = any(marker in err_msg for marker in (
-                        "429", "resource_exhausted", "rate limit", "quota",
-                        "503", "unavailable", "high demand", "overloaded",
-                    ))
-                    if is_retryable:
+                    if _is_retryable_error(err_msg):
                         retries += 1
                         if retries > max_retries:
                             raise e
-                        match = re.search(r'retry after (\d+(\.\d+)?)', err_msg)
-                        wait_time = float(match.group(1)) + 2.0 if match else base_delay * (2 ** (retries - 1))
+                        wait_time = _compute_backoff_wait(err_msg, retries, base_delay)
                         if m is not None:
                             m.record_rate_limit(wait_time)
                         await asyncio.sleep(wait_time)
@@ -130,7 +140,7 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
 class QuotaManager:
     def __init__(self):
         self.last_execution_time = 0.0
-        self.min_interval_seconds = 5.0
+        self.min_interval_seconds = 2.0
 
     def adaptive_pause(self, task_output=None):
         elapsed = time.time() - self.last_execution_time
@@ -171,7 +181,7 @@ def _iter_task_sections(result):
         raw = raw if raw is not None else str(task_output)
         yield agent_name, raw
 
-def _format_crew_result(result) -> str:
+def _format_crew_result(result, task_durations: Optional[dict[str, float]] = None) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
     result.raw ne reflète que la sortie de la dernière tâche du crew. Pour un workflow
@@ -179,13 +189,26 @@ def _format_crew_result(result) -> str:
     contenu produit par les tâches précédentes serait sinon silencieusement perdu et
     jamais renvoyé à l'utilisateur.
 
+    task_durations : mapping optionnel agent_name -> secondes d'exécution (voir
+    run_dynamic_crew, construit depuis Task.execution_duration). Quand une durée est
+    connue pour un agent, elle est encodée juste après son heading via le même marqueur
+    HTML que celui écrit par _persist_completed_agent (main.py), pour que le frontend
+    n'ait qu'une seule logique d'extraction à implémenter, que la section vienne du
+    polling progressif ou de ce résultat final.
+
     Format final: sections séparées par AGENT_SECTION_SEPARATOR ("\n\n---\n\n")
     """
     tasks_output = getattr(result, "tasks_output", None)
     if not tasks_output or len(tasks_output) <= 1:
         return str(result.raw) if hasattr(result, "raw") else str(result)
 
-    sections = [f"## {agent_name}\n\n{raw}" for agent_name, raw in _iter_task_sections(result)]
+    sections = []
+    for agent_name, raw in _iter_task_sections(result):
+        duration = (task_durations or {}).get(agent_name)
+        if duration is not None:
+            sections.append(f"## {agent_name}\n<!--agent-duration:{duration:.2f}-->\n\n{raw}")
+        else:
+            sections.append(f"## {agent_name}\n\n{raw}")
     return AGENT_SECTION_SEPARATOR.join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
@@ -296,17 +319,28 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
 
-def _make_llm(temperature: float) -> LLM:
-    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=120)
+def _make_llm(temperature: float, request_timeout: int = 120) -> LLM:
+    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=request_timeout)
 
 # Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
 # vérifier demande de la constance ; seule la conception fonctionnelle gagne à rester créative.
-qualification_llm = _make_llm(0.1)
-designer_llm = _make_llm(0.5)
-architect_llm = _make_llm(0.3)
-diagnostic_llm = _make_llm(0.2)
-developer_llm = _make_llm(0.0)
-qa_llm = _make_llm(0.2)
+# request_timeout borne UN appel LLM (pas toute la tâche, qui peut en enchaîner max_iter) : un
+# timeout unique de 120s pour tous les agents faisait attendre aussi longtemps un appel de
+# classification JSON (qualification) qu'une génération de fichiers complets (diagnostic) avant
+# de considérer l'appel bloqué et de déclencher le retry litellm — au détriment de la détection
+# rapide d'un appel réellement figé sur les agents les plus légers.
+qualification_llm = _make_llm(0.1, request_timeout=45)   # sortie JSON structurée, sans outil
+designer_llm = _make_llm(0.5, request_timeout=90)        # texte de specs + quelques lectures
+architect_llm = _make_llm(0.3, request_timeout=90)       # idem, texte d'architecture
+diagnostic_llm = _make_llm(0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
+developer_llm = _make_llm(0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
+                                                          # complet de diagnostic_task (potentiellement volumineux,
+                                                          # voir diagnostic_llm) et peut devoir en recopier des
+                                                          # extraits dans un appel github_write_file(s) de repli
+                                                          # (voir developer_agent) : pas aussi bas que le 60s
+                                                          # initialement envisagé pour "peu de texte généré", pour
+                                                          # ne pas risquer de couper ce repli sur une grosse livraison.
+qa_llm = _make_llm(0.2, request_timeout=90)               # appels d'outils + rapport final
 
 # Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
 # du reste sans ambiguïté (voir parseCrewResult.ts). Un simple titre "## Résumé" pourrait
@@ -1183,8 +1217,7 @@ class AppDevelopmentCrew():
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-    @retry_on_rate_limit_async(max_retries=5, base_delay=15.0)
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str], None]] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
@@ -1222,119 +1255,198 @@ class AppDevelopmentCrew():
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]
-        selected_agents = list({task.agent for task in selected_tasks})
+        total_steps = len(selected)
 
-        completed_count = 0
+        # Retry RÉSUMABLE (remplace l'ancien @retry_on_rate_limit_async posé sur toute la
+        # méthode) : sur une erreur de quota/rate-limit survenant APRÈS que certaines tâches ont
+        # déjà terminé, seules les tâches RESTANTES sont rejouées — jamais celles déjà réussies.
+        # Les objets Task de `selected` sont créés UNE SEULE FOIS ci-dessus (pas reconstruits à
+        # chaque tentative comme avant, où self.architecture_task() etc. renvoyaient certes le
+        # même objet mémoïsé mais celui-ci était quand même réinclus dans un crew complet et donc
+        # ré-exécuté depuis zéro) : une tâche déjà terminée, simplement exclue du prochain
+        # sous-crew, continue de fournir sa sortie aux tâches suivantes qui l'attendent en
+        # contexte — aggregate_raw_outputs_from_tasks (crewai/utilities/formatter.py) ne lit que
+        # `task.output` (posé par CrewAI sur l'objet Task lui-même après exécution), sans exiger
+        # que cette tâche appartienne au crew en cours d'exécution.
+        completed_keys: list[str] = []
+        completed_outputs: dict[str, Any] = {}
+        max_retries, base_delay = 5, 15.0
+        retries = 0
 
-        def on_task_complete(task_output):
-            nonlocal completed_count
-            completed_count += 1
-            quota_mgr.adaptive_pause(task_output)
-
-            # Persister la sortie complétée de l'agent pour affichage progressif
-            # Validation et nettoyage des données feront faits dans _persist_completed_agent (main.py)
-            if on_task_output_complete is not None and completed_count <= len(selected_tasks):
-                task_obj = selected_tasks[completed_count - 1]
-                agent_name = (task_obj.agent.role or "Agent").strip()
-                # Extraire la sortie brute (même logique que _format_crew_result)
-                raw_output = getattr(task_output, "raw", None)
-                raw_output = raw_output if raw_output is not None else str(task_output)
-                # Validation basique: éviter les None
-                if raw_output is None:
-                    raw_output = ""
-                try:
-                    on_task_output_complete(agent_name, raw_output)
-                except Exception as e:
-                    # Best-effort: ne pas laisser une erreur de persistance casser le workflow
-                    print(f"AVERTISSEMENT : échec du callback on_task_output_complete pour '{agent_name}' : {type(e).__name__}: {e}", flush=True)
-
-            # Annonce la tâche SUIVANTE qui démarre (pas celle qui vient de finir) : rien à
-            # annoncer après la dernière (le résultat est ensuite juste agrégé/résumé, sans
-            # étape agent supplémentaire pour l'utilisateur).
-            if on_step_change is not None and completed_count < len(selected_tasks):
-                on_step_change(step_keys[completed_count])
-
-        if on_step_change is not None:
-            # Rejoué à l'identique par retry_on_rate_limit_async (décorateur sur cette méthode)
-            # si une erreur de quota/rate-limit survient plus loin : selected_tasks est
-            # entièrement reconstruit à zéro à chaque nouvelle tentative (self.architecture_task()
-            # etc. recréent des Task neufs), donc les tâches déjà terminées lors d'une tentative
-            # précédente sont réellement refaites depuis le début, pas juste réaffichées. La
-            # progression annoncée ici reflète donc fidèlement ce qui se passe réellement (retour
-            # à la première étape), même si ça peut surprendre après avoir vu 'qa' s'afficher.
-            #
-            # await asyncio.to_thread(...) et non un appel direct : contrairement aux appels
-            # suivants (déclenchés par task_callback depuis le thread d'arrière-plan de
-            # kickoff_async, voir on_task_complete ci-dessus), CE point du code s'exécute encore
-            # sur le thread de la boucle asyncio elle-même (avant le premier `await
-            # kickoff_async`). on_step_change effectue une écriture DB synchrone bloquante (voir
-            # _persist_current_step, main.py) : l'appeler ici directement bloquerait la boucle
-            # asyncio, et donc TOUTES les autres requêtes concurrentes servies par ce même
-            # worker, le temps de l'aller-retour réseau vers la base — à chaque exécution ET à
-            # chaque nouvelle tentative sur rate-limit.
-            await asyncio.to_thread(on_step_change, step_keys[0])
-
-        dynamic_crew = Crew(
-            agents=selected_agents,
-            tasks=selected_tasks,
-            process=Process.sequential,
-            task_callback=on_task_complete,
-            # 13 (pas 3) : partagé par TOUS les agents de ce crew en séquence (design,
-            # architecture, diagnostic, development, qa) — qa_task étant dernier et ayant le
-            # max_iter le plus élevé (10, voir qa_agent), c'est lui qui hérite le plus de la
-            # latence cumulée d'un plafond trop bas. Relevé sur demande explicite pour réduire
-            # cette latence ; retry_on_rate_limit_async (plus haut) absorbe toujours les 429
-            # transitoires si cette valeur s'avère trop optimiste face au quota Gemini réel.
-            max_rpm=13,
-            output_log_file='crew_execution.log',
-            verbose=True
-        )
         try:
-            # track_edit_failures() : isole le suivi des échecs répétés de github_edit_file
-            # (voir github_tools.py) à CETTE exécution, pour qu'il ne se souvienne pas à tort
-            # d'échecs d'un tour précédent sur le même work_branch réutilisé (voir la docstring
-            # de _edit_failure_counts dans github_tools.py pour le raisonnement complet).
-            with track_edit_failures():
-                result = await dynamic_crew.kickoff_async(inputs=inputs)
-        except Exception as e:
-            # Identifie la tâche qui était en cours au moment de l'échec (celle juste
-            # après la dernière complétée avec succès) pour que le frontend puisse
-            # afficher "échec pendant X" plutôt qu'une erreur générique. Si toutes les
-            # tâches ont déjà déclenché leur callback (échec après coup, ex: pendant
-            # l'agrégation du résultat par crewai), on ne dépasse pas total_steps.
-            if completed_count < len(selected_tasks):
-                step_index = completed_count + 1
-                agent_role = selected_tasks[completed_count].agent.role
-            else:
-                step_index = len(selected_tasks)
-                agent_role = "finalisation du résultat"
-            if on_step_change is not None:
-                # Plus aucune étape n'est réellement en cours à cet instant, que cette erreur
-                # finisse par être définitive OU rejouée par retry_on_rate_limit_async (dans ce
-                # dernier cas, ce même appel repartira du tout début — voir plus haut) : entre
-                # les deux, l'exécution est simplement à l'arrêt, potentiellement pendant
-                # plusieurs minutes d'attente (retry_on_rate_limit_async attend jusqu'à 2^4 fois
-                # base_delay avant de rejouer). Sans ce nettoyage, ExecutionHistory.current_step
-                # resterait affiché comme "suivi en direct" (StepIndicator.tsx) sur la dernière
-                # étape connue alors que rien n'est concrètement en train de s'exécuter — un
-                # message "Échec à l'étape X/Y" bien plus précis (step_index/agent_role
-                # ci-dessus) existe déjà pour indiquer où ça s'est arrêté (voir CrewStepError,
-                # parseFailureDetail côté frontend), current_step n'a donc pas besoin de faire
-                # doublon comme trace diagnostique.
-                await asyncio.to_thread(on_step_change, None)
-            raise CrewStepError(step_index, len(selected_tasks), agent_role, e) from e
+            while True:
+                remaining = [(k, t) for k, t in selected if k not in completed_keys]
+
+                # diagnostic_task n'a pas encore complété (elle est toujours dans `remaining`) :
+                # si elle avait déjà entamé un cycle guardrail (_diagnostic_guardrail_failures,
+                # potentiellement incrémenté au-delà de 0, voir _diagnostic_guardrail) avant
+                # qu'une erreur de quota n'interrompe l'exécution EN COURS de cette tâche, cette
+                # prochaine tentative la relance depuis zéro (agent ré-invoqué au tout début) et
+                # doit donc repartir avec un budget guardrail intact, pas celui, entamé,
+                # d'une tentative avortée — sinon le premier souci constaté sur cette nouvelle
+                # exécution pourrait être accepté avec un simple avertissement au lieu du droit
+                # normal à une correction. `_analyst_files`/`_not_extracted` (fusionnés au fil des
+                # cycles guardrail d'UNE MÊME exécution de la tâche, voir sa docstring) sont
+                # repartis à zéro pour la même raison : ceux d'une tentative avortée ne
+                # correspondent à aucune sortie réellement produite par cette nouvelle exécution.
+                if any(k == 'diagnostic' for k, _ in remaining):
+                    self._diagnostic_guardrail_failures = 0
+                    self._analyst_files = []
+                    self._not_extracted = {}
+
+                if not remaining:
+                    # Toutes les tâches déjà terminées lors d'une tentative précédente : ne peut
+                    # arriver que si l'échec précédent survenait APRÈS la dernière (agrégation
+                    # CrewAI) et était retryable — plus rien à exécuter.
+                    break
+
+                remaining_tasks = [t for _, t in remaining]
+                remaining_agents = list({t.agent for t in remaining_tasks})
+                attempt_completed = 0
+
+                def on_task_complete(task_output, _remaining=remaining):
+                    nonlocal attempt_completed
+                    attempt_completed += 1
+                    quota_mgr.adaptive_pause(task_output)
+
+                    # Garde-fou (comme l'ancien `completed_count <= len(selected_tasks)`) : si
+                    # CrewAI invoquait jamais task_callback plus de fois qu'il n'y a de tâches
+                    # dans CETTE tentative, ignorer l'appel en trop plutôt que de lever une
+                    # IndexError depuis le thread d'arrière-plan de kickoff_async.
+                    if attempt_completed > len(_remaining):
+                        return
+                    key, task_obj = _remaining[attempt_completed - 1]
+                    completed_keys.append(key)
+                    completed_outputs[key] = task_output
+
+                    # Persister la sortie complétée de l'agent pour affichage progressif
+                    # Validation et nettoyage des données feront faits dans _persist_completed_agent (main.py)
+                    if on_task_output_complete is not None:
+                        agent_name = (task_obj.agent.role or "Agent").strip()
+                        # Extraire la sortie brute (même logique que _format_crew_result)
+                        raw_output = getattr(task_output, "raw", None)
+                        raw_output = raw_output if raw_output is not None else str(task_output)
+                        # Validation basique: éviter les None
+                        if raw_output is None:
+                            raw_output = ""
+                        # task_obj.execution_duration : propriété CrewAI (start_time/end_time posés
+                        # en interne pendant task_obj.execute()), None si l'un des deux est absent.
+                        duration = task_obj.execution_duration
+                        try:
+                            on_task_output_complete(agent_name, raw_output, duration)
+                        except Exception as e:
+                            # Best-effort: ne pas laisser une erreur de persistance casser le workflow
+                            print(f"AVERTISSEMENT : échec du callback on_task_output_complete pour '{agent_name}' : {type(e).__name__}: {e}", flush=True)
+
+                    # Annonce la tâche SUIVANTE qui démarre (pas celle qui vient de finir), en
+                    # indice GLOBAL sur l'ensemble des étapes (pas relatif à cette seule
+                    # tentative) : rien à annoncer après la dernière (le résultat est ensuite
+                    # juste agrégé/résumé, sans étape agent supplémentaire pour l'utilisateur).
+                    next_index = len(completed_keys)
+                    if on_step_change is not None and next_index < total_steps:
+                        on_step_change(step_keys[next_index])
+
+                if on_step_change is not None:
+                    # await asyncio.to_thread(...) et non un appel direct : ce point du code
+                    # s'exécute encore sur le thread de la boucle asyncio elle-même (avant le
+                    # premier `await kickoff_async`), contrairement aux appels suivants
+                    # (déclenchés par task_callback depuis le thread d'arrière-plan de
+                    # kickoff_async, voir on_task_complete ci-dessus). on_step_change effectue
+                    # une écriture DB synchrone bloquante (voir _persist_current_step, main.py) :
+                    # l'appeler ici directement bloquerait la boucle asyncio, et donc TOUTES les
+                    # autres requêtes concurrentes servies par ce même worker.
+                    # step_keys[len(completed_keys)] (pas systématiquement step_keys[0]) : une
+                    # reprise redémarre à la prochaine tâche RESTANTE, pas depuis le début.
+                    await asyncio.to_thread(on_step_change, step_keys[len(completed_keys)])
+
+                dynamic_crew = Crew(
+                    agents=remaining_agents,
+                    tasks=remaining_tasks,
+                    process=Process.sequential,
+                    task_callback=on_task_complete,
+                    # 13 (pas 3) : partagé par TOUS les agents de ce crew en séquence (design,
+                    # architecture, diagnostic, development, qa) — qa_task étant dernier et ayant
+                    # le max_iter le plus élevé (10, voir qa_agent), c'est lui qui hérite le plus
+                    # de la latence cumulée d'un plafond trop bas. Relevé sur demande explicite
+                    # pour réduire cette latence ; le retry résumable ci-dessous absorbe toujours
+                    # les 429 transitoires si cette valeur s'avère trop optimiste face au quota
+                    # Gemini réel.
+                    max_rpm=13,
+                    output_log_file='crew_execution.log',
+                    verbose=True
+                )
+
+                m = _current_metrics.get()
+                if m is not None:
+                    m.record_call()
+                try:
+                    # track_edit_failures() : isole le suivi des échecs répétés de
+                    # github_edit_file (voir github_tools.py) à CETTE exécution, pour qu'il ne se
+                    # souvienne pas à tort d'échecs d'un tour précédent sur le même work_branch
+                    # réutilisé (voir la docstring de _edit_failure_counts dans github_tools.py
+                    # pour le raisonnement complet).
+                    with track_edit_failures():
+                        await dynamic_crew.kickoff_async(inputs=inputs)
+                    break  # succès : toutes les tâches de `remaining` ont rejoint completed_keys
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    if _is_retryable_error(err_msg) and retries < max_retries:
+                        retries += 1
+                        wait_time = _compute_backoff_wait(err_msg, retries, base_delay)
+                        if m is not None:
+                            m.record_rate_limit(wait_time)
+                        if on_step_change is not None:
+                            # Plus aucune étape n'est réellement en cours pendant l'attente avant
+                            # la prochaine tentative (jusqu'à plusieurs minutes) : même nettoyage
+                            # que pour l'échec définitif ci-dessous, voir son commentaire.
+                            await asyncio.to_thread(on_step_change, None)
+                        await asyncio.sleep(wait_time)
+                        continue  # nouvelle tentative, `remaining` recalculé sans les tâches déjà réussies
+
+                    # Erreur définitive (non retryable, ou retries épuisés) : identifie la tâche
+                    # en cours au moment de l'échec (celle juste après la dernière complétée,
+                    # GLOBALEMENT sur l'ensemble des tentatives) pour que le frontend affiche
+                    # "échec à l'étape X/Y" plutôt qu'une erreur générique. Si toutes les tâches
+                    # de cette tentative ont déjà déclenché leur callback (échec après coup, ex:
+                    # pendant l'agrégation du résultat par crewai), on ne dépasse pas total_steps.
+                    if attempt_completed < len(remaining):
+                        step_index = len(completed_keys) + 1
+                        agent_role = remaining[attempt_completed][1].agent.role
+                    else:
+                        step_index = total_steps
+                        agent_role = "finalisation du résultat"
+                    if on_step_change is not None:
+                        # Plus aucune étape n'est réellement en cours à cet instant : sans ce
+                        # nettoyage, ExecutionHistory.current_step resterait affiché comme "suivi
+                        # en direct" (StepIndicator.tsx) sur la dernière étape connue alors que
+                        # rien n'est concrètement en train de s'exécuter — un message "Échec à
+                        # l'étape X/Y" bien plus précis (step_index/agent_role ci-dessus) existe
+                        # déjà pour indiquer où ça s'est arrêté (voir CrewStepError,
+                        # parseFailureDetail côté frontend), current_step n'a donc pas besoin de
+                        # faire doublon comme trace diagnostique.
+                        await asyncio.to_thread(on_step_change, None)
+                    raise CrewStepError(step_index, total_steps, agent_role, e) from e
         finally:
-            # _evict_memoized_cache_entries(self) : self.design_task()/architecture_task()/
-            # development_task()/qa_task() sont décorées @task par crewai, qui les MÉMOÏSE par
-            # (nom de méthode, id(self)) dans un cache module-level SANS éviction native — voir
-            # crewai/project/utils.py et la docstring de cette fonction. Purge ici, à la fin de
-            # CETTE exécution, les entrées qu'elle y a laissées : sans ça, ce cache grossit sans
-            # limite sur la durée de vie du process (une poignée d'entrées orphelines par
-            # exécution, jamais nettoyées), un risque réel de mémoire sur un service à ressources
-            # limitées (ex: plan gratuit Render) qui enchaîne de nombreuses exécutions.
+            # _evict_memoized_cache_entries(self) + t.callback = None : une SEULE fois pour
+            # TOUTE l'exécution (succès ou échec définitif), pas à chaque tentative de la boucle
+            # ci-dessus. self.diagnostic_task()/architecture_task()/etc. sont décorées @task par
+            # crewai, qui les MÉMOÏSE par (nom de méthode, id(self)) dans un cache module-level
+            # SANS éviction native — voir crewai/project/utils.py et la docstring de
+            # _evict_memoized_cache_entries. Purger ce cache ENTRE deux tentatives (comme le
+            # faisait une version antérieure de cette boucle) casserait la reprise : une tâche
+            # pas encore exécutée dont le guardrail référence à nouveau self.diagnostic_task()
+            # (voir _diagnostic_retry_context) obtiendrait alors un objet Task tout NEUF, sans le
+            # `.context` câblé plus haut vers design_task/architecture_task, plutôt que l'objet
+            # mémoïsé qui le porte déjà. Un léger surplus d'entrées orphelines peut donc
+            # transiter par tentative intermédiaire en cas de reprise, mais elles restent purgées
+            # dès la fin de CETTE exécution — le cache ne grossit jamais au-delà de la durée d'un
+            # seul run_dynamic_crew, ce qui reste suffisant pour éviter la fuite mémoire visée
+            # (un service à ressources limitées, ex: plan gratuit Render, qui enchaîne de
+            # nombreuses exécutions).
             _evict_memoized_cache_entries(self)
 
-            # t.callback = None : filet de sécurité résiduel, plus le mécanisme principal
+            # t.callback = None sur TOUTES les tâches sélectionnées (pas seulement celles de la
+            # dernière tentative) : filet de sécurité résiduel, plus le mécanisme principal
             # maintenant que le cache est activement purgé ci-dessus. main.py instancie un
             # AppDevelopmentCrew() dédié à CHAQUE exécution (`crew_for_this_execution`, jamais le
             # singleton crew_instance) précisément pour que `self` ait un id() distinct à chaque
@@ -1349,14 +1461,38 @@ class AppDevelopmentCrew():
             for t in selected_tasks:
                 t.callback = None
 
-        formatted = _format_crew_result(result)
+        # Résultat final reconstruit depuis les sorties accumulées par on_task_complete au fil de
+        # TOUTES les tentatives (et pas depuis le CrewOutput de la seule DERNIÈRE tentative, qui
+        # ne couvrirait que les tâches de ce sous-crew en cas de reprise) : dans l'ordre ORIGINAL
+        # des étapes (step_keys), pour que _format_crew_result/_generate_summary — qui ne lisent
+        # que .tasks_output et .raw, voir leurs docstrings — reconstruisent le même résultat
+        # combiné qu'une exécution sans aucun échec.
+        class _CombinedCrewResult:
+            def __init__(self, tasks_output):
+                self.tasks_output = tasks_output
+                self.raw = str(getattr(tasks_output[-1], "raw", "") or "") if tasks_output else ""
+
+        result = _CombinedCrewResult([completed_outputs[k] for k in step_keys if k in completed_outputs])
+
+        # execution_duration reste valide pour chaque Task déjà exécutée, quelle que soit la
+        # tentative qui l'a réellement exécutée (start_time/end_time sont posés sur l'objet Task
+        # lui-même, jamais réinitialisés entre tentatives puisque `selected_tasks` n'est construit
+        # qu'une seule fois en tête de fonction). Ignore les agents sans durée connue (tâche
+        # jamais exécutée après un échec définitif en cours de route) plutôt que d'y mettre None
+        # explicitement dans le dict, pour que _format_crew_result n'ait qu'un seul test.
+        task_durations = {
+            t.agent.role.strip(): t.execution_duration
+            for t in selected_tasks
+            if t.execution_duration is not None
+        }
+        formatted = _format_crew_result(result, task_durations)
 
         # last_execution_time n'est délibérément pas remis à jour avant cet appel :
         # on_task_complete() (task_callback ci-dessus) l'a déjà fait à la fin de la
         # dernière tâche. Le remettre à `time.time()` ici ferait toujours mesurer un
         # écart quasi nul à adaptive_pause() dans _generate_summary, forçant une pause
-        # maximale (5s) systématique au lieu d'une pause proportionnée au temps déjà
-        # écoulé depuis le dernier appel Gemini réel.
+        # maximale (min_interval_seconds, voir QuotaManager) systématique au lieu d'une
+        # pause proportionnée au temps déjà écoulé depuis le dernier appel Gemini réel.
         summary = await _generate_summary(inputs.get('user_request', ''), result)
         if summary:
             formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary}"

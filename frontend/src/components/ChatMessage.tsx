@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useMemo } from 'react';
 import type { ChatTurn } from '../types';
 import StepIndicator from './StepIndicator';
-import { parseCrewResult } from '../utils/parseCrewResult';
+import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
@@ -74,8 +74,9 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
 
     // Ajouter les agents progressivement reçus
     if (turn.completedAgents) {
-      Object.entries(turn.completedAgents).forEach(([agentName, content]) => {
-        allSections.push({ agentName, content });
+      Object.entries(turn.completedAgents).forEach(([agentName, rawContent]) => {
+        const { durationSeconds, content } = extractAgentDuration(rawContent);
+        allSections.push({ agentName, content, durationSeconds });
       });
     }
 
@@ -211,7 +212,13 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
                       <span aria-hidden="true">{agentIcon(section.agentName ?? 'Résultat')}</span>
                       <span>{section.agentName ?? 'Résultat'}</span>
                     </div>
-                    {section.agentName && <AgentSummary agentName={section.agentName} content={section.content} />}
+                    {section.agentName && (
+                      <AgentSummary
+                        agentName={section.agentName}
+                        content={section.content}
+                        durationSeconds={section.durationSeconds}
+                      />
+                    )}
                   </summary>
                   <div style={{ marginTop: '8px' }}>
                     <MarkdownRenderer content={section.content} />

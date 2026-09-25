@@ -225,5 +225,45 @@ class TestEdgeCases:
         assert result["Agent1"].startswith("## Agent1")
 
 
+class TestAgentDurationMarker:
+    """Tests pour le marqueur <!--agent-duration:...--> (temps d'exécution par agent).
+
+    _parse_completed_agents (main.py) ne fait qu'accumuler/redécouper le texte persisté
+    par _persist_completed_agent : il n'a pas besoin de comprendre ce marqueur, seulement
+    de le laisser traverser intact jusqu'au frontend (voir extractAgentDuration côté
+    frontend/src/utils/parseCrewResult.ts, qui l'extrait pour l'affichage).
+    """
+
+    def test_duration_marker_preserved_when_present(self):
+        """Le marqueur de durée survit au découpage/reconstruction d'une section."""
+        input_text = "## Agent1\n<!--agent-duration:12.34-->\n\n...content1..."
+        result = _parse_completed_agents_copy(input_text)
+
+        assert "Agent1" in result
+        assert "<!--agent-duration:12.34-->" in result["Agent1"]
+        assert "...content1..." in result["Agent1"]
+
+    def test_duration_marker_absent_leaves_content_unchanged(self):
+        """Sans marqueur (durée inconnue), le comportement reste celui d'avant cette
+        fonctionnalité : aucun artefact ajouté au contenu."""
+        input_text = "## Agent1\n\n...content1..."
+        result = _parse_completed_agents_copy(input_text)
+
+        assert "Agent1" in result
+        assert "<!--agent-duration" not in result["Agent1"]
+        assert "...content1..." in result["Agent1"]
+
+    def test_duration_marker_per_agent_in_multi_agent_result(self):
+        """Chaque agent garde SA PROPRE durée, sans mélange entre sections voisines."""
+        input_text = (
+            "## Agent1\n<!--agent-duration:5.00-->\n\n...content1...\n\n---\n\n"
+            "## Agent2\n\n...content2..."
+        )
+        result = _parse_completed_agents_copy(input_text)
+
+        assert "<!--agent-duration:5.00-->" in result["Agent1"]
+        assert "<!--agent-duration" not in result["Agent2"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
