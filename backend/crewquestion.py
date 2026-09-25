@@ -140,7 +140,7 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
 class QuotaManager:
     def __init__(self):
         self.last_execution_time = 0.0
-        self.min_interval_seconds = 2.0
+        self.min_interval_seconds = 5.0
 
     def adaptive_pause(self, task_output=None):
         elapsed = time.time() - self.last_execution_time
