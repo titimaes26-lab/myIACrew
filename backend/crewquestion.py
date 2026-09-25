@@ -1276,6 +1276,24 @@ class AppDevelopmentCrew():
         try:
             while True:
                 remaining = [(k, t) for k, t in selected if k not in completed_keys]
+
+                # diagnostic_task n'a pas encore complété (elle est toujours dans `remaining`) :
+                # si elle avait déjà entamé un cycle guardrail (_diagnostic_guardrail_failures,
+                # potentiellement incrémenté au-delà de 0, voir _diagnostic_guardrail) avant
+                # qu'une erreur de quota n'interrompe l'exécution EN COURS de cette tâche, cette
+                # prochaine tentative la relance depuis zéro (agent ré-invoqué au tout début) et
+                # doit donc repartir avec un budget guardrail intact, pas celui, entamé,
+                # d'une tentative avortée — sinon le premier souci constaté sur cette nouvelle
+                # exécution pourrait être accepté avec un simple avertissement au lieu du droit
+                # normal à une correction. `_analyst_files`/`_not_extracted` (fusionnés au fil des
+                # cycles guardrail d'UNE MÊME exécution de la tâche, voir sa docstring) sont
+                # repartis à zéro pour la même raison : ceux d'une tentative avortée ne
+                # correspondent à aucune sortie réellement produite par cette nouvelle exécution.
+                if any(k == 'diagnostic' for k, _ in remaining):
+                    self._diagnostic_guardrail_failures = 0
+                    self._analyst_files = []
+                    self._not_extracted = {}
+
                 if not remaining:
                     # Toutes les tâches déjà terminées lors d'une tentative précédente : ne peut
                     # arriver que si l'échec précédent survenait APRÈS la dernière (agrégation
