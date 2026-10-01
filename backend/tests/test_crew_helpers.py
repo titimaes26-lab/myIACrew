@@ -84,6 +84,29 @@ def test_low_confidence_forces_clarification_question():
     assert not report.is_clear and "correction d'un bug" in report.questions[0]
 
 
+def test_qualification_prompt_contains_examples_context_and_repo_line():
+    with_repo = cq._build_qualification_prompt("corrige ça", "Tour 1 : ajout d'un filtre", has_repo_target=True)
+    without_repo = cq._build_qualification_prompt("corrige ça")
+    assert cq.QUALIFICATION_EXAMPLES in with_repo
+    assert "Tour 1 : ajout d'un filtre" in with_repo
+    assert "Un repository GitHub cible est fourni." in with_repo
+    assert "Aucun repository GitHub cible n'est fourni." in without_repo
+    assert "Aucun échange précédent." in without_repo
+
+
+def test_qualification_examples_use_valid_request_types():
+    for line in cq.QUALIFICATION_EXAMPLES.splitlines():
+        if "->" in line:
+            assert line.split("->")[1].split()[0].strip(",") in cq._REQUEST_TYPES
+
+
+def test_qualification_task_is_gone_from_yaml():
+    import pathlib
+    tasks_yaml = (pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8")
+    assert "qualification_task" not in tasks_yaml
+    assert not hasattr(cq.AppDevelopmentCrew, "qualification_task")
+
+
 def test_local_writes_are_confined_to_workspace(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/App.tsx").write_text("old\n")

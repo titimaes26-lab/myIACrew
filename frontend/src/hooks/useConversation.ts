@@ -380,6 +380,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       base_branch: repoTarget.branch || undefined,
     };
 
+    const hasRepoTarget = Boolean(repoTarget.owner && repoTarget.name);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     // Capturé maintenant (jamais modifié par sendMessage lui-même, seulement lu) : si une
@@ -434,7 +435,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
           // perdre la réponse : on retombe sur le type provisoire, comme avant cette étape.
           let report: QualificationReport | null = null;
           try {
-            report = await api.qualify(clarifiedRequest, conversationId, controller.signal);
+            report = await api.qualify(clarifiedRequest, conversationId, hasRepoTarget, controller.signal);
           } catch (qualifyErr) {
             if (isAbortError(qualifyErr)) throw qualifyErr;
           }
@@ -490,7 +491,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       }
 
       pushRunningTurn();
-      const report = await api.qualify(text, conversationId, controller.signal);
+      const report = await api.qualify(text, conversationId, hasRepoTarget, controller.signal);
       // Abandonné si une navigation vers une autre conversation a eu lieu pendant cet await :
       // sans ce garde-fou, la suite (setPendingClarification notamment, état global non
       // propre à une conversation) modifierait à tort l'état de la conversation désormais

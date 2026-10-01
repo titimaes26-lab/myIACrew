@@ -273,6 +273,49 @@ def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
             ]
     return report
 
+QUALIFICATION_EXAMPLES = """\
+Exemples de cas limites (la grille de ta fiche reste la référence) :
+- "Refais la page de login" -> FEATURE, alternative DESIGN_AND_DEV, confidence 0.7 : un module d'un produit existant, sans reconception globale.
+- "Pourquoi la liste des commandes est lente ?" -> ANALYSE_ONLY, alternative BUGFIX, confidence 0.7 : l'utilisateur veut comprendre, pas de livraison de code.
+- "La recherche plante et ajoute aussi un filtre par date" -> BUGFIX, alternative FEATURE, confidence 0.5, is_clear false : deux intentions, demande de scinder ou de prioriser.
+- "Crée un jeu de gestion de ferme en React" -> DESIGN_AND_DEV, alternative null, confidence 0.9 : nouveau produit à concevoir puis développer.
+- Suivi "corrige ça" après un tour FEATURE dans le contexte -> BUGFIX, confidence 0.8 : le contexte précise l'objet du bug.
+- "Améliore l'appli" -> FEATURE, alternative ANALYSE_ONLY, confidence 0.3, is_clear false : aucun objet précis, poser une question fermée.
+"""
+
+def _build_qualification_prompt(user_prompt: str, conversation_context: str = "", has_repo_target: bool = False) -> str:
+    repo_line = (
+        "Un repository GitHub cible est fourni."
+        if has_repo_target
+        else "Aucun repository GitHub cible n'est fourni."
+    )
+    return f"""
+        Tu es le Spécialiste en Qualification / Senior Product Owner.
+        Voici la demande actuelle : "{user_prompt}"
+
+        Tours précédents de cette conversation (pour interpréter un message de suivi comme
+        "corrige ça" ou "ajoute aussi Y" ; ne décide JAMAIS sur ce seul contexte si la demande
+        actuelle dit autre chose) :
+        {conversation_context or "Aucun échange précédent."}
+
+        {repo_line}
+
+        {QUALIFICATION_EXAMPLES}
+        Applique la grille de décision de ta fiche, dans cet ordre :
+        1. summary : ce que tu as compris.
+        2. reasoning : les indices précis relevés dans la demande et la règle appliquée.
+        3. alternative_type : la 2e catégorie la plus plausible (ou null).
+        4. request_type : ta décision.
+        5. confidence : de 0 à 1. Sous {QUALIFICATION_CONFIDENCE_THRESHOLD}, is_clear doit être false.
+        6. is_clear, puis questions (2 à 4) si is_clear est false.
+
+        Règles pour les questions : fermées (réponse courte ou choix entre options). Si tu hésites
+        entre deux catégories, une question nomme ces deux catégories et demande de trancher.
+        Si la demande vise du code existant (BUGFIX ou FEATURE), qu'aucun repository n'est fourni
+        et que le contexte ci-dessus n'en mentionne aucun, pose une question sur le repository
+        concerné et mets is_clear à false.
+        """
+
 _REQUEST_TYPES = set(RequestType.__args__)
 
 def _as_bool(value: Any) -> bool:
@@ -904,10 +947,6 @@ class AppDevelopmentCrew():
         )
 
     @task
-    def qualification_task(self) -> Task:
-        return Task(config=self.tasks_config['qualification_task'], agent=self.qualification_agent(), output_file='docs/qualification_report.md')
-
-    @task
     def design_task(self) -> Task:
         return Task(config=self.tasks_config['design_task'], agent=self.product_designer_agent(), output_file='docs/specs_design.md')
 
@@ -1161,25 +1200,9 @@ class AppDevelopmentCrew():
         return read_a_files_content
 
     @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
-    async def analyze_user_request(self, user_prompt: str, conversation_context: str = "") -> QualificationResult:
+    async def analyze_user_request(self, user_prompt: str, conversation_context: str = "", has_repo_target: bool = False) -> QualificationResult:
         qualif_agent = self.qualification_agent()
-        task_prompt = f"""
-        Tu es le Spécialiste en Qualification / Senior Product Owner.
-        Voici la demande actuelle : "{user_prompt}"
-
-        Tours précédents de cette conversation (pour interpréter un message de suivi comme
-        "corrige ça" ou "ajoute aussi Y" ; ne décide JAMAIS sur ce seul contexte si la demande
-        actuelle dit autre chose) :
-        {conversation_context or "Aucun échange précédent."}
-
-        Applique la grille de décision de ta fiche, dans cet ordre :
-        1. summary : ce que tu as compris.
-        2. reasoning : les indices précis relevés dans la demande et la règle appliquée.
-        3. alternative_type : la 2e catégorie la plus plausible (ou null).
-        4. request_type : ta décision.
-        5. confidence : de 0 à 1. Sous {QUALIFICATION_CONFIDENCE_THRESHOLD}, is_clear doit être false.
-        6. is_clear, puis questions (2 à 4, fermées si possible) si is_clear est false.
-        """
+        task_prompt = _build_qualification_prompt(user_prompt, conversation_context, has_repo_target)
         analysis_task = Task(description=task_prompt, expected_output="Schéma JSON AnalysisReport.", agent=qualif_agent, output_pydantic=AnalysisReport)
         analysis_crew = Crew(agents=[qualif_agent], tasks=[analysis_task], process=Process.sequential, verbose=False)
         

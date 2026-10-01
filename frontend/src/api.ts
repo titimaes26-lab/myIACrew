@@ -38,11 +38,12 @@ export function apiClient(apiUrl: string, accessToken: string) {
   return {
     // conversation_id : permet à qualification_agent de tenir compte des tours précédents
     // (ex: "corrige ça" juste après une FEATURE doit être qualifié BUGFIX, pas DESIGN_AND_DEV).
-    qualify: (user_request: string, conversation_id: number | null, signal?: AbortSignal) =>
+    // has_repo_target : sans repository cible, une demande de BUGFIX/FEATURE déclenche une question sur le repo.
+    qualify: (user_request: string, conversation_id: number | null, has_repo_target: boolean, signal?: AbortSignal) =>
       fetch(`${apiUrl}/api/qualify`, {
         method: 'POST',
         headers: authHeaders(accessToken),
-        body: JSON.stringify({ user_request, conversation_id: conversation_id ?? undefined }),
+        body: JSON.stringify({ user_request, conversation_id: conversation_id ?? undefined, has_repo_target }),
         signal,
       }).then((res) => parseJsonOrThrow<QualificationReport>(res)),
 

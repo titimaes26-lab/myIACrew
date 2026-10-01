@@ -181,6 +181,7 @@ crew_instance = AppDevelopmentCrew()
 class UserRequestInput(BaseModel):
     user_request: str
     conversation_id: Optional[int] = None
+    has_repo_target: bool = False
 
 class WorkflowExecutionInput(BaseModel):
     user_request: str
@@ -927,7 +928,7 @@ async def qualify_request(data: UserRequestInput, user: dict = Depends(get_curre
             raise HTTPException(status_code=404, detail="Conversation introuvable.")
         conversation_context = loaded
     try:
-        report = await crew_instance.analyze_user_request(data.user_request, conversation_context)
+        report = await crew_instance.analyze_user_request(data.user_request, conversation_context, data.has_repo_target)
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:
