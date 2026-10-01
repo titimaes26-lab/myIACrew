@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.0 — Généré le 2026-09-17
+> Version : 1.1 — Mise à jour le 2026-10-01
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 
 ---
@@ -36,13 +36,15 @@
 
 ### 2.3 Agents CrewAI
 
-| Agent | Rôle | Outils |
-|---|---|---|
-| `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) |
-| `product_designer_agent` | Spécifications fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub |
-| `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub |
-| `developer_agent` | Implémentation du code | lecture/écriture disque local + lecture/écriture GitHub + branche + Pull Request |
-| `qa_agent` | Revue qualité du code produit | lecture disque local + lecture GitHub |
+| Agent | Rôle | Outils | Timeout (défaut) |
+|---|---|---|---|
+| `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) | 45s |
+| `product_designer_agent` | Spécifications fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub | 90s |
+| `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub | 90s |
+| `developer_agent` | Implémentation du code | lecture/écriture disque local + lecture/écriture GitHub + branche + Pull Request | 120s |
+| `qa_agent` | Revue qualité du code produit | lecture disque local + lecture GitHub | 90s |
+
+**Suivi de performance** : chaque agent rapporte son temps d'exécution (`execution_duration`) qui est affiché progressivement dans l'UI au cours de l'exécution du workflow. Cela permet de monitorer les goulots d'étranglement et d'ajuster les timeouts selon les besoins.
 
 ### 2.4 Intégration GitHub (repo cible dynamique)
 
@@ -58,9 +60,11 @@
 
 ### 2.6 Résilience LLM
 
-- LLM utilisé : Gemini (`gemini/gemini-3.5-flash-lite` par défaut, configurable via `GEMINI_MODEL`).
-- Un wrapper de retry maison (`retry_on_rate_limit_async`) retente automatiquement les appels en cas d'erreur 429/quota **et** 503/surcharge (« high demand »/« overloaded »), avec backoff exponentiel.
-- `max_rpm=3` et une pause adaptative entre tâches limitent le débit d'appels au LLM.
+- **LLM utilisé** : Gemini (`gemini/gemini-3.5-flash-lite` par défaut, configurable via `GEMINI_MODEL`).
+- **Limitation quota** : Gemini free tier impose une limite de **15 requêtes/minute** par projet/modèle. Le système maintient une pause minimale de **5.0 secondes** entre les appels LLM (`QuotaManager.min_interval_seconds`) pour respecter cette limite et éviter les erreurs 429 RESOURCE_EXHAUSTED.
+- **Retry automatique** : en cas d'erreur 429/quota ou 503/surcharge (« high demand »/« overloaded »), un wrapper de retry consolidé (`_is_retryable_error()`, `_compute_backoff_wait()`) retente l'appel avec backoff exponentiel (départ : 1s, max : 32s). Si la boucle d'exécution entière échoue sur quota, le crew rejoue les tâches restantes après le délai d'attente adaptatif.
+- **Contrôle guardrail** : les tâches rejouées après une erreur quota conservent leur budget de tentatives indépendant — par exemple, `diagnostic_task` réinitialise son compteur de défaillances guardrail lors d'une reprise, évitant des rejets prématurés dus aux tentatives antérieures.
+- **Débit global** : `max_rpm=3` sur l'instance LLM et la pause minimale de 5.0s réduisent le débit par agent pour prévenir les dépassements lors d'exécutions parallèles.
 
 ---
 
@@ -160,13 +164,14 @@ Pas de routeur : un seul écran conditionnel (`Login` vs `Studio`) piloté par l
 
 ## 6. Exigences Non-Fonctionnelles
 
-- **Performance** : pas d'exigence temps réel — les exécutions d'agents peuvent prendre plusieurs dizaines de secondes à plusieurs minutes (limité par `max_rpm=3` côté LLM).
+- **Performance** : pas d'exigence temps réel — les exécutions d'agents peuvent prendre plusieurs dizaines de secondes à plusieurs minutes (limité par `max_rpm=3` et pause quota 5.0s côté LLM). Temps d'exécution observés pour workflow complet (DESIGN_AND_DEV) : ~120–180 secondes en conditions normales. Chaque agent rapporte son temps d'exécution (`execution_duration`) pour le monitoring.
+- **Limites Gemini free tier** : 15 requêtes/minute par projet/modèle. Le système s'adapte avec `min_interval_seconds=5.0` (une pause de 5s entre agents assure un débit d'environ 12 req/min sur une exécution séquentielle, laissant de la marge pour les pics ou les tentatives de retry).
+- **Résilience** : retry automatique sur erreurs Gemini 429/quota et 503/surcharge, avec backoff exponentiel (1s → 32s). Rejeu des tâches restantes après quota error, avec réinitialisation indépendante des budgets guardrail.
 - **Sécurité** : toutes les routes API (`/api/qualify`, `/api/execute`) exigent un token Supabase valide. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale.
 - **Persistance** : historique des exécutions en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : mise en page simple (`maxWidth: 850px`, centrée), pas de layout mobile dédié.
 - **Accessibilité** : non ciblée spécifiquement (pas d'audit WCAG).
-- **Résilience** : retry automatique sur erreurs Gemini 429/quota et 503/surcharge.
 
 ---
 
