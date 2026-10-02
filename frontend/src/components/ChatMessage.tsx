@@ -6,6 +6,7 @@ import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
 import AgentSummary from './AgentSummary';
+import ExecutionBreakdown from './metrics/ExecutionBreakdown';
 
 // Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer
 // dans le bundle que si un résultat d'agent est effectivement affiché.
@@ -111,6 +112,10 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           {duration ? ` · ${duration}` : ''}
           {metricsLabel ? ` · ${metricsLabel}` : ''}
         </div>
+
+        {typeof turn.id === 'number' && (turn.status === 'success' || turn.status === 'failed') && (
+          <ExecutionBreakdown executionId={turn.id} />
+        )}
 
         {turn.agentSummary && <p style={{ margin: '0 0 8px 0' }}>{turn.agentSummary}</p>}
 

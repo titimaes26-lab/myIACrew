@@ -1,0 +1,166 @@
+/* Visualisation des performances : jetons de la palette validée (validate_palette.js : PASS en clair
+   et en sombre pour les slots 1 et 2). Les couleurs portent des MARQUES ; le texte reste en encre. */
+.viz-root {
+  color-scheme: light;
+  --viz-surface: #fcfcfb;
+  --viz-plane: #f4f3ef;
+  --viz-ink: #0b0b0b;
+  --viz-ink-2: #52514e;
+  --viz-muted: #6f6d67;
+  --viz-grid: #e1e0d9;
+  --viz-axis: #c3c2b7;
+  --viz-hover: rgba(11, 11, 11, 0.045);
+  --viz-border: rgba(11, 11, 11, 0.1);
+  --viz-s1: #2a78d6;
+  --viz-s2: #eb6834;
+  --viz-shadow: 0 6px 18px rgba(11, 11, 11, 0.14);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --viz-surface: #1a1a19;
+    --viz-plane: #232321;
+    --viz-ink: #ffffff;
+    --viz-ink-2: #c3c2b7;
+    --viz-muted: #a19f97;
+    --viz-grid: #2c2c2a;
+    --viz-axis: #383835;
+    --viz-hover: rgba(255, 255, 255, 0.06);
+    --viz-border: rgba(255, 255, 255, 0.1);
+    --viz-s1: #3987e5;
+    --viz-s2: #d95926;
+    --viz-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --viz-surface: #1a1a19;
+  --viz-plane: #232321;
+  --viz-ink: #ffffff;
+  --viz-ink-2: #c3c2b7;
+  --viz-muted: #a19f97;
+  --viz-grid: #2c2c2a;
+  --viz-axis: #383835;
+  --viz-hover: rgba(255, 255, 255, 0.06);
+  --viz-border: rgba(255, 255, 255, 0.1);
+  --viz-s1: #3987e5;
+  --viz-s2: #d95926;
+  --viz-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.viz-root {
+  background: var(--viz-surface);
+  color: var(--viz-ink);
+  border: 1px solid var(--viz-border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  letter-spacing: 0;
+  text-align: left;
+}
+.viz-root h3, .viz-root h4, .viz-root p { margin: 0; }
+.viz-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.viz-title { font-size: 16px; font-weight: 600; }
+.viz-sub { color: var(--viz-muted); font-size: 12px; }
+.viz-loading { opacity: 0.55; transition: opacity 0.15s; }
+.viz-error { padding: 10px 12px; border: 1px solid var(--viz-border); border-radius: 8px; background: var(--viz-plane); margin-bottom: 12px; }
+.viz-empty { color: var(--viz-muted); padding: 24px 8px; text-align: center; }
+
+/* Filtres : une rangée, au-dessus de ce qu'ils filtrent. */
+.viz-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.viz-seg { display: inline-flex; border: 1px solid var(--viz-border); border-radius: 8px; overflow: hidden; }
+.viz-seg button, .viz-select, .viz-toggle {
+  font: inherit; color: var(--viz-ink); background: var(--viz-surface); border: 0; cursor: pointer; padding: 6px 12px;
+}
+.viz-seg button + button { border-left: 1px solid var(--viz-border); }
+.viz-seg button:hover, .viz-toggle:hover { background: var(--viz-hover); }
+.viz-seg button[aria-pressed="true"] { background: var(--viz-plane); font-weight: 600; }
+.viz-seg button[aria-pressed="true"]::before { content: '✓ '; font-weight: 700; }
+.viz-select { border: 1px solid var(--viz-border); border-radius: 8px; }
+.viz-root button:focus-visible, .viz-root select:focus-visible, .viz-hrow:focus-visible, .viz-col:focus-visible {
+  outline: 2px solid var(--viz-s1); outline-offset: 1px;
+}
+
+/* Tuiles de chiffres. */
+.viz-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-bottom: 4px; }
+.viz-tile { background: var(--viz-plane); border-radius: 8px; padding: 12px; }
+.viz-tile-label { color: var(--viz-muted); font-size: 12px; }
+.viz-tile-value { font-size: 24px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+.viz-tile-sub { color: var(--viz-ink-2); font-size: 12px; margin-top: 2px; }
+
+/* Carte de graphique. */
+.viz-card { border: 1px solid var(--viz-border); border-radius: 10px; padding: 14px; margin-top: 14px; position: relative; }
+.viz-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.viz-card-title { font-size: 14px; font-weight: 600; }
+.viz-toggle { border: 1px solid var(--viz-border); border-radius: 6px; padding: 3px 10px; font-size: 12px; white-space: nowrap; }
+.viz-legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--viz-ink-2); font-size: 12px; margin: 6px 0 10px; }
+.viz-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.viz-key-bar { width: 12px; height: 8px; border-radius: 2px; display: inline-block; }
+.viz-key-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.viz-key-line { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+
+/* Barres horizontales : épaisseur <= 24 px, bout de donnée arrondi à 4 px, base carrée. */
+.viz-hbars { position: relative; }
+.viz-hrow { display: grid; grid-template-columns: 110px 1fr 150px; align-items: center; gap: 8px; min-height: 30px; border-radius: 6px; padding: 2px 4px; }
+.viz-hrow:hover { background: var(--viz-hover); }
+.viz-hlabel { font-size: 13px; }
+.viz-hvalue { font-size: 12px; color: var(--viz-ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+.viz-hplot { position: relative; height: 22px; }
+.viz-hgrid { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--viz-grid); }
+.viz-hgrid:first-child { background: var(--viz-axis); }
+.viz-hbar, .viz-hstack { position: absolute; left: 0; top: 50%; height: 16px; transform: translateY(-50%); }
+.viz-hbar { background: var(--viz-s1); border-radius: 0 4px 4px 0; }
+.viz-hstack { display: flex; gap: 2px; }
+.viz-hstack > span { display: block; height: 100%; min-width: 2px; }
+.viz-hstack > span:nth-child(1) { background: var(--viz-s1); }
+.viz-hstack > span:nth-child(2) { background: var(--viz-s2); border-radius: 0 4px 4px 0; }
+.viz-hdot { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; background: var(--viz-s2); box-shadow: 0 0 0 2px var(--viz-surface); transform: translate(-50%, -50%); }
+.viz-haxis { display: grid; grid-template-columns: 110px 1fr 150px; gap: 8px; padding: 0 4px; margin-top: 2px; }
+.viz-haxis-plot { position: relative; height: 16px; }
+.viz-tick { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--viz-muted); white-space: nowrap; }
+.viz-tick:first-child { transform: none; }
+@media (max-width: 520px) {
+  .viz-hrow { grid-template-columns: 1fr auto; }
+  .viz-hrow .viz-hplot { grid-column: 1 / -1; order: 3; }
+  .viz-haxis { grid-template-columns: 1fr; }
+  .viz-haxis > :first-child, .viz-haxis > :last-child { display: none; }
+}
+
+/* Colonnes (tendance par jour). */
+.viz-cwrap { display: grid; grid-template-columns: 38px 1fr; gap: 6px; padding-top: 16px; position: relative; }
+.viz-yaxis { position: relative; height: 150px; }
+.viz-ytick { position: absolute; right: 0; transform: translateY(50%); font-size: 11px; color: var(--viz-muted); font-variant-numeric: tabular-nums; }
+.viz-cplot { position: relative; }
+.viz-cgrid { position: absolute; left: 0; right: 0; height: 1px; background: var(--viz-grid); }
+.viz-cgrid.is-base { background: var(--viz-axis); }
+.viz-cols { position: relative; height: 150px; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(6px, 1fr); gap: 2px; align-items: stretch; }
+.viz-col { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; border-radius: 4px; position: relative; }
+.viz-col:hover { background: var(--viz-hover); }
+.viz-colbar { width: min(100%, 24px); background: var(--viz-s1); border-radius: 4px 4px 0 0; }
+.viz-collabel { position: absolute; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--viz-ink-2); white-space: nowrap; padding-bottom: 2px; pointer-events: none; }
+.viz-xtick { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--viz-muted); white-space: nowrap; }
+.viz-xaxis { position: relative; height: 16px; margin-top: 4px; }
+
+/* Tableau (jumeau accessible des graphiques). */
+.viz-table-wrap { overflow-x: auto; }
+.viz-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.viz-table th { color: var(--viz-muted); font-weight: 500; font-size: 12px; text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--viz-axis); white-space: nowrap; }
+.viz-table td { padding: 6px 8px; border-bottom: 1px solid var(--viz-grid); text-align: right; font-variant-numeric: tabular-nums; }
+.viz-table th:first-child, .viz-table td:first-child { text-align: left; }
+.viz-table tbody th { color: inherit; font-weight: 500; font-size: 13px; border-bottom: 1px solid var(--viz-grid); }
+
+/* Infobulle : valeurs d'abord, libellés ensuite. */
+.viz-tip { position: absolute; z-index: 5; pointer-events: none; transform: translate(-50%, calc(-100% - 10px)); background: var(--viz-surface); border: 1px solid var(--viz-border); border-radius: 8px; box-shadow: var(--viz-shadow); padding: 8px 10px; font-size: 12px; min-width: 150px; max-width: 260px; }
+.viz-tip-title { font-weight: 600; margin-bottom: 4px; }
+.viz-tip-row { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.viz-tip-row > span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--viz-ink-2); }
+.viz-tip-row strong { font-variant-numeric: tabular-nums; }
+
+/* Détail d'une exécution (sous un message du fil). */
+.viz-break { margin-top: 8px; }
+.viz-break-toggle { font: inherit; font-size: 12px; background: transparent; border: 1px solid var(--viz-border); border-radius: 6px; padding: 3px 10px; color: inherit; cursor: pointer; }
+.viz-break-body { margin-top: 8px; padding: 10px; }
+.viz-break .viz-table td, .viz-break .viz-table th { padding: 4px 6px; }
+.viz-miniplot { display: block; position: relative; height: 12px; min-width: 70px; }
+.viz-miniplot > i { position: absolute; left: 0; top: 0; height: 12px; background: var(--viz-s1); border-radius: 0 4px 4px 0; min-width: 2px; }

@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.2 — Mise à jour le 2026-10-02
+> Version : 1.3 — Mise à jour le 2026-10-02
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord.
 
 ---
 
@@ -91,6 +91,15 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 
 **Limites assumées** : la validation TypeScript/JavaScript est heuristique (délimiteurs équilibrés, imports, exports) — il n'y a ni `tsc` ni build ; la vérification de PR côté QA reste celle de l'outil et du backend, pas du LLM.
 
+### 2.8 Mesure de performance par agent
+
+- **Collecte** : `backend/agent_metrics.py` écoute les événements CrewAI (appel LLM terminé ou échoué, outil utilisé) et attribue chaque mesure à son agent par son rôle (`agentsquestion.yaml`). Les mesures sont isolées par exécution (contexte copié par le bus d'événements), donc deux exécutions concurrentes ne se mélangent pas. Les appels hors agent (synthèse finale) sont comptés à part.
+- **Ce qui est mesuré, par agent et par exécution** : durée de la tâche, appels LLM réels, erreurs LLM, tokens (entrée, sortie, total), appels d'outils et erreurs d'outils. Un usage de tokens absent ou tout à zéro est **inconnu**, jamais « 0 token » : il n'entre pas dans les moyennes.
+- **Changement de sens** : `api_calls_count` (par exécution) compte désormais les appels LLM réels. Il ne comptait avant que les tentatives de `kickoff`, ce qui sous-estimait fortement la consommation du quota.
+- **Persistance** : une ligne `agentrun` par agent mesuré, écrite en fin d'exécution (succès ou échec). Un agent qui a fait des appels sans terminer sa tâche est marqué `incomplete`. L'écriture est « au mieux » : elle n'échoue jamais l'exécution.
+- **Tableau de bord** (bouton « 📊 Performance » du Studio, chargé à la demande) : filtres période (7, 30, 90 jours) et workflow ; tuiles (exécutions, taux de succès, durée médiane, appels LLM, tokens, pauses quota) ; durée par agent (médiane en barre, p95 en point, un seul axe) ; tokens par agent (entrée/sortie empilées) ; appels LLM par jour ; tableau de détail. Chaque graphique a un jumeau tableau, une infobulle (souris et clavier) et des couleurs validées en clair et en sombre.
+- **Détail d'une exécution** : sous chaque message terminé, « Voir la performance par agent » affiche durée, appels LLM, tokens et outils de cette exécution.
+
 ---
 
 ## 3. Architecture Logique vs Vue
@@ -99,11 +108,12 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 
 | Couche | Rôle | Fichiers clés |
 |---|---|---|
-| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `hooks/useConversation.ts` |
+| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts`, `hooks/useMetricsSummary.ts` |
 | Client Supabase | Session, token d'accès | `frontend/src/supabaseClient.ts` |
 | API (Logique HTTP) | Endpoints, validation des entrées, auth, exécution en tâche de fond, persistance, vérification de livraison | `backend/main.py`, `backend/auth.py` |
 | Orchestration agents | Définition et exécution des agents/tâches CrewAI, guardrails, retry | `backend/crewquestion.py`, `backend/agentsquestion.yaml`, `backend/tasksquestion.yaml` |
 | Contrôles de qualité (purs) | Lecture de la sortie de l'Analyste, livraison (commit/PR), rapport QA | `backend/analyst_output.py`, `backend/delivery.py`, `backend/qa_report.py` |
+| Mesure de performance | Collecte par agent (événements CrewAI), agrégats (percentiles, moyennes, tendance) | `backend/agent_metrics.py` |
 | Outils agents | Actions concrètes (lecture disque, lecture/écriture GitHub, vérification de syntaxe) | `backend/tools.py`, `backend/github_tools.py` |
 | Persistance | Modèles et accès à la base de données | `backend/database.py` |
 
@@ -159,6 +169,19 @@ Response { id: number | null; status: string | null; current_step: string | null
 POST /api/conversations (title?) · GET /api/conversations
 GET  /api/conversations/{id}/messages → ExecutionHistory[]
 GET  /api/repo-targets → { repo_owner, repo_name, base_branch }[]   (20 derniers, distincts)
+
+// GET /api/metrics/summary?days=30&workflow=BUGFIX   (days borné à 1-365 ; workflow optionnel)
+// Exécutions TERMINÉES de l'utilisateur sur la période (1000 au plus, les plus récentes).
+Response { period_days: number; workflow: string | null;
+           executions: { total, success, failed, median_duration_seconds, avg_llm_calls, avg_tokens,
+                         token_executions, rate_limit_hits, wait_seconds };
+           agents: { agent, label, runs, incomplete, duration_p50, duration_p95, avg_llm_calls, llm_errors,
+                     token_runs, avg_prompt_tokens, avg_completion_tokens, avg_tool_calls, tool_errors }[];
+           daily: { date, executions, failed, llm_calls, tokens }[] }
+
+// GET /api/executions/{id}/agent-runs   → détail par agent d'UNE exécution (404 si elle n'est pas à l'utilisateur)
+Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_seconds, llm_calls, llm_errors,
+           tokens_known, prompt_tokens, completion_tokens, total_tokens, tool_calls, tool_errors }[]
 GET  /api/history?limit&offset → ExecutionHistory[] · DELETE /api/history/{id}
 ```
 
@@ -183,6 +206,8 @@ GET  /api/history?limit&offset → ExecutionHistory[] · DELETE /api/history/{id
 | `api_calls_count`, `rate_limit_hits`, `total_wait_time_seconds` | int / float (nullable) | coût et attentes de quota de l'exécution |
 | `created_at`, `updated_at` | datetime | horodatages |
 
+**Table `agentrun`** : une ligne par agent mesuré et par exécution — `execution_id`, `conversation_id`, `user_id` (indexés), `workflow`, `agent` (`design`, `architecture`, `diagnostic`, `development`, `qa`, `system`), `status` (`completed`, `incomplete`, `n/a`), `duration_seconds` (nullable), `llm_calls`, `llm_errors`, `usage_calls` (appels dont les tokens sont connus), `prompt_tokens`, `completion_tokens`, `total_tokens`, `tool_calls`, `tool_errors`, `created_at`. Table nouvelle : créée automatiquement, sans migration.
+
 L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le texte du résultat (bloc « Livraison constatée par les outils »). Le schéma `auth` est géré entièrement par Supabase. Les colonnes ajoutées après coup sont rattrapées par des migrations légères au démarrage.
 
 ---
@@ -195,7 +220,7 @@ L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le t
 |---|---|---|---|
 | Connexion | `Login.tsx` | pas de session Supabase active | Formulaire email + mot de passe |
 | Chargement | inline dans `App.tsx` | vérification de session en cours | Texte « Chargement... » |
-| Studio | `Studio.tsx` | session active | Fil de conversation (`ChatThread`, `ChatMessage` qui affiche l'indicateur d'étapes `StepIndicator` et le résumé par agent `AgentSummary`), saisie (`ChatInput`, qui contient le choix du workflow et le formulaire du repo cible `RepoTargetFields`), historique des conversations (`HistoryPanel`), en-tête (`StudioHeader`) |
+| Studio | `Studio.tsx` | session active | Tableau de bord de performance (`MetricsPanel`, ouvert par le bouton « 📊 Performance » de `StudioHeader`), fil de conversation (`ChatThread`, `ChatMessage` qui affiche l'indicateur d'étapes `StepIndicator` et le résumé par agent `AgentSummary`), saisie (`ChatInput`, qui contient le choix du workflow et le formulaire du repo cible `RepoTargetFields`), historique des conversations (`HistoryPanel`), en-tête (`StudioHeader`). Chaque message terminé peut déplier sa performance par agent (`ExecutionBreakdown`) |
 
 ### 5.2 Navigation
 
@@ -210,7 +235,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (environ 260 tests) couvrant les contrôles purs, les guardrails et les outils ; typecheck frontend `tsc --noEmit`. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (environ 290 tests) couvrant les contrôles purs, les guardrails et les outils ; typecheck frontend `tsc --noEmit`. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : mise en page simple, pas de layout mobile dédié.
 - **Accessibilité** : non ciblée spécifiquement (pas d'audit WCAG).
@@ -224,6 +249,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - [ ] Les fichiers `docs/*.md` écrits sur le disque local de Render ont-ils encore une utilité maintenant que l'écriture se fait directement sur GitHub ?
 - [ ] Faut-il ajouter une vraie compilation (`tsc`, build) dans un bac à sable pour la QA, au lieu des vérifications statiques ?
 - [ ] Faut-il repasser en « prête à relire » une PR ouverte en brouillon quand un tour ultérieur complète la livraison (l'API REST ne le permet pas, il faudrait GraphQL) ?
+- [ ] Le comptage de tokens et d'appels LLM repose sur les événements CrewAI : il reste à le confirmer sur des exécutions réelles (usage fourni par Gemini, rôle de l'agent sur chaque événement). Faut-il alerter quand un agent atteint son plafond d'itérations ?
 - [ ] Un échantillon d'exécutions réelles doit-il servir à calibrer les seuils des contrôles (0.6 de confiance, bornes du designer, budgets de lecture) ?
 
 ---
@@ -238,4 +264,5 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - [x] Contrats API et modèles de données/état décrits
 - [x] Schémas des tables `conversation` et `executionhistory`
 - [x] Écrans et navigation listés
+- [x] Mesure de performance par agent et tableau de bord documentés
 - [x] Questions ouvertes identifiées

@@ -1,4 +1,4 @@
-import type { ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
+import type { AgentRunView, ExecutionHistoryEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
 
 // /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
 // fond côté backend, voir _execute_crew_and_persist dans main.py) : ce corps de réponse ne
@@ -70,6 +70,17 @@ export function apiClient(apiUrl: string, accessToken: string) {
     listRepoTargets: () =>
       fetch(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<RepoTargetSuggestion[]>(res)),
+
+    getMetricsSummary: (days: number, workflow: MetricsWorkflowFilter, signal?: AbortSignal) => {
+      const query = new URLSearchParams({ days: String(days) });
+      if (workflow !== 'ALL') query.set('workflow', workflow);
+      return fetch(`${apiUrl}/api/metrics/summary?${query}`, { headers: authHeaders(accessToken), signal })
+        .then((res) => parseJsonOrThrow<MetricsSummary>(res));
+    },
+
+    getExecutionAgentRuns: (executionId: number, signal?: AbortSignal) =>
+      fetch(`${apiUrl}/api/executions/${executionId}/agent-runs`, { headers: authHeaders(accessToken), signal })
+        .then((res) => parseJsonOrThrow<AgentRunView[]>(res)),
 
     deleteHistoryEntry: (id: number) =>
       fetch(`${apiUrl}/api/history/${id}`, { method: 'DELETE', headers: authHeaders(accessToken) })

@@ -1,0 +1,80 @@
+import { useState } from 'react';
+import { useMetricsSummary } from '../../hooks/useMetricsSummary';
+import type { MetricsSummary, MetricsWorkflowFilter } from '../../types';
+import {
+  formatCompact, formatInteger, formatNumber, formatPercent, formatSecondsOrDash,
+} from '../../utils/metricsFormat';
+import AgentDurationChart from './AgentDurationChart';
+import AgentTokensChart from './AgentTokensChart';
+import ChartCard from './ChartCard';
+import DailyCallsChart from './DailyCallsChart';
+import MetricsFilters from './MetricsFilters';
+import StatTile from './StatTile';
+import './metrics.css';
+
+function Tiles({ summary }: { summary: MetricsSummary }) {
+  const e = summary.executions;
+  return (
+    <div className="viz-tiles">
+      <StatTile label="Exécutions terminées" value={formatInteger(e.total)} sub={`${e.success} réussie${e.success > 1 ? 's' : ''} · ${e.failed} en échec`} />
+      <StatTile label="Taux de succès" value={formatPercent(e.success, e.total)} sub="exécutions terminées" />
+      <StatTile label="Durée médiane" value={formatSecondsOrDash(e.median_duration_seconds)} sub="par exécution" />
+      <StatTile label="Appels LLM" value={formatNumber(e.avg_llm_calls)} sub="par exécution (appels réels)" />
+      <StatTile label="Tokens" value={formatCompact(e.avg_tokens)} sub={e.token_executions > 0 ? `par exécution · ${e.token_executions}/${e.total} mesurées` : 'usage non fourni par le modèle'} />
+      <StatTile label="Pauses quota" value={formatInteger(e.rate_limit_hits)} sub={`${formatSecondsOrDash(e.wait_seconds)} d'attente au total`} />
+    </div>
+  );
+}
+
+function AgentTable({ summary }: { summary: MetricsSummary }) {
+  return (
+    <ChartCard
+      title="Détail par agent"
+      subtitle="Moyennes par exécution ; les durées sont des médianes."
+      table={{
+        columns: ['Agent', 'Exécutions', 'Durée p50', 'Durée p95', 'Appels LLM', 'Tokens', 'Outils', 'Incomplètes'],
+        rows: summary.agents.map((a) => [
+          a.label,
+          String(a.runs),
+          formatSecondsOrDash(a.duration_p50),
+          formatSecondsOrDash(a.duration_p95),
+          formatNumber(a.avg_llm_calls),
+          a.token_runs > 0 ? formatCompact((a.avg_prompt_tokens ?? 0) + (a.avg_completion_tokens ?? 0)) : '—',
+          `${formatNumber(a.avg_tool_calls)}${a.tool_errors ? ` (${a.tool_errors} err.)` : ''}`,
+          a.incomplete > 0 ? `⚠️ ${a.incomplete}` : '0',
+        ]),
+      }}
+      empty={summary.agents.length === 0 ? 'Aucune mesure par agent pour cette période.' : null}
+    />
+  );
+}
+
+export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; accessToken: string }) {
+  const [days, setDays] = useState(30);
+  const [workflow, setWorkflow] = useState<MetricsWorkflowFilter>('ALL');
+  const { data, error, loading } = useMetricsSummary(apiUrl, accessToken, days, workflow);
+
+  return (
+    <section className="viz-root" aria-label="Performance des agents" aria-busy={loading}>
+      <div className="viz-head">
+        <h3 className="viz-title">📊 Performance des agents</h3>
+        <span className="viz-sub">Vos exécutions terminées sur la période</span>
+      </div>
+      <MetricsFilters days={days} onDaysChange={setDays} workflow={workflow} onWorkflowChange={setWorkflow} />
+      {error && <div className="viz-error" role="alert">❌ {error}</div>}
+      {!data && !error && <p className="viz-empty">Chargement…</p>}
+      {data && data.executions.total === 0 && (
+        <p className="viz-empty">Aucune exécution terminée sur cette période. Lancez une demande, puis revenez ici.</p>
+      )}
+      {data && data.executions.total > 0 && (
+        <div className={loading ? 'viz-loading' : undefined}>
+          <Tiles summary={data} />
+          <AgentDurationChart agents={data.agents} />
+          <AgentTokensChart agents={data.agents} />
+          <DailyCallsChart daily={data.daily} />
+          <AgentTable summary={data} />
+        </div>
+      )}
+    </section>
+  );
+}

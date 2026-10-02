@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { useConversation } from './hooks/useConversation';
+import { MetricsApiContext } from './hooks/metricsApi';
 import StudioHeader from './components/StudioHeader';
 import ChatThread from './components/ChatThread';
 import ChatInput from './components/ChatInput';
@@ -7,10 +8,15 @@ import HistoryPanel from './components/HistoryPanel';
 import { isWorkflowType } from './constants/workflowTypes';
 import type { ChatTurn } from './types';
 
+// Chargé à la demande : le tableau de bord n'entre dans le bundle que s'il est ouvert.
+const MetricsPanel = lazy(() => import('./components/metrics/MetricsPanel'));
+
 export default function Studio({ accessToken, userEmail }: { accessToken: string; userEmail: string }) {
   const [showHistory, setShowHistory] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
   const [retryDraft, setRetryDraft] = useState<{ text: string; nonce: number } | null>(null);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const metricsApi = useMemo(() => ({ apiUrl: API_URL, accessToken }), [API_URL, accessToken]);
   const { turns, sending, hasRunningTurn, error, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
   // `sending` seul (envoi en vol DANS cette session) ne suffit pas : un tour repris depuis
   // l'Historique peut encore être "running" côté serveur sans que CETTE session l'ait
@@ -63,12 +69,21 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
     // item. Sans width:100%/minWidth:0, son min-width par défaut ("auto") vaut le
     // max-content de son contenu (en-tête, bulle de message longue…), l'empêchant de
     // rétrécir sous cette largeur et forçant la page entière à déborder sur mobile.
+    <MetricsApiContext.Provider value={metricsApi}>
     <div style={{ maxWidth: '850px', width: '100%', minWidth: 0, margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', boxSizing: 'border-box', color: '#333' }}>
       <StudioHeader
         userEmail={userEmail}
         historyOpen={showHistory}
         onToggleHistory={() => setShowHistory((open) => !open)}
+        metricsOpen={showMetrics}
+        onToggleMetrics={() => setShowMetrics((open) => !open)}
       />
+
+      {showMetrics && (
+        <Suspense fallback={<p style={{ color: '#666' }}>Chargement du tableau de bord…</p>}>
+          <MetricsPanel apiUrl={API_URL} accessToken={accessToken} />
+        </Suspense>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
         <button
@@ -118,5 +133,6 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
         />
       </div>
     </div>
+    </MetricsApiContext.Provider>
   );
 }

@@ -83,3 +83,65 @@ export interface ChatTurn {
   // fusionné avec result final si présent.
   completedAgents?: Record<string, string>;
 }
+
+// --- Performance par agent (GET /api/metrics/summary, GET /api/executions/{id}/agent-runs) ---
+
+export type MetricsWorkflowFilter = 'ALL' | 'ANALYSE_ONLY' | 'BUGFIX' | 'FEATURE' | 'DESIGN_AND_DEV';
+
+export interface AgentMetricsRow {
+  agent: string;
+  label: string;
+  runs: number;
+  incomplete: number;
+  duration_p50: number | null;
+  duration_p95: number | null;
+  avg_llm_calls: number | null;
+  llm_errors: number;
+  // Exécutions dont le fournisseur a renvoyé l'usage de tokens : 0 => tokens inconnus (pas « 0 token »).
+  token_runs: number;
+  avg_prompt_tokens: number | null;
+  avg_completion_tokens: number | null;
+  avg_tool_calls: number | null;
+  tool_errors: number;
+}
+
+export interface DailyMetricsRow {
+  date: string;
+  executions: number;
+  failed: number;
+  llm_calls: number;
+  tokens: number;
+}
+
+export interface MetricsSummary {
+  period_days: number;
+  workflow: string | null;
+  executions: {
+    total: number;
+    success: number;
+    failed: number;
+    median_duration_seconds: number | null;
+    avg_llm_calls: number | null;
+    avg_tokens: number | null;
+    token_executions: number;
+    rate_limit_hits: number;
+    wait_seconds: number | null;
+  };
+  agents: AgentMetricsRow[];
+  daily: DailyMetricsRow[];
+}
+
+export interface AgentRunView {
+  agent: string;
+  label: string;
+  status: 'completed' | 'incomplete' | 'n/a';
+  duration_seconds: number | null;
+  llm_calls: number;
+  llm_errors: number;
+  tokens_known: boolean;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  tool_calls: number;
+  tool_errors: number;
+}
