@@ -15,8 +15,8 @@ export default function Login() {
     try {
       const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
       if (signInError) throw signInError;
-    } catch (err: any) {
-      setError(err.message || "Erreur d'authentification.");
+    } catch (err) {
+      setError((err instanceof Error && err.message) || "Erreur d'authentification.");
     } finally {
       setLoading(false);
     }

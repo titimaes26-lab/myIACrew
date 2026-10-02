@@ -1,6 +1,5 @@
 import asyncio
 import traceback
-import os
 import uuid
 import re
 from datetime import datetime, timedelta, timezone
@@ -481,8 +480,6 @@ def _persist_completed_agent(
 
                 # UPDATE SQL atomique au lieu de read-modify-write en Python
                 # Cela évite les race conditions avec des écritures concurrentes
-                from sqlalchemy import func, literal
-
                 if entry.result:
                     # Append avec le séparateur standard
                     new_result = entry.result + AGENT_SECTION_SEPARATOR + agent_section
@@ -1262,16 +1259,21 @@ async def list_repo_targets(
             break
     return targets
 
+_IN_CLAUSE_CHUNK = 500
+
 @app.get("/api/metrics/summary")
 async def metrics_summary(
     days: int = 30,
     workflow: Optional[str] = None,
+    tz_offset: int = 0,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
 ):
     """Performance par agent sur les `days` derniers jours (exécutions TERMINÉES de l'utilisateur),
-    éventuellement restreinte à un workflow : durées p50/p95, appels LLM, tokens, outils, tendance."""
+    éventuellement restreinte à un workflow : durées p50/p95, appels LLM, tokens, outils, tendance.
+    `tz_offset` : minutes à l'est d'UTC (celui du navigateur), pour regrouper par jour LOCAL."""
     days = max(1, min(days, 365))
+    tz_offset = max(-840, min(tz_offset, 840))
     # Borne AVEC fuseau : SQLModel refuse de lier un datetime naïf à ces colonnes.
     since = datetime.now(timezone.utc) - timedelta(days=days)
     uid = user.get("id")
@@ -1296,17 +1298,20 @@ async def metrics_summary(
         }
         for r in session.exec(statement).all()
     ]
+    # Par paquets : une liste IN de ~1000 identifiants dépasse la limite de paramètres des anciennes
+    # versions de SQLite (999) ; sans effet notable sous Postgres.
     runs = []
-    if executions:
-        runs = [
+    ids = [e["id"] for e in executions]
+    for start in range(0, len(ids), _IN_CLAUSE_CHUNK):
+        runs.extend(
             row.model_dump()
             for row in session.exec(
                 select(AgentRun)
                 .where(AgentRun.user_id == uid)
-                .where(AgentRun.execution_id.in_([e["id"] for e in executions]))
+                .where(AgentRun.execution_id.in_(ids[start:start + _IN_CLAUSE_CHUNK]))
             ).all()
-        ]
-    return summarize(runs, executions, days, workflow)
+        )
+    return summarize(runs, executions, days, workflow, tz_offset)
 
 @app.get("/api/executions/{execution_id}/agent-runs")
 async def execution_agent_runs(
@@ -1372,7 +1377,7 @@ async def delete_history_entry(
     # potentiellement déjà ouverte comprise. Un cas vraiment bloqué reste, lui, un correctif
     # manuel en base (limite acceptée, voir le commentaire cité plus haut).
     if entry.status == "running":
-        print(f"  → Suppression refusée : status=running", flush=True)
+        print("  → Suppression refusée : status=running", flush=True)
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
 
     print(f"  → Suppression en cours : user_request={entry.user_request[:50]}", flush=True)
@@ -1382,5 +1387,5 @@ async def delete_history_entry(
         session.delete(agent_run)
     session.delete(entry)
     session.commit()
-    print(f"  → Suppression confirmée en base", flush=True)
+    print("  → Suppression confirmée en base", flush=True)
     return {"status": "deleted", "id": execution_id}

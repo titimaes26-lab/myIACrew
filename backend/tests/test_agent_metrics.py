@@ -383,3 +383,74 @@ def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents
     assert entry.status == "failed" and "quota épuisé" in entry.result and entry.api_calls_count == 2
     assert runs["design"].status == "completed" and runs["diagnostic"].status == "incomplete"
     assert runs["diagnostic"].duration_seconds is None and runs["diagnostic"].llm_calls == 1
+
+
+# --- Fuseau horaire et lecture par paquets ----------------------------------------------------
+
+def test_summarize_groups_days_in_the_users_time_zone():
+    late = datetime(2026, 10, 1, 23, 30, tzinfo=timezone.utc)
+    early = datetime(2026, 10, 2, 1, 0, tzinfo=timezone.utc)
+    executions = [
+        {"id": 1, "status": "success", "created_at": late, "updated_at": late + timedelta(seconds=30)},
+        {"id": 2, "status": "success", "created_at": early, "updated_at": early + timedelta(seconds=30)},
+    ]
+    assert [d["date"] for d in summarize([], executions, 30)["daily"]] == ["2026-10-01", "2026-10-02"]
+    # UTC+2 : 23 h 30 UTC est déjà le lendemain à 01 h 30 locale, les deux exécutions tombent le 2.
+    plus_two = summarize([], executions, 30, tz_offset_minutes=120)["daily"]
+    assert [(d["date"], d["executions"]) for d in plus_two] == [("2026-10-02", 2)]
+    # UTC-5 : 01 h 00 UTC est encore la veille à 20 h locale, les deux tombent le 1er.
+    minus_five = summarize([], executions, 30, tz_offset_minutes=-300)["daily"]
+    assert [(d["date"], d["executions"]) for d in minus_five] == [("2026-10-01", 2)]
+
+
+def test_endpoint_applies_and_clamps_the_time_zone_offset(session):
+    created = (datetime.now(timezone.utc) - timedelta(days=3)).replace(hour=23, minute=30, second=0, microsecond=0)
+    entry = ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1",
+                             created_at=created, updated_at=created + timedelta(seconds=40))
+    session.add(entry)
+    session.commit()
+    utc_day = created.date().isoformat()
+    next_day = (created + timedelta(days=1)).date().isoformat()
+
+    def days(offset):
+        result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=offset, session=session, user={"id": "u1"}))
+        return [d["date"] for d in result["daily"]]
+
+    assert days(0) == [utc_day] and days(120) == [next_day]
+    assert days(100000) == [next_day]  # borné à +14 h : 23 h 30 UTC passe bien au lendemain, sans erreur
+    assert days(-100000) == [utc_day]
+
+
+def test_endpoint_reads_all_agent_runs_across_several_chunks(session, monkeypatch):
+    monkeypatch.setattr(main, "_IN_CLAUSE_CHUNK", 7)
+    now = datetime.now(timezone.utc)
+    entries = [ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1",
+                                created_at=now - timedelta(minutes=i), updated_at=now - timedelta(minutes=i) + timedelta(seconds=10))
+               for i in range(23)]
+    session.add_all(entries)
+    session.commit()
+    for entry in entries:
+        session.refresh(entry)
+    session.add_all([AgentRun(execution_id=e.id, user_id="u1", workflow="BUGFIX", agent="design", duration_seconds=5.0,
+                              llm_calls=2, usage_calls=2, total_tokens=10, created_at=e.created_at) for e in entries])
+    session.commit()
+    result = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"}))
+    design = next(a for a in result["agents"] if a["agent"] == "design")
+    assert result["executions"]["total"] == 23 and design["runs"] == 23
+
+
+def test_endpoint_handles_the_maximum_number_of_executions_with_the_real_chunk_size(session):
+    now = datetime.now(timezone.utc)
+    entries = [ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1",
+                                created_at=now - timedelta(seconds=i), updated_at=now - timedelta(seconds=i) + timedelta(seconds=5))
+               for i in range(1000)]
+    session.add_all(entries)
+    session.commit()
+    for entry in entries:
+        session.refresh(entry)
+    session.add_all([AgentRun(execution_id=e.id, user_id="u1", workflow="BUGFIX", agent="qa", duration_seconds=1.0,
+                              llm_calls=1, created_at=e.created_at) for e in entries])
+    session.commit()
+    result = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"}))
+    assert result["executions"]["total"] == 1000
+    assert next(a for a in result["agents"] if a["agent"] == "qa")["runs"] == 1000

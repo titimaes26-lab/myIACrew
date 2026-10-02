@@ -72,7 +72,9 @@ export function apiClient(apiUrl: string, accessToken: string) {
         .then((res) => parseJsonOrThrow<RepoTargetSuggestion[]>(res)),
 
     getMetricsSummary: (days: number, workflow: MetricsWorkflowFilter, signal?: AbortSignal) => {
-      const query = new URLSearchParams({ days: String(days) });
+      // Décalage du navigateur à l'est d'UTC : les jours du graphique quotidien sont des jours LOCAUX.
+      const tzOffset = -new Date().getTimezoneOffset();
+      const query = new URLSearchParams({ days: String(days), tz_offset: String(tzOffset) });
       if (workflow !== 'ALL') query.set('workflow', workflow);
       return fetch(`${apiUrl}/api/metrics/summary?${query}`, { headers: authHeaders(accessToken), signal })
         .then((res) => parseJsonOrThrow<MetricsSummary>(res));

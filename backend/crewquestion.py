@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import asyncio
 import json
@@ -30,7 +29,7 @@ MAX_AGENT_OUTPUT_SIZE = 10_000_000  # 10MB par agent
 MAX_AGENT_NAME_LENGTH = 200
 
 from crewai import Agent, Crew, Process, Task, LLM
-from crewai.project import CrewBase, agent, crew, task
+from crewai.project import CrewBase, agent, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tools import tool
 from tools import check_syntax

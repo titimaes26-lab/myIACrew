@@ -170,7 +170,8 @@ POST /api/conversations (title?) · GET /api/conversations
 GET  /api/conversations/{id}/messages → ExecutionHistory[]
 GET  /api/repo-targets → { repo_owner, repo_name, base_branch }[]   (20 derniers, distincts)
 
-// GET /api/metrics/summary?days=30&workflow=BUGFIX   (days borné à 1-365 ; workflow optionnel)
+// GET /api/metrics/summary?days=30&workflow=BUGFIX&tz_offset=120   (days borné à 1-365 ; workflow optionnel ;
+//   tz_offset = minutes à l'est d'UTC du navigateur, borné à ±840, pour regrouper `daily` par jour LOCAL)
 // Exécutions TERMINÉES de l'utilisateur sur la période (1000 au plus, les plus récentes).
 Response { period_days: number; workflow: string | null;
            executions: { total, success, failed, median_duration_seconds, avg_llm_calls, avg_tokens,

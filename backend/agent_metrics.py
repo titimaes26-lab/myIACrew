@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -301,9 +302,13 @@ def _round(value: Optional[float], digits: int = 1) -> Optional[float]:
     return None if value is None else round(value, digits)
 
 
-def summarize(runs: list[dict], executions: list[dict], days: int, workflow: Optional[str] = None) -> dict:
+def summarize(
+    runs: list[dict], executions: list[dict], days: int, workflow: Optional[str] = None, tz_offset_minutes: int = 0,
+) -> dict:
     """Vue d'ensemble pour le tableau de bord. `runs` : lignes AgentRun ; `executions` : exécutions
-    TERMINÉES (status success|failed) de la période, avec created_at / updated_at (datetime)."""
+    TERMINÉES (status success|failed) de la période, avec created_at / updated_at (datetime).
+    tz_offset_minutes : décalage de l'utilisateur à l'est d'UTC, appliqué UNIQUEMENT au regroupement par
+    jour (une exécution à 23 h 30 UTC appartient au lendemain pour quelqu'un à UTC+2)."""
     durations = [
         (e["updated_at"] - e["created_at"]).total_seconds()
         for e in executions if e.get("updated_at") and e.get("created_at")
@@ -339,7 +344,8 @@ def summarize(runs: list[dict], executions: list[dict], days: int, workflow: Opt
         })
 
     daily: dict[str, dict] = {}
-    execution_day = {e["id"]: e["created_at"].date().isoformat() for e in executions if e.get("created_at")}
+    shift = timedelta(minutes=tz_offset_minutes)
+    execution_day = {e["id"]: (e["created_at"] + shift).date().isoformat() for e in executions if e.get("created_at")}
     for e in executions:
         day = daily.setdefault(execution_day[e["id"]], {"executions": 0, "failed": 0, "llm_calls": 0, "tokens": 0})
         day["executions"] += 1
