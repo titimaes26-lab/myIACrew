@@ -275,12 +275,12 @@ def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
 
 QUALIFICATION_EXAMPLES = """\
 Exemples de cas limites (la grille de ta fiche reste la référence) :
-- "Refais la page de login" -> FEATURE, alternative DESIGN_AND_DEV, confidence 0.7 : un module d'un produit existant, sans reconception globale.
-- "Pourquoi la liste des commandes est lente ?" -> ANALYSE_ONLY, alternative BUGFIX, confidence 0.7 : l'utilisateur veut comprendre, pas de livraison de code.
-- "La recherche plante et ajoute aussi un filtre par date" -> BUGFIX, alternative FEATURE, confidence 0.5, is_clear false : deux intentions, demande de scinder ou de prioriser.
-- "Crée un jeu de gestion de ferme en React" -> DESIGN_AND_DEV, alternative null, confidence 0.9 : nouveau produit à concevoir puis développer.
-- Suivi "corrige ça" après un tour FEATURE dans le contexte -> BUGFIX, confidence 0.8 : le contexte précise l'objet du bug.
-- "Améliore l'appli" -> FEATURE, alternative ANALYSE_ONLY, confidence 0.3, is_clear false : aucun objet précis, poser une question fermée.
+- "Refais la page de login" -> FEATURE, alternative DESIGN_AND_DEV, confiance moyenne à bonne : un module d'un produit existant, sans reconception globale.
+- "Pourquoi la liste des commandes est lente ?" -> ANALYSE_ONLY, alternative BUGFIX, confiance moyenne à bonne : l'utilisateur veut comprendre, pas de livraison de code.
+- "La recherche plante et ajoute aussi un filtre par date" -> BUGFIX, alternative FEATURE, confiance basse à moyenne, is_clear false : deux intentions, demande de scinder ou de prioriser.
+- "Crée un jeu de gestion de ferme en React" -> DESIGN_AND_DEV, alternative null, confiance haute : nouveau produit à concevoir puis développer.
+- Suivi "corrige ça" après un tour FEATURE dans le contexte -> BUGFIX, confiance bonne : le contexte précise l'objet du bug.
+- "Améliore l'appli" -> FEATURE, alternative ANALYSE_ONLY, confiance très basse, is_clear false : aucun objet précis, poser une question fermée.
 """
 
 def _build_qualification_prompt(user_prompt: str, conversation_context: str = "", has_repo_target: bool = False) -> str:
@@ -311,9 +311,10 @@ def _build_qualification_prompt(user_prompt: str, conversation_context: str = ""
 
         Règles pour les questions : fermées (réponse courte ou choix entre options). Si tu hésites
         entre deux catégories, une question nomme ces deux catégories et demande de trancher.
-        Si la demande vise du code existant (BUGFIX ou FEATURE), qu'aucun repository n'est fourni
-        et que le contexte ci-dessus n'en mentionne aucun, pose une question sur le repository
-        concerné et mets is_clear à false.
+        Si la demande vise du code existant (BUGFIX ou FEATURE) et qu'aucun repository n'est fourni,
+        mets is_clear à false et pose UNE question qui demande de renseigner le repository dans le
+        formulaire « Repository cible » de l'interface (une réponse tapée dans le chat ne le
+        renseigne pas), ou de répondre « local » pour travailler sans repository.
         """
 
 _REQUEST_TYPES = set(RequestType.__args__)

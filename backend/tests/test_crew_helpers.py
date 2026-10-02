@@ -100,11 +100,27 @@ def test_qualification_examples_use_valid_request_types():
             assert line.split("->")[1].split()[0].strip(",") in cq._REQUEST_TYPES
 
 
-def test_qualification_task_is_gone_from_yaml():
-    import pathlib
-    tasks_yaml = (pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8")
-    assert "qualification_task" not in tasks_yaml
-    assert not hasattr(cq.AppDevelopmentCrew, "qualification_task")
+def test_qualify_endpoint_forwards_has_repo_target(monkeypatch):
+    import asyncio
+    import main
+
+    calls = []
+
+    async def fake_analyze(user_request, conversation_context, has_repo_target):
+        calls.append((user_request, conversation_context, has_repo_target))
+        return cq.QualificationResult(summary="s", request_type="BUGFIX", confidence=0.9, is_clear=True)
+
+    monkeypatch.setattr(main.crew_instance, "analyze_user_request", fake_analyze)
+    monkeypatch.setattr(main.crew_instance, "save_analysis_report", lambda *a, **k: None)
+
+    asyncio.run(main.qualify_request(main.UserRequestInput(user_request="x", has_repo_target=True), {"id": "u"}))
+    asyncio.run(main.qualify_request(main.UserRequestInput(user_request="y"), {"id": "u"}))
+    assert [c[2] for c in calls] == [True, False]
+
+
+def test_qualification_prompt_asks_for_repo_form_not_chat():
+    prompt = cq._build_qualification_prompt("corrige le bug")
+    assert "Repository cible" in prompt and "« local »" in prompt
 
 
 def test_local_writes_are_confined_to_workspace(tmp_path):

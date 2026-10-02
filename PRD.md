@@ -117,10 +117,12 @@ repoOwner / repoName / baseBranch: string  // repo GitHub cible (optionnel)
 
 ```ts
 // POST /api/qualify
-Request  { user_request: string }
-Response { summary: string; is_clear: boolean;
+Request  { user_request: string; conversation_id?: number;
+           has_repo_target?: boolean }  // sans repo cible, une demande BUGFIX/FEATURE déclenche une question
+Response { summary: string; reasoning: string; is_clear: boolean;
            request_type: 'ANALYSE_ONLY' | 'BUGFIX' | 'FEATURE' | 'DESIGN_AND_DEV';
-           questions: string[] }
+           alternative_type: <request_type> | null; confidence: number /* 0-1, < 0.6 => is_clear=false */;
+           questions: string[]; fallback: boolean }
 
 // POST /api/execute
 Request  { user_request: string; target_workflow: string; clarifications?: string;
