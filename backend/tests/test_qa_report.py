@@ -8,7 +8,6 @@ import pytest  # noqa: E402
 import crewquestion as cq  # noqa: E402
 from analyst_output import build_delivery_report  # noqa: E402
 from qa_report import (  # noqa: E402
-    declared_verdict,
     has_blocking_problems,
     normalize_verdict,
     parse_criteria,
@@ -43,11 +42,6 @@ def kwargs(**overrides):
 ])
 def test_normalize_verdict(token, expected):
     assert normalize_verdict(token) == expected
-
-
-def test_declared_verdict_uses_the_last_mention():
-    assert declared_verdict("| Verdict | GO |\n...\nVerdict : NO_GO") == "NO_GO"
-    assert declared_verdict("rien") is None
 
 
 def test_parse_criteria_reads_status_proof_and_fix_and_skips_headers():
@@ -212,8 +206,7 @@ def test_qa_verify_tool_reports_scope_and_import_problems(monkeypatch):
         {"path": "src/cart.ts", "content": "export const sum = 1;\n"},
         {"path": "src/extra.ts", "content": "export const e = 1;\n"},
     ]
-    architecture = crew.architecture_task()
-    architecture.output = type("Out", (), {"raw": "## Fichiers à créer ou modifier\n- MODIFIER src/App.tsx : racine\n- CRÉER src/cart.ts : panier\n- CRÉER src/other.ts : prévu\n"})()
+    crew._architecture_task_ref = type("T", (), {"output": type("Out", (), {"raw": "## Fichiers à créer ou modifier\n- MODIFIER src/App.tsx : racine\n- CRÉER src/cart.ts : panier\n- CRÉER src/other.ts : prévu\n"})()})()
     contents = {f["path"]: f["content"] for f in crew._analyst_files}
     monkeypatch.setattr(cq, "make_file_fetcher", lambda owner, repo, branch: (lambda path: (contents.get(path), None)))
     monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"App.tsx", "cart.ts", "extra.ts"}))
@@ -231,3 +224,64 @@ def test_qa_verify_tool_checks_only_added_imports_of_edited_files(monkeypatch):
     monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"x.ts"} if directory == "src" else set()))
     report = crew._build_qa_verify_tool().run()
     assert "Aucune incohérence détectée" in report and "legacy" not in report
+
+
+# --- Corrections de revue : tableau, verdict, plan --------------------------------------------
+
+def test_header_copied_from_the_prompt_is_not_a_criterion():
+    table = ("## Critères d'acceptation\n| Critère | Statut OK/KO/NON VÉRIFIABLE | Preuve | Correctif suggéré |\n"
+             "|---|---|---|---|\n| c1 | OK | `a.ts:1` ok | |\n")
+    assert [(r["criterion"], r["status"]) for r in parse_criteria(table)] == [("c1", "OK")]
+    assert required_verdict(table + "Verdict : GO", **kwargs()) == ("GO", [])
+
+
+def test_status_cells_must_be_a_status_only():
+    table = ("## Critères d'acceptation\n| a | ✅ **OK** | p | |\n| b | ❌ KO | `x.ts:2` | Corriger la ligne 2 de x.ts |\n"
+             "| c | OK (heuristique) | p | |\n| d | OK mais fragile | p | |\n| e | Statut | p | |\n")
+    assert [(r["criterion"], r["status"]) for r in parse_criteria(table)] == [("a", "OK"), ("b", "KO"), ("c", "OK")]
+
+
+def test_identifier_column_before_the_criterion_is_supported_with_or_without_header():
+    with_header = ("## Critères d'acceptation\n| AC | Critère | Statut | Preuve | Correctif |\n|---|---|---|---|---|\n"
+                   "| AC-F1-1 | total | KO | `a.ts:3` faux | Corriger total() pour ignorer la remise |\n")
+    rows = parse_criteria(with_header)
+    assert [(r["criterion"], r["status"], r["proof"].startswith("`a.ts:3`")) for r in rows] == [("total", "KO", True)]
+    assert rows[0]["fix"].startswith("Corriger total()")
+    assert required_verdict(with_header + "Verdict : GO", **kwargs())[0] == "NO_GO"
+    without_header = "## Critères d'acceptation\n| AC-F1-1 | total | KO | `a.ts:3` faux | Corriger total() pour la remise |\n"
+    assert [(r["criterion"], r["status"]) for r in parse_criteria(without_header)] == [("total", "KO")]
+
+
+def test_reconcile_leaves_prose_mentions_alone_but_rewrites_line_openers_and_the_last_mention():
+    raw = "Le verdict : GO du tour précédent ne tient plus.\n**Verdict** : GO\n| Verdict | GO |\nTexte final\nVerdict : GO"
+    new, origin = reconcile_verdict(raw, "NO_GO")
+    assert origin == "GO"
+    assert "Le verdict : GO du tour précédent" in new
+    assert new.count("NO_GO") == 3 and new.endswith("Verdict : NO_GO")
+    prose_last, _ = reconcile_verdict("Verdict : GO\nEn conclusion, le verdict : GO est maintenu.", "NO_GO")
+    assert prose_last.startswith("Verdict : NO_GO") and prose_last.endswith("verdict : NO_GO est maintenu.")
+
+
+def test_verify_tool_reads_the_plan_from_the_task_reference_without_building_a_task(monkeypatch):
+    crew = qa_crew()
+    crew._analyst_files = [{"path": "src/a.ts", "content": "export const a = 1;\n"}]
+    monkeypatch.setattr(cq, "make_file_fetcher", lambda owner, repo, branch: (lambda path: ("export const a = 1;\n", None)))
+    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"a.ts"}))
+
+    def boom():
+        raise AssertionError("architecture_task() ne doit plus être appelée par l'outil de la QA")
+
+    crew.architecture_task = boom
+    assert "Périmètre" not in crew._build_qa_verify_tool().run()  # sans architecte (BUGFIX) : pas de section
+
+
+def test_run_state_resets_the_architecture_reference():
+    crew = qa_crew()
+    assert crew._architecture_task_ref is None
+
+
+def test_dependency_files_are_never_out_of_plan():
+    planned = {"src/App.tsx"}
+    delivered = {"src/App.tsx", "package.json", "frontend/package-lock.json", "src/extra.ts"}
+    notes = cq._scope_notes(planned, delivered, set())
+    assert len(notes) == 1 and "src/extra.ts" in notes[0] and "package" not in notes[0]

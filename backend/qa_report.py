@@ -57,19 +57,33 @@ def _verdict_spans(raw: str) -> list[tuple[int, int, str]]:
     return spans
 
 
-def declared_verdict(raw: str) -> str | None:
-    """Verdict final déclaré : la DERNIÈRE mention (la conclusion demandée à la QA)."""
-    spans = _verdict_spans(raw)
-    return spans[-1][2] if spans else None
+_DECORATION = re.compile(r"[*_`\u2705\u274c\u26a0\ufe0f\u2611\u2714\u2716\U0001F7E2\U0001F534\U0001F7E1]")
+_TRAILING_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+_STATUS_ONLY = re.compile(r"(OK|KO|NON[ _-]?V[ÉE]RIFIABLE)", re.IGNORECASE)
+
+
+def _status_of(cell: str) -> str | None:
+    """OK, KO ou NV si la cellule EST un statut (mise en forme, emoji et parenthèse finale tolérés,
+    ex: « ✅ **OK** », « OK (heuristique) ») ; None sinon. Un en-tête « Statut OK/KO/NON VÉRIFIABLE »
+    n'en est donc pas un."""
+    cleaned = _TRAILING_PAREN.sub("", _DECORATION.sub("", cell)).strip()
+    if not _STATUS_ONLY.fullmatch(cleaned):
+        return None
+    if _STATUS_NV.search(cleaned):
+        return "NV"
+    return "KO" if cleaned.upper() == "KO" else "OK"
 
 
 def parse_criteria(raw: str) -> list[dict]:
     """Lignes du tableau « Critères d'acceptation » : {criterion, status (OK|KO|NV), proof, fix}.
-    Seules les lignes dont la 2e cellule porte un statut reconnu comptent (en-têtes et séparateurs
-    sont ignorés) ; sans section dédiée, tout le rapport est parcouru."""
+    La colonne de statut est repérée par la ligne d'en-tête (cellule « Statut »), sinon, par ligne, la
+    première cellule d'indice 1 ou plus qui est un statut ; critère, preuve et correctif sont lus par
+    rapport à elle (cellule précédente, suivante, d'après). Les en-têtes et séparateurs sont ignorés ;
+    sans section dédiée, tout le rapport est parcouru."""
     text = raw.replace("\u2019", "'")
     section = extract_section(text, "Critères d'acceptation", limit=10**6)
     rows = []
+    status_column: int | None = None
     for line in (section if section is not None else text).splitlines():
         stripped = line.strip()
         if not stripped.startswith("|"):
@@ -77,18 +91,22 @@ def parse_criteria(raw: str) -> list[dict]:
         cells = [c.strip() for c in stripped.strip("|").split("|")]
         if len(cells) < 3 or set("".join(cells)) <= set("-: "):
             continue
-        status_cell = cells[1]
-        if _STATUS_NV.search(status_cell):
-            status = "NV"
-        elif _STATUS_KO.search(status_cell):
-            status = "KO"
-        elif _STATUS_OK.search(status_cell):
-            status = "OK"
-        else:
+        header = next((i for i, c in enumerate(cells) if re.match(r"^[*_`\s]*statut\b", c, re.IGNORECASE)), None)
+        if header is not None and _status_of(cells[header]) is None:
+            status_column = header
+            continue
+        index = status_column if status_column is not None else next(
+            (i for i in range(1, len(cells)) if _status_of(cells[i])), None
+        )
+        if index is None or index >= len(cells) or index < 1:
+            continue
+        status = _status_of(cells[index])
+        if status is None:
             continue
         rows.append({
-            "criterion": cells[0], "status": status, "proof": cells[2],
-            "fix": cells[3] if len(cells) > 3 else "",
+            "criterion": cells[index - 1], "status": status,
+            "proof": cells[index + 1] if index + 1 < len(cells) else "",
+            "fix": cells[index + 2] if index + 2 < len(cells) else "",
         })
     return rows
 
@@ -159,13 +177,21 @@ def required_verdict(
     return verdict, [reason for _, reason in reasons]
 
 
+_OPENS_LINE = re.compile(r"^[\s*_`>#|-]*verdict\b", re.IGNORECASE)
+
+
 def reconcile_verdict(raw: str, required: str) -> tuple[str, str | None]:
-    """(rapport, verdict d'origine ou None). Toute mention de verdict PLUS indulgente que `required`
-    est réécrite en place (l'interface lit la première mention) ; sans écart, rapport inchangé."""
+    """(rapport, verdict d'origine ou None). Les mentions de verdict PLUS indulgentes que `required`
+    sont réécrites en place (l'interface lit la première mention) : la DERNIÈRE (la conclusion) et
+    celles qui ouvrent une ligne ou une cellule de tableau (« Verdict : … », « | Verdict | … | »).
+    Une phrase de prose qui cite un verdict n'est pas modifiée ; sans écart, rapport inchangé."""
     spans = _verdict_spans(raw)
     adjusted_from = None
-    for start, end, verdict in reversed(spans):
-        if SEVERITY[verdict] < SEVERITY[required]:
+    for position in range(len(spans) - 1, -1, -1):
+        start, end, verdict = spans[position]
+        line_start = raw.rfind("\n", 0, start) + 1
+        opens_line = bool(_OPENS_LINE.match(raw[line_start:end]))
+        if SEVERITY[verdict] < SEVERITY[required] and (position == len(spans) - 1 or opens_line):
             raw = raw[:start] + required + raw[end:]
-            adjusted_from = verdict
+            adjusted_from = adjusted_from or verdict
     return raw, adjusted_from

@@ -968,12 +968,16 @@ def _planned_paths(architecture_raw: str) -> set[str]:
             paths.add(normalized)
     return paths
 
+# Dépendances déclarées dans une section dédiée du plan, pas dans sa liste de fichiers : leur
+# livraison n'est jamais « hors plan ».
+_DEPENDENCY_FILES = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+
 def _scope_notes(planned: set[str], delivered: set[str], not_delivered: set[str]) -> list[str]:
     """Écarts entre le plan de l'Architecte et ce que l'Analyste a livré (vide = conforme)."""
     if not planned:
         return []
     notes = []
-    unplanned = sorted(delivered - planned)
+    unplanned = sorted(p for p in delivered - planned if p.rsplit("/", 1)[-1] not in _DEPENDENCY_FILES)
     if unplanned:
         notes.append("Fichiers livrés HORS du plan de l'Architecte (à justifier, risque de régression) : " + ", ".join(unplanned))
     missing = sorted(planned - delivered - not_delivered)
@@ -1156,6 +1160,8 @@ class AppDevelopmentCrew():
         # {chemin: texte AJOUTÉ} des fichiers modifiés par blocs : la QA ne contrôle que les imports
         # ajoutés, pas ceux déjà présents dans le fichier d'origine (voir qa_verify_delivered_files).
         self._edit_scope = {}
+        # Tâche d'architecture de CETTE exécution (None sans architecte, ex. BUGFIX) : la QA y lit le plan.
+        self._architecture_task_ref = None
         self._pull_request_urls = []
         self._analyst_raw = ""
         self._request_type = ""
@@ -1447,7 +1453,7 @@ class AppDevelopmentCrew():
             else:
                 fetch = make_file_fetcher(target[0], target[1], crew_self._work_branch)
             not_extracted = dict(getattr(crew_self, "_not_extracted", {}) or {})
-            plan_output = getattr(crew_self.architecture_task(), "output", None)
+            plan_output = getattr(getattr(crew_self, "_architecture_task_ref", None), "output", None)
             planned = _planned_paths(getattr(plan_output, "raw", "") or "")
             scope_notes = _scope_notes(planned, {f["path"] for f in files}, set(not_extracted)) if planned else None
             if target is None:
@@ -1579,6 +1585,7 @@ class AppDevelopmentCrew():
             task_obj.context = wanted if wanted else None
         self._reset_execution_state(inputs)
         self._request_type = request_type
+        self._architecture_task_ref = tasks_by_key.get('architecture')
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]
