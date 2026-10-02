@@ -619,6 +619,8 @@ def build_delivery_report(
     fetch: Callable[[str], tuple[str | None, str | None]],
     write_rejections: dict[str, str] | None = None,
     not_extracted: dict[str, str] | None = None,
+    scope_notes: list[str] | None = None,
+    import_notes: list[str] | None = None,
 ) -> str:
     """Rapport par fichier : présence réelle, identité avec la version de l'Analyste, syntaxe.
 
@@ -628,6 +630,9 @@ def build_delivery_report(
     refusés au dernier commit — relus quand même (un autre outil a pu les écrire depuis), mais
     signalés NON LIVRÉS s'ils ne sont pas identiques à la version de l'Analyste. not_extracted :
     {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables.
+    scope_notes : écarts entre les fichiers livrés et le plan de l'Architecte ; import_notes :
+    incohérences d'imports entre fichiers livrés (voir find_import_problems) — deux sections ajoutées
+    à la fin, sans quoi ces contrôles n'apparaîtraient pas dans le rapport de la QA.
     Les résultats sont étiquetés [vérifié outil] : ils proviennent d'une comparaison exacte en
     Python et de check_syntax_content, jamais d'une lecture LLM.
     """
@@ -687,4 +692,12 @@ def build_delivery_report(
             f"### {path}\n- Présence : PRÉSENT [vérifié outil]\n{match_line}\n"
             f"- check_syntax : {syntax} [vérifié outil]"
         )
+    if scope_notes is not None:
+        rows.append("### Périmètre (plan de l'Architecte) [vérifié outil]\n" + (
+            "\n".join(f"- {note}" for note in scope_notes) or "- Conforme : aucun fichier hors plan, aucun fichier prévu manquant."
+        ))
+    if import_notes is not None:
+        rows.append("### Cohérence des imports entre fichiers livrés [vérifié outil]\n" + (
+            "\n".join(f"- {note}" for note in import_notes) or "- Aucune incohérence détectée (imports relatifs et exports nommés)."
+        ))
     return "\n\n".join(rows)

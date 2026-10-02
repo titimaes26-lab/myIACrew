@@ -48,6 +48,12 @@ from github_tools import (
     track_edit_failures,
     write_files_to_branch,
 )
+from qa_report import (
+    QA_VERDICT,
+    qa_report_issues,
+    reconcile_verdict,
+    required_verdict,
+)
 from delivery import (
     build_pull_request_body,
     conventional_commit_message,
@@ -62,8 +68,10 @@ from analyst_output import (
     NOT_DELIVERED_MARKER,
     PRESENT_UNREADABLE,
     build_delivery_report,
+    find_import_problems,
     format_manifest,
     normalize_path,
+    parse_edit_sections,
     review_diagnostic_output,
 )
 
@@ -829,24 +837,6 @@ def _withdrawn_paths(text: str, candidates) -> set[str]:
             withdrawn.update(after_claimed)
     return withdrawn
 
-# Tolère "Verdict final (après revue complète) : GO", "**Verdict** : NO GO", "Verdict — GO",
-# "Verdict : ✅ GO", "Verdict : GO avec réserves", "Verdict : NON GO", "| Verdict | GO |" (ligne
-# de tableau Markdown), ou "## Verdict" en titre suivi de "**GO**" sur une ligne suivante.
-# Pour écarter les mentions fortuites ("verdict: No go-live possible", "... :\nGo figure"), une
-# valeur qui n'est pas en MAJUSCULES ne doit être suivie ni d'un tiret collé ni d'un mot en
-# minuscules ; en MAJUSCULES (la forme demandée à la QA), tout est accepté ("NO_GO car ...").
-_VERDICT_VALUES = r"GO[ _]AVEC[ _]R[ÉE]SERVES|NON?[ _-]?GO|GO"
-# Deux formes de séparateur, DISTINCTES pour ne pas se gêner l'une l'autre : ":"/tiret dans une
-# marge large (60 car., "|" toléré dedans — ex: "Verdict (2 échecs | tolérés) : GO", un "|"
-# incident dans le texte ne doit jamais empêcher d'atteindre le ":" voulu plus loin) ; "|" d'un
-# tableau Markdown seulement TOUT PRÈS de "verdict" (8 car., sans ":" ni "|" avant lui, la
-# cellule d'un tableau n'en contenant normalement aucun) — ex: "| Verdict | GO |".
-QA_VERDICT = re.compile(
-    r"(?i:verdict)(?:[^:\n—–=-]{0,60}[:—–=]|[^|:\n]{0,8}\||[ \t*]*\r?\n)\s*\W{0,8}"
-    r"(?:(?P<eol>(?i:" + _VERDICT_VALUES + r"))(?![\w-])(?![ \t]+[a-zà-ÿ])"
-    r"|(?P<upper>" + _VERDICT_VALUES + r")(?![\w-]))",
-)
-
 def _qa_verdict_guardrail(task_output):
     """Garantit un verdict QA lisible sans relancer l'agent (une relance QA coûterait jusqu'à
     10 appels d'outils) : sans verdict explicite, on l'ajoute comme NON FOURNI, à traiter en
@@ -966,6 +956,30 @@ def _architecture_issues(raw: str) -> List[str]:
     return issues
 
 _architecture_guardrail = _make_issue_note_guardrail(_architecture_issues, "Contrôle automatique de l'architecture")
+
+def _planned_paths(architecture_raw: str) -> set[str]:
+    """Chemins de la section « Fichiers à créer ou modifier » du plan de l'Architecte."""
+    section = _markdown_section((architecture_raw or "").replace("\u2019", "'"), "Fichiers à créer ou modifier")
+    paths = set()
+    for match in _ARCH_FILE_LINE.finditer(section or ""):
+        entry = _ARCH_FILE_ENTRY.match(match.group(1).strip())
+        normalized = normalize_path(entry.group(1)) if entry else None
+        if normalized:
+            paths.add(normalized)
+    return paths
+
+def _scope_notes(planned: set[str], delivered: set[str], not_delivered: set[str]) -> list[str]:
+    """Écarts entre le plan de l'Architecte et ce que l'Analyste a livré (vide = conforme)."""
+    if not planned:
+        return []
+    notes = []
+    unplanned = sorted(delivered - planned)
+    if unplanned:
+        notes.append("Fichiers livrés HORS du plan de l'Architecte (à justifier, risque de régression) : " + ", ".join(unplanned))
+    missing = sorted(planned - delivered - not_delivered)
+    if missing:
+        notes.append("Fichiers PRÉVUS par l'Architecte mais jamais livrés : " + ", ".join(missing))
+    return notes
 
 # --- CREW BASE ---
 @CrewBase
@@ -1105,7 +1119,7 @@ class AppDevelopmentCrew():
         return Task(
             config=self.tasks_config['qa_task'], agent=self.qa_agent(),
             output_file='tests/reports/qa_report.md',
-            guardrail=_qa_verdict_guardrail,
+            guardrail=self._qa_report_guardrail, guardrail_max_retries=0,
         )
 
     # --- Outils et guardrails propres à UNE exécution ---
@@ -1139,6 +1153,9 @@ class AppDevelopmentCrew():
         # Faits de livraison constatés par les OUTILS (voir _development_report_guardrail) : chemins
         # réellement committés, URLs de PR renvoyées par l'outil, dernière réponse de l'Analyste.
         self._committed_paths = set()
+        # {chemin: texte AJOUTÉ} des fichiers modifiés par blocs : la QA ne contrôle que les imports
+        # ajoutés, pas ceux déjà présents dans le fichier d'origine (voir qa_verify_delivered_files).
+        self._edit_scope = {}
         self._pull_request_urls = []
         self._analyst_raw = ""
         self._request_type = ""
@@ -1201,6 +1218,8 @@ class AppDevelopmentCrew():
         """
         raw = getattr(task_output, "raw", "") or ""
         self._analyst_raw = raw
+        for edited_path, edit_blocks in parse_edit_sections(raw)[0].items():
+            self._edit_scope[edited_path] = "\n".join(replace for _, replace in edit_blocks)
         files, issue, faulty_paths, broken = review_diagnostic_output(
             raw, read_base=self._read_base_file, list_dir=self._list_base_dir,
             context_files=list(getattr(self, "_analyst_files", []) or []),
@@ -1381,6 +1400,33 @@ class AppDevelopmentCrew():
         )
         return True, f"{raw}\n\n{block}"
 
+    def _qa_report_guardrail(self, task_output):
+        """Rend le verdict de la QA COHÉRENT avec les faits constatés par les outils (voir
+        qa_report.required_verdict) : un verdict plus indulgent est réécrit en place, et les défauts
+        du rapport (KO sans preuve localisée, NON VÉRIFIABLE sans test manuel…) sont listés dans une
+        note. Jamais de relance : une relance QA coûterait jusqu'à 10 appels d'outils."""
+        raw = getattr(task_output, "raw", "") or ""
+        notes = list(qa_report_issues(raw))
+        if not QA_VERDICT.search(raw):
+            raw = (
+                f"{raw}\n\n**Verdict : NON FOURNI** — la QA n'a pas conclu explicitement : à considérer "
+                "comme NO_GO tant qu'une vérification humaine n'a pas eu lieu."
+            )
+        else:
+            required, reasons = required_verdict(
+                raw,
+                delivery_gaps=self._delivery_gaps(),
+                analyst_file_count=len(getattr(self, "_analyst_files", []) or []),
+                committed_count=len(self._committed_paths),
+                commit_tool_used=getattr(self, "_commit_tool_used", False),
+            )
+            raw, adjusted_from = reconcile_verdict(raw, required)
+            if adjusted_from:
+                notes.insert(0, f"Verdict ajusté de {adjusted_from} à {required} : " + " ; ".join(reasons) + ".")
+        if not notes:
+            return True, raw if raw != (getattr(task_output, "raw", "") or "") else task_output
+        return True, raw + "\n\n## Contrôle automatique du rapport QA\n" + "\n".join(f"- {note}" for note in notes)
+
     def _build_qa_verify_tool(self):
         crew_self = self
 
@@ -1400,10 +1446,23 @@ class AppDevelopmentCrew():
                 fetch = lambda path: _read_local_file(workspace, path)  # noqa: E731
             else:
                 fetch = make_file_fetcher(target[0], target[1], crew_self._work_branch)
+            not_extracted = dict(getattr(crew_self, "_not_extracted", {}) or {})
+            plan_output = getattr(crew_self.architecture_task(), "output", None)
+            planned = _planned_paths(getattr(plan_output, "raw", "") or "")
+            scope_notes = _scope_notes(planned, {f["path"] for f in files}, set(not_extracted)) if planned else None
+            if target is None:
+                list_dir = lambda directory: _list_local_dir(crew_self._workspace, directory)  # noqa: E731
+            else:
+                list_dir = make_dir_lister(target[0], target[1], crew_self._work_branch)
+            import_notes = find_import_problems(
+                files, list_dir, import_scope=dict(getattr(crew_self, "_edit_scope", {}) or {}),
+            )
             return build_delivery_report(
                 files, fetch,
                 write_rejections=dict(getattr(crew_self, "_write_rejections", {}) or {}),
-                not_extracted=dict(getattr(crew_self, "_not_extracted", {}) or {}),
+                not_extracted=not_extracted,
+                scope_notes=scope_notes,
+                import_notes=import_notes,
             )
 
         # Sans argument, un 2e appel (après une correction) resservirait sinon l'ancien rapport.

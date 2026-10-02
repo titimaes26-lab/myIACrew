@@ -350,7 +350,10 @@ qa_task:
     pour CHAQUE fichier de l'Analyste sa présence réelle, l'identité exacte (diff) avec la version
     de l'Analyste et check_syntax — ce qui couvre les vérifications 1 et 2 ci-dessous pour ces
     fichiers sans relecture. Ne relis ensuite individuellement (github_read_file) QUE les fichiers
-    nécessaires pour juger la conformité fonctionnelle ou ceux que cet outil n'a pas couverts.
+    nécessaires pour juger la conformité fonctionnelle ou ceux que cet outil n'a pas couverts. Le rapport
+    de l'outil contient aussi une section "Périmètre" (fichiers livrés hors du plan de l'Architecte, ou
+    prévus mais jamais livrés) et une section "Cohérence des imports" (import sans cible, export
+    manquant) : reprends-les dans ta conclusion, un import incohérent étant un problème BLOQUANT.
 
     Revois le code produit par le Développeur (le plan et le contenu complet rédigés par
     l'Analyste, committés tels quels par le Développeur — voir leurs rapports respectifs). Ne
@@ -400,7 +403,17 @@ qa_task:
     dans ta conclusion, même si tout le reste (syntaxe, fichiers réellement présents) est correct.
     Pour ce jugement, pars des "Critères d'acceptation" du Designer s'ils figurent dans ton
     contexte ; sinon, reformule d'abord toi-même 2 à 5 critères vérifiables à partir de la demande.
-    Évalue chacun : OK, KO ou NON VÉRIFIABLE, avec la preuve.
+    Évalue chacun : OK, KO ou NON VÉRIFIABLE, avec la preuve. Colonne "Preuve" : pour un KO, la
+    localisation EXACTE au format `chemin/fichier.ext:ligne` ; pour un NON VÉRIFIABLE, la RAISON précise
+    (ex: aucun environnement d'exécution) ET un test manuel concret que l'utilisateur peut faire (étapes
+    courtes). Colonne "Correctif suggéré" : obligatoire pour un KO, une phrase actionnable (quoi changer
+    et où). Ne range pas dans NON VÉRIFIABLE ce que tu pouvais vérifier avec un outil.
+
+    Règle de verdict (appliquée aussi par un contrôle automatique, qui réécrit tout verdict trop
+    indulgent) : NO_GO si un critère est KO, si un problème bloquant est listé, ou si aucun fichier de
+    l'Analyste n'a été committé ; GO_AVEC_RESERVES si des fichiers sont non livrés ou si un critère reste
+    NON VÉRIFIABLE ; GO uniquement si tout le reste est OK. Tu peux être plus sévère, jamais plus
+    indulgent.
 
     Étiquette CHAQUE affirmation de ton rapport : [vérifié outil] si elle repose sur un résultat
     d'outil (qa_verify_delivered_files, check_syntax, github_read_file), [lecture] si elle repose
@@ -416,7 +429,8 @@ qa_task:
     Un rapport de validation QA au format fixe : "Fichiers vérifiés" (pour chacun : présence,
     identité avec l'Analyste, résultat exact de check_syntax, chaque point étiqueté [vérifié outil]
     ou [lecture]), "Critères d'acceptation" (tableau Critère | Statut OK/KO/NON VÉRIFIABLE |
-    Preuve), "Problèmes bloquants", "Problèmes mineurs", "Fichiers non vérifiés", puis une
+    Preuve (fichier:ligne pour un KO, raison et test manuel pour un NON VÉRIFIABLE) | Correctif suggéré),
+    "Problèmes bloquants", "Problèmes mineurs", "Fichiers non vérifiés", puis une
     dernière ligne exactement au format "Verdict : GO", "Verdict : GO_AVEC_RESERVES" ou
     "Verdict : NO_GO".
   agent: qa_agent
