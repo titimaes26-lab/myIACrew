@@ -186,6 +186,14 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
     renvoie pas son contenu, ou contenu non UTF-8) est signalé par PRESENT_UNREADABLE, pour que
     la QA ne le déclare jamais ABSENT à tort.
     """
+    def failing(error: str, branch_missing: bool = False) -> Callable[[str], tuple[str | None, str | None]]:
+        def fetch(path: str) -> tuple[str | None, str | None]:
+            return None, error
+        # Permet à l'appelant de distinguer « la branche n'existe pas (encore) » d'une erreur
+        # transitoire : seul le premier cas autorise de lire une autre branche à la place.
+        fetch.branch_missing = branch_missing  # type: ignore[attr-defined]
+        return fetch
+
     try:
         gh_repo = _get_repo(owner, repo)
     except GithubException as e:
@@ -193,23 +201,19 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
             f"ERREUR : le repository {owner}/{repo} est introuvable ou inaccessible avec ce jeton"
             if e.status == 404 else _github_error(e)
         )
-        return lambda path: (None, error)
+        return failing(error)
     except Exception as e:
-        error = f"ERREUR : {e}"
-        return lambda path: (None, error)
+        return failing(f"ERREUR : {e}")
     try:
         # Branche vérifiée d'abord : sans elle, chaque lecture renverrait 404 et TOUS les fichiers
         # passeraient pour absents, alors que c'est la branche qui manque (non vérifiable).
         gh_repo.get_branch(branch)
     except GithubException as e:
-        error = (
-            f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}"
-            if e.status == 404 else _github_error(e)
-        )
-        return lambda path: (None, error)
+        if e.status == 404:
+            return failing(f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}", branch_missing=True)
+        return failing(_github_error(e))
     except Exception as e:
-        error = f"ERREUR : {e}"
-        return lambda path: (None, error)
+        return failing(f"ERREUR : {e}")
 
     def fetch(path: str) -> tuple[str | None, str | None]:
         try:
@@ -228,8 +232,10 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
 
 
 def make_dir_lister(owner: str, repo: str, branch: str) -> Callable[[str], set[str] | None]:
-    """Fonction dossier -> noms des entrées, ou None si inconnu (dépôt, branche ou dossier
-    introuvable, erreur réseau). Un seul get_repo est fait pour toutes les listes."""
+    """Fonction dossier -> noms des entrées. Un dossier ABSENT (404) ou un fichier donne un
+    ensemble vide (il n'y a rien dedans : un import qui y mène n'a pas de cible) ; None signifie
+    seulement « inconnu » (dépôt inaccessible, erreur réseau ou de quota). Un seul get_repo est
+    fait pour toutes les listes."""
     try:
         gh_repo = _get_repo(owner, repo)
     except Exception:
@@ -238,10 +244,12 @@ def make_dir_lister(owner: str, repo: str, branch: str) -> Callable[[str], set[s
     def list_dir(directory: str) -> set[str] | None:
         try:
             contents = gh_repo.get_contents(directory or "", ref=branch)
+        except GithubException as e:
+            return set() if e.status == 404 else None
         except Exception:
             return None
         if not isinstance(contents, list):
-            return None
+            return set()
         return {item.name for item in contents}
 
     return list_dir

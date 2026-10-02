@@ -389,6 +389,7 @@ _EXPORT_DECL = re.compile(
     r"export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|abstract\s+class|type|interface|enum)\s+([\w$]+)"
 )
 _EXPORT_LIST = re.compile(r"export\s*(?:type\s*)?\{([^}]*)\}")
+_EXPORT_DESTRUCTURED = re.compile(r"export\s+(?:const|let|var)\s*[{\[]([^}\]]*)[}\]]")
 _RESOLVE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".json", ".css")
 _ASSET_EXTENSIONS = {"css", "scss", "json", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico"}
 
@@ -396,6 +397,12 @@ _ASSET_EXTENSIONS = {"css", "scss", "json", "svg", "png", "jpg", "jpeg", "gif", 
 def _exports_of(content: str) -> tuple[set[str], bool, bool]:
     """(noms exportés, export par défaut ?, `export *` présent ?)."""
     names = set(_EXPORT_DECL.findall(content))
+    for group in _EXPORT_DESTRUCTURED.findall(content):
+        for item in group.split(","):
+            # "a", "a: alias", "a = defaut", "...reste" : le nom exporté est celui de la dernière position.
+            name = item.split("=")[0].split(":")[-1].strip().lstrip(".").strip()
+            if name.isidentifier():
+                names.add(name)
     has_default = bool(re.search(r"export\s+default\b", content))
     for group in _EXPORT_LIST.findall(content):
         for item in group.split(","):
@@ -428,6 +435,7 @@ def find_import_problems(
     files: list[dict],
     list_dir: Callable[[str], set[str] | None] | None = None,
     context_files: list[dict] | None = None,
+    import_scope: dict[str, str] | None = None,
 ) -> list[str]:
     """Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un
     fichier existant, et import nommé (ou par défaut) absent des exports d'un fichier LIVRÉ.
@@ -435,7 +443,9 @@ def find_import_problems(
     list_dir(dossier) -> noms des entrées, ou None si inconnu (erreur réseau, dossier absent) :
     dans le doute, un import n'est jamais signalé (pas de faux positif sur une panne GitHub).
     context_files : fichiers livrés à une tentative PRÉCÉDENTE : ils servent à résoudre les imports
-    de `files` mais ne sont pas contrôlés eux-mêmes."""
+    de `files` mais ne sont pas contrôlés eux-mêmes.
+    import_scope : {chemin: texte} — pour ces fichiers, seuls les imports de CE texte sont contrôlés
+    (le texte ajouté par une modification ciblée), pas ceux déjà présents dans le fichier d'origine."""
     delivered = {f["path"]: f["content"] for f in (context_files or [])}
     delivered.update({f["path"]: f["content"] for f in files})
     dir_cache: dict[str, set[str] | None] = {}
@@ -448,7 +458,9 @@ def find_import_problems(
         return dir_cache[directory]
 
     problems: list[str] = []
-    for path, content in {f["path"]: f["content"] for f in files}.items():
+    scanned = {f["path"]: f["content"] for f in files}
+    scanned.update({p: t for p, t in (import_scope or {}).items() if p in scanned})
+    for path, content in scanned.items():
         if _extension(path) not in CODE_EXTENSIONS:
             continue
         imports = [(m.group(1), m.group(2), m.group(3)) for m in _IMPORT_FROM.finditer(content)]
@@ -582,7 +594,10 @@ def review_diagnostic_output(
             f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
             "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
         )
-    import_problems = find_import_problems(files, list_dir, context_files)
+    import_problems = find_import_problems(
+        files, list_dir, context_files,
+        import_scope={path: text["content"] for path, text in ((r["path"], r) for r in replaced_text)},
+    )
     if import_problems:
         problems.append(
             "Incohérences entre fichiers (imports) :\n"

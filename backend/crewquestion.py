@@ -687,11 +687,15 @@ def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None
         return None, f"{type(e).__name__}: {e}"
 
 def _list_local_dir(workspace: Path, directory: str) -> set[str] | None:
+    """Noms des entrées d'un dossier de l'espace de travail. Dossier absent (ou fichier) : ensemble
+    vide, pas « inconnu » ; None seulement hors de l'espace de travail ou en cas d'erreur d'accès."""
     target = _local_target(workspace, directory) if directory else workspace.resolve()
     if target is None:
         return None
     try:
         return {entry.name for entry in target.iterdir()}
+    except (FileNotFoundError, NotADirectoryError):
+        return set()
     except Exception:
         return None
 
@@ -1137,43 +1141,36 @@ class AppDevelopmentCrew():
                 parts.append(raw[:MAX_RETRY_CONTEXT_CHARS])
         return ("\n\nRappel du contexte reçu (specs/architecture) :\n" + "\n---\n".join(parts)) if parts else ""
 
-    def _base_sources(self):
-        """[(lecteur de fichier, lecteur de dossier)] par ordre de préférence : la branche de
-        travail si elle existe déjà (un correctif d'un tour précédent y est), sinon la branche de
-        base — comme diagnostic_task le demande à l'Analyste pour ses propres lectures."""
-        if getattr(self, "_base_readers", None) is not None:
-            return self._base_readers
+    def _base_source(self):
+        """(lecteur de fichier, lecteur de dossier) du code d'ORIGINE, fixé une fois pour toutes :
+        la branche de travail si elle existe déjà (un correctif d'un tour précédent s'y trouve),
+        sinon la branche de base — comme diagnostic_task le demande à l'Analyste pour ses lectures.
+        Jamais de repli d'une branche à l'autre sur une simple erreur : appliquer une modification à
+        la version de la base alors que la branche de travail est plus récente écraserait son contenu."""
+        cached = getattr(self, "_base_readers", None)
+        if cached is not None:
+            return cached
         target = getattr(self, "_repo_target", None)
         if target is None:
             workspace = self._workspace
-            sources = [(lambda path: _read_local_file(workspace, path), lambda d: _list_local_dir(workspace, d))]
+            source = (lambda path: _read_local_file(workspace, path), lambda d: _list_local_dir(workspace, d))
         else:
             owner, repo = target
-            branches = [b for b in (self._work_branch, getattr(self, "_base_branch", "main")) if b]
-            sources = [
-                (make_file_fetcher(owner, repo, branch), make_dir_lister(owner, repo, branch))
-                for branch in dict.fromkeys(branches)
-            ]
-        self._base_readers = sources
-        return sources
+            branches = list(dict.fromkeys(b for b in (self._work_branch, getattr(self, "_base_branch", "main")) if b))
+            fetch, chosen = None, None
+            for branch in branches:
+                fetch, chosen = make_file_fetcher(owner, repo, branch), branch
+                if not getattr(fetch, "branch_missing", False):
+                    break
+            source = (fetch, make_dir_lister(owner, repo, chosen))
+        self._base_readers = source
+        return source
 
     def _read_base_file(self, path: str) -> tuple[str | None, str | None]:
-        last_error = "aucune source de lecture"
-        for fetch, _ in self._base_sources():
-            content, error = fetch(path)
-            if content is not None:
-                return content, None
-            last_error = error or last_error
-            # Seule une absence CONFIRMÉE justifie de tenter la branche suivante ; une erreur de
-            # branche (work_branch pas encore créée) est, elle, un « non vérifiable » : on continue.
-        return None, last_error
+        return self._base_source()[0](path)
 
     def _list_base_dir(self, directory: str) -> set[str] | None:
-        for _, list_dir in self._base_sources():
-            names = list_dir(directory)
-            if names is not None:
-                return names
-        return None
+        return self._base_source()[1](directory)
 
     def _diagnostic_guardrail(self, task_output):
         """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun fichier, balise de fin

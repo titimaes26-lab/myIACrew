@@ -464,3 +464,33 @@ def test_context_files_resolve_imports_without_being_checked():
     context = [f("src/lib.ts", "export const a = 1;\n")]
     assert find_import_problems(files, context_files=context) == []
     assert find_import_problems(files, list_dir=lambda d: set()) != []  # sans contexte : introuvable
+
+
+def test_legacy_imports_of_an_edited_file_are_not_checked_only_the_added_ones():
+    base = "import Legacy from './legacy/Missing';\nconst a = 1;\n"
+    listing = lambda d: {"x.ts"} if d == "src" else set()  # noqa: E731
+    clean = review_diagnostic_output(
+        edit("src/x.ts", ("const a = 1;", "const a = 2;")), read_base=lambda p: (base, None), list_dir=listing
+    )
+    assert clean[1] is None
+    added = review_diagnostic_output(
+        edit("src/x.ts", ("const a = 1;", "import Nouveau from './nouveau/Absent';\nconst a = 2;")),
+        read_base=lambda p: (base, None), list_dir=listing,
+    )
+    assert added[1] and "./nouveau/Absent" in added[1] and "legacy" not in added[1]
+
+
+def test_edited_file_exports_are_taken_from_the_complete_resolved_content():
+    base_lib = "export const other = 1;\n"
+    review = review_diagnostic_output(
+        edit("src/lib.ts", ("export const other = 1;", "export const other = 1;\nexport const helper = 2;"))
+        + block("src/App.tsx", "import { helper } from './lib';\nexport default 1;\n"),
+        read_base=lambda p: (base_lib, None),
+    )
+    assert review[1] is None
+
+
+def test_destructured_exports_count_as_exports():
+    files = [f("src/a.ts", "import { x, renamed, first } from './b';\n"),
+             f("src/b.ts", "export const { x, y: renamed } = obj;\nexport const [first, second] = list;\n")]
+    assert find_import_problems(files) == []

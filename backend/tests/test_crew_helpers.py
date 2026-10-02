@@ -290,7 +290,7 @@ def _edit_block(path, search, replace):
 
 def test_guardrail_resolves_a_targeted_edit_into_a_complete_committable_file():
     crew = new_crew()
-    crew._base_readers = [(lambda path: ("const a = 1;\nconst b = 2;\n", None), lambda d: None)]
+    crew._base_readers = (lambda path: ("const a = 1;\nconst b = 2;\n", None), lambda d: None)
     ok, _ = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "const b = 2;", "const b = 3;")))
     assert ok and crew._analyst_files == [{"path": "src/x.ts", "content": "const a = 1;\nconst b = 3;\n"}]
     assert not crew._not_extracted
@@ -298,29 +298,111 @@ def test_guardrail_resolves_a_targeted_edit_into_a_complete_committable_file():
 
 def test_guardrail_refuses_once_when_the_search_text_is_not_in_the_original():
     crew = new_crew()
-    crew._base_readers = [(lambda path: ("const a = 1;\n", None), lambda d: None)]
+    crew._base_readers = (lambda path: ("const a = 1;\n", None), lambda d: None)
     ok, message = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "inexistant", "x")))
     assert not ok and "introuvable" in message
     ok, _ = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "inexistant", "x")))
     assert ok and not crew._analyst_files and "src/x.ts" in crew._not_extracted
 
 
-def test_read_base_file_falls_back_to_the_next_source_then_reports_the_last_error():
-    crew = new_crew()
-    crew._base_readers = [
-        (lambda path: (None, "ERREUR : la branche 'feature/x' est introuvable"), lambda d: None),
-        (lambda path: ("base content", None), lambda d: {"x.ts"}),
-    ]
-    assert crew._read_base_file("src/x.ts") == ("base content", None)
-    assert crew._list_base_dir("src") == {"x.ts"}
-    crew._base_readers = [(lambda path: (None, "ABSENT : nope"), lambda d: None)]
-    assert crew._read_base_file("src/x.ts") == (None, "ABSENT : nope")
-    assert crew._list_base_dir("src") is None
+def _fake_fetcher(content=None, error=None, branch_missing=False):
+    def fetch(path):
+        return content, error
+    fetch.branch_missing = branch_missing
+    return fetch
+
+
+def _repo_crew():
+    crew = new_crew(owner="o", repo="r", branch="crewai/x")
+    crew._base_branch = "main"
+    return crew
+
+
+def test_base_source_uses_the_work_branch_when_it_exists(monkeypatch):
+    crew = _repo_crew()
+    made = {}
+
+    def fake_fetcher(owner, repo, branch):
+        made[branch] = True
+        return _fake_fetcher(content=f"version de {branch}")
+
+    monkeypatch.setattr(cq, "make_file_fetcher", fake_fetcher)
+    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda d: {branch}))
+    assert crew._read_base_file("src/x.ts") == ("version de crewai/x", None)
+    assert crew._list_base_dir("src") == {"crewai/x"} and "main" not in made
+
+
+def test_base_source_falls_back_to_main_only_when_the_work_branch_does_not_exist(monkeypatch):
+    crew = _repo_crew()
+    monkeypatch.setattr(
+        cq, "make_file_fetcher",
+        lambda owner, repo, branch: _fake_fetcher(error="ERREUR : branche introuvable", branch_missing=True)
+        if branch == "crewai/x" else _fake_fetcher(content="version de main"),
+    )
+    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda d: {branch}))
+    assert crew._read_base_file("src/x.ts") == ("version de main", None)
+    assert crew._list_base_dir("src") == {"main"}
+
+
+def test_transient_error_on_the_work_branch_never_falls_back_to_main(monkeypatch):
+    crew = _repo_crew()
+    monkeypatch.setattr(
+        cq, "make_file_fetcher",
+        lambda owner, repo, branch: _fake_fetcher(error="ERREUR_GITHUB : rate limit exceeded")
+        if branch == "crewai/x" else _fake_fetcher(content="ANCIENNE version de main"),
+    )
+    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda d: None))
+    assert crew._read_base_file("src/x.ts") == (None, "ERREUR_GITHUB : rate limit exceeded")
+    ok, message = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "a", "b")))
+    assert not ok and "modification impossible" in message
+
+
+def test_local_dir_listing_distinguishes_absent_directory_from_unknown(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/App.tsx").write_text("x")
+    assert cq._list_local_dir(tmp_path, "src") == {"App.tsx"}
+    assert cq._list_local_dir(tmp_path, "src/components/Header") == set()
+    assert cq._list_local_dir(tmp_path, "src/App.tsx") == set()
+    assert cq._list_local_dir(tmp_path, "../dehors") is None
+
+
+def test_github_dir_lister_maps_404_to_empty_and_other_errors_to_unknown(monkeypatch):
+    import github_tools as gt
+    from github import GithubException
+
+    class Item:
+        def __init__(self, name):
+            self.name = name
+
+    class FakeRepo:
+        def get_contents(self, directory, ref=None):
+            if directory == "src":
+                return [Item("App.tsx")]
+            if directory == "src/Header":
+                raise GithubException(404, {}, {})
+            if directory == "file.txt":
+                return Item("file.txt")
+            raise GithubException(403, {}, {})
+
+    monkeypatch.setattr(gt, "_get_repo", lambda owner, repo: FakeRepo())
+    list_dir = gt.make_dir_lister("o", "r", "main")
+    assert list_dir("src") == {"App.tsx"}
+    assert list_dir("src/Header") == set() and list_dir("file.txt") == set()
+    assert list_dir("quota") is None
+
+
+def test_unresolved_import_is_flagged_with_real_listing_semantics(tmp_path):
+    from analyst_output import find_import_problems
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/App.tsx").write_text("x")
+    files = [{"path": "src/Main.tsx", "content": "import Header from './components/Header';\n"}]
+    problems = find_import_problems(files, list_dir=lambda d: cq._list_local_dir(tmp_path, d))
+    assert len(problems) == 1 and "./components/Header" in problems[0]
 
 
 def test_guardrail_refuses_once_on_inconsistent_imports_then_accepts_with_a_note():
     crew = new_crew()
-    crew._base_readers = [(lambda path: (None, "ABSENT"), lambda d: None)]
+    crew._base_readers = (lambda path: (None, "ABSENT"), lambda d: None)
     bad = (
         "<<<FICHIER: src/App.tsx>>>\n```tsx\nimport { total } from './cart';\nexport default 1;\n```\n<<<FIN_FICHIER>>>\n"
         "<<<FICHIER: src/cart.ts>>>\n```ts\nexport const sum = 1;\n```\n<<<FIN_FICHIER>>>\n"
