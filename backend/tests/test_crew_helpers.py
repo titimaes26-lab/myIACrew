@@ -159,11 +159,30 @@ def test_design_spec_issues_flags_missing_sections():
     assert any("Utilisateurs" in i for i in issues) and any("Hypothèses retenues" in i for i in issues)
 
 
+def test_design_spec_issues_accepts_typographic_apostrophe():
+    assert cq._design_spec_issues(GOOD_SPEC.replace("d'acceptation", "d\u2019acceptation")) == []
+
+
+def test_design_spec_issues_accepts_alternative_id_formats():
+    spec = GOOD_SPEC.replace("- F1 [Must] Ajouter une tâche", "- [Must] **F1** Ajouter une tâche").replace("AC-F1-1", "AC-F1.1")
+    assert cq._design_spec_issues(spec) == []
+    missing = cq._design_spec_issues(spec.replace("AC-F1.1", "critère"))
+    assert any("F1 [Must]" in i for i in missing)
+
+
+def test_design_spec_issues_context_digit_does_not_excuse_vague_outcome():
+    spec = GOOD_SPEC + "- AC-F1-2 Étant donné 3 tâches / Quand je filtre / Alors l'affichage est fluide\n"
+    assert any("Critère vague" in i for i in cq._design_spec_issues(spec))
+    ok = GOOD_SPEC + "- AC-F1-2 Étant donné 3 tâches / Quand je filtre / Alors l'affichage prend moins de 200 ms\n"
+    assert cq._design_spec_issues(ok) == []
+
+
 def test_design_spec_guardrail_never_fails_and_annotates_only_on_issues():
     class Out:
         raw = GOOD_SPEC
-    ok, result = cq._design_spec_guardrail(Out())
-    assert ok is True and result is not None and "Contrôle automatique" not in str(result)
+    out = Out()
+    ok, result = cq._design_spec_guardrail(out)
+    assert ok is True and result is out
     Out.raw = "## Besoin\nx"
     ok, result = cq._design_spec_guardrail(Out())
     assert ok is True and "## Contrôle automatique des specs" in result

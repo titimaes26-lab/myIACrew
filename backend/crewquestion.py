@@ -844,22 +844,34 @@ DESIGN_REQUIRED_HEADINGS = (
 _DESIGN_VAGUE_TERMS = re.compile(
     r"\b(rapide(?:ment)?|fluide|intuitif|intuitive|simple|convivial|ergonomique|joli|moderne)\b", re.IGNORECASE
 )
-_DESIGN_MUST_FEATURE = re.compile(r"\bF(\d+)\b[^\n]*\[\s*Must\s*\]", re.IGNORECASE)
+_DESIGN_FEATURE_ID = r"(?<![A-Za-z-])F(\d+)\b"
+_DESIGN_MUST_BEFORE = re.compile(_DESIGN_FEATURE_ID + r"[^\n]*\[\s*Must\s*\]", re.IGNORECASE)
+_DESIGN_MUST_AFTER = re.compile(r"\[\s*Must\s*\][^\n]*?" + _DESIGN_FEATURE_ID, re.IGNORECASE)
+_DESIGN_CRITERION_ID = re.compile(r"\bAC-F(\d+)[-.](\d+)")
 
 def _design_spec_issues(raw: str) -> List[str]:
     """Anomalies vérifiables d'un document de specs du designer (titres, identifiants, termes vagues)."""
+    # Apostrophes typographiques courantes dans une sortie LLM : sans normalisation, un titre
+    # « Critères d’acceptation » serait signalé absent à tort.
+    raw = raw.replace("\u2019", "'").replace("\u2018", "'")
     issues = []
     for heading in DESIGN_REQUIRED_HEADINGS:
         if not re.search(rf"^#+\s*.*{re.escape(heading)}", raw, re.IGNORECASE | re.MULTILINE):
             issues.append(f"Section « {heading} » absente.")
-    for number in sorted({m.group(1) for m in _DESIGN_MUST_FEATURE.finditer(raw)}, key=int):
-        if not re.search(rf"\bAC-F{number}-\d+", raw):
-            issues.append(f"F{number} [Must] n'a aucun critère d'acceptation AC-F{number}-n.")
+    must_numbers = {m.group(1) for m in _DESIGN_MUST_BEFORE.finditer(raw)}
+    must_numbers |= {m.group(1) for m in _DESIGN_MUST_AFTER.finditer(raw)}
+    covered = {m.group(1) for m in _DESIGN_CRITERION_ID.finditer(raw)}
+    for number in sorted(must_numbers - covered, key=int):
+        issues.append(f"F{number} [Must] n'a aucun critère d'acceptation AC-F{number}-n.")
     for line in raw.splitlines():
-        criterion = re.search(r"\bAC-F\d+-\d+", line)
+        criterion = _DESIGN_CRITERION_ID.search(line)
         if criterion:
             body = line[criterion.end():]
-            if _DESIGN_VAGUE_TERMS.search(body) and not re.search(r"\d", body):
+            # Seuil attendu dans le résultat observable ("Alors ..."), pas dans le contexte
+            # ("Étant donné 3 tâches") : un chiffre de contexte ne rend pas mesurable un « fluide ».
+            outcome = re.search(r"\bAlors\b", body, re.IGNORECASE)
+            outcome_text = body[outcome.end():] if outcome else body
+            if _DESIGN_VAGUE_TERMS.search(outcome_text) and not re.search(r"\d", outcome_text):
                 issues.append(f"Critère vague sans seuil mesurable : « {line.strip()[:90]} ».")
     return issues
 
