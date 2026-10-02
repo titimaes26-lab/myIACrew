@@ -33,8 +33,8 @@ export function parseAgentMetadata(content: string, agentName: string): AgentMet
     metadata.status = `Confiance: ${Math.round(confValue)}%`;
   }
 
-  // Extraire fichiers (pattern: "<<<FICHIER: path>>>")
-  const fileMatches = content.matchAll(/<<<FICHIER:\s*([^\n>]+)\s*>>>/g);
+  // Extraire fichiers (patterns: "<<<FICHIER: path>>>" et "<<<MODIFICATION: path>>>")
+  const fileMatches = content.matchAll(/<<<(?:FICHIER|MODIFICATION):\s*([^\n>]+)\s*>>>/g);
   const files: AgentMetadata['files'] = [];
   for (const match of fileMatches) {
     files.push({ path: match[1].trim() });

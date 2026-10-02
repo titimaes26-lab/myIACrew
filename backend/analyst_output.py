@@ -15,6 +15,7 @@ pipeline. Ce module extrait ces fichiers une fois pour toutes, pour que :
   sans devoir le faire "à l'œil" (voir build_delivery_report).
 """
 import difflib
+import posixpath
 import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor
@@ -44,6 +45,17 @@ MARKER_LIKE = re.compile(r"^<<<.*FICHIER", re.IGNORECASE)
 FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::\s*([^>]*?)\s*)?>{3,}.*$", re.IGNORECASE)
 FENCE_LINE = re.compile(r"^(`{3,}|~{3,})")
 ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
+
+# Modification ciblée d'un fichier EXISTANT, pour ne pas le réécrire en entier :
+#   <<<MODIFICATION: chemin>>> puis un ou plusieurs blocs
+#   "<<<<<<< CHERCHER" / texte exact / "=======" / texte de remplacement / ">>>>>>> REMPLACER",
+#   puis <<<FIN_MODIFICATION>>>. Résolue EN PYTHON contre le fichier d'origine (voir
+#   review_diagnostic_output) : en aval, le fichier modifié est un fichier complet comme les autres.
+EDIT_START = re.compile(r"^<<<\s*MODIFICATION\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
+EDIT_END = re.compile(r"^<<<\s*FIN[\s_]+MODIFICATION\s*>{3,}.*$", re.IGNORECASE)
+EDIT_SEARCH = re.compile(r"^<{7}\s*CHERCHER\s*$", re.IGNORECASE)
+EDIT_SEPARATOR = re.compile(r"^={7}\s*$")
+EDIT_REPLACE = re.compile(r"^>{7}\s*REMPLACER\s*$", re.IGNORECASE)
 
 # Seules les lignes de COMMENTAIRE sont inspectées : un "..." peut apparaître légitimement
 # dans du code (spread JS `...props`, texte d'interface), alors qu'un commentaire
@@ -285,6 +297,195 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     return [{"path": p, "content": c} for p, c in files.items()], broken
 
 
+def parse_edit_sections(text: str) -> tuple[dict[str, list[tuple[str, str]]], dict[str, str]]:
+    """({chemin: [(texte à chercher, remplacement), ...]}, {chemin: raison} des blocs inexploitables).
+
+    Même philosophie que parse_file_sections : un bloc incomplet (balise de fin ou séparateur
+    manquant, réponse coupée) rend le fichier inexploitable, jamais appliqué à moitié. En cas de
+    chemin dupliqué, la DERNIÈRE version fait foi."""
+    edits: dict[str, list[tuple[str, str]]] = {}
+    broken: dict[str, str] = {}
+    path: str | None = None
+    raw_path = ""
+    blocks: list[tuple[str, str]] = []
+    state = "out"  # out | search | replace
+    search: list[str] = []
+    replace: list[str] = []
+    in_edit = False
+
+    def fail(reason: str) -> None:
+        key = path or raw_path.strip() or "(chemin vide)"
+        edits.pop(key, None)
+        broken[key] = reason
+
+    for line in (text or "").splitlines():
+        stripped = _undecorate(line.strip())
+        start = EDIT_START.match(stripped)
+        if start and state == "out":
+            if in_edit:
+                fail("balise <<<FIN_MODIFICATION>>> manquante")
+            in_edit, raw_path, path, blocks = True, start.group(1) or " ", normalize_path(start.group(1)), []
+            continue
+        if not in_edit:
+            continue
+        if EDIT_END.match(stripped) and state == "out":
+            if path is None:
+                fail("chemin invalide")
+            elif not blocks:
+                fail("aucun bloc CHERCHER / REMPLACER")
+            else:
+                edits[path] = blocks
+                broken.pop(path, None)
+            in_edit, path, raw_path, blocks = False, None, "", []
+            continue
+        if state == "out" and EDIT_SEARCH.match(stripped):
+            state, search, replace = "search", [], []
+        elif state == "search" and EDIT_SEPARATOR.match(stripped):
+            state = "replace"
+        elif state == "replace" and EDIT_REPLACE.match(stripped):
+            blocks.append(("\n".join(search), "\n".join(replace)))
+            state = "out"
+        elif state == "search":
+            search.append(line)
+        elif state == "replace":
+            replace.append(line)
+    if in_edit:
+        fail("balise <<<FIN_MODIFICATION>>> manquante ou bloc incomplet : contenu probablement tronqué")
+    return edits, broken
+
+
+def apply_edits(base: str, blocks: list[tuple[str, str]]) -> tuple[str | None, str | None]:
+    """(contenu modifié, None) ou (None, raison). Chaque texte cherché doit apparaître EXACTEMENT
+    une fois dans le fichier (au moment où son bloc est appliqué) : jamais de remplacement
+    deviné au mauvais endroit."""
+    crlf = "\r\n" in base
+    content = base.replace("\r\n", "\n") if crlf else base
+    for number, (search, replace) in enumerate(blocks, start=1):
+        if not search.strip():
+            return None, f"bloc {number} : texte à chercher vide"
+        occurrences = content.count(search)
+        if occurrences == 0:
+            return None, (
+                f"bloc {number} : texte à chercher introuvable dans le fichier d'origine "
+                "(copie-le EXACTEMENT depuis ta lecture, indentation comprise)"
+            )
+        if occurrences > 1:
+            return None, (
+                f"bloc {number} : texte à chercher présent {occurrences} fois, ajoute des lignes "
+                "de contexte pour le rendre unique"
+            )
+        content = content.replace(search, replace, 1)
+    return (content.replace("\n", "\r\n") if crlf else content), None
+
+
+# --- Cohérence des imports entre fichiers livrés -------------------------------------------------
+CODE_EXTENSIONS = {"ts", "tsx", "js", "jsx"}
+_IMPORT_FROM = re.compile(
+    r"""import\s+(?:type\s+)?([\w$]+)?\s*,?\s*(?:\{([^}]*)\})?\s*(?:\*\s+as\s+[\w$]+)?\s*from\s*['"](\.{1,2}/[^'"]+)['"]""",
+    re.DOTALL,
+)
+_IMPORT_SIDE_EFFECT = re.compile(r"""^\s*import\s*['"](\.{1,2}/[^'"]+)['"]""", re.MULTILINE)
+_EXPORT_DECL = re.compile(
+    r"export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|abstract\s+class|type|interface|enum)\s+([\w$]+)"
+)
+_EXPORT_LIST = re.compile(r"export\s*(?:type\s*)?\{([^}]*)\}")
+_RESOLVE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".json", ".css")
+_ASSET_EXTENSIONS = {"css", "scss", "json", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico"}
+
+
+def _exports_of(content: str) -> tuple[set[str], bool, bool]:
+    """(noms exportés, export par défaut ?, `export *` présent ?)."""
+    names = set(_EXPORT_DECL.findall(content))
+    has_default = bool(re.search(r"export\s+default\b", content))
+    for group in _EXPORT_LIST.findall(content):
+        for item in group.split(","):
+            parts = item.replace("type ", "", 1).strip().split(" as ")
+            exported = parts[-1].strip()
+            if exported == "default":
+                has_default = True
+            elif exported:
+                names.add(exported)
+    return names, has_default, bool(re.search(r"export\s*\*", content))
+
+
+def _import_candidates(importer: str, spec: str) -> list[str]:
+    target = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
+    if target.startswith(".."):
+        return []
+    extension = target.rsplit(".", 1)[-1].lower() if "." in posixpath.basename(target) else ""
+    if extension in _ASSET_EXTENSIONS:
+        return [target]
+    if extension in ("js", "jsx"):
+        stem = target.rsplit(".", 1)[0]
+        return [target, stem + ".ts", stem + ".tsx"]
+    return (
+        [target + suffix for suffix in _RESOLVE_SUFFIXES]
+        + [f"{target}/index{suffix}" for suffix in _RESOLVE_SUFFIXES[:4]]
+    )
+
+
+def find_import_problems(
+    files: list[dict],
+    list_dir: Callable[[str], set[str] | None] | None = None,
+    context_files: list[dict] | None = None,
+) -> list[str]:
+    """Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un
+    fichier existant, et import nommé (ou par défaut) absent des exports d'un fichier LIVRÉ.
+
+    list_dir(dossier) -> noms des entrées, ou None si inconnu (erreur réseau, dossier absent) :
+    dans le doute, un import n'est jamais signalé (pas de faux positif sur une panne GitHub).
+    context_files : fichiers livrés à une tentative PRÉCÉDENTE : ils servent à résoudre les imports
+    de `files` mais ne sont pas contrôlés eux-mêmes."""
+    delivered = {f["path"]: f["content"] for f in (context_files or [])}
+    delivered.update({f["path"]: f["content"] for f in files})
+    dir_cache: dict[str, set[str] | None] = {}
+
+    def entries(directory: str) -> set[str] | None:
+        if list_dir is None:
+            return None
+        if directory not in dir_cache:
+            dir_cache[directory] = list_dir(directory)
+        return dir_cache[directory]
+
+    problems: list[str] = []
+    for path, content in {f["path"]: f["content"] for f in files}.items():
+        if _extension(path) not in CODE_EXTENSIONS:
+            continue
+        imports = [(m.group(1), m.group(2), m.group(3)) for m in _IMPORT_FROM.finditer(content)]
+        imports += [(None, None, m.group(1)) for m in _IMPORT_SIDE_EFFECT.finditer(content)]
+        for default_name, named, spec in imports:
+            candidates = _import_candidates(path, spec)
+            resolved = next((c for c in candidates if c in delivered), None)
+            if resolved is None:
+                known_absent = bool(candidates)
+                for candidate in candidates:
+                    names = entries(posixpath.dirname(candidate))
+                    if names is None:
+                        known_absent = False
+                        break
+                    if posixpath.basename(candidate) in names:
+                        known_absent = False
+                        break
+                if known_absent and list_dir is not None:
+                    problems.append(
+                        f"{path} : l'import '{spec}' ne correspond à aucun fichier livré ni existant "
+                        "(livre ce fichier, ou corrige le chemin)."
+                    )
+                continue
+            if _extension(resolved) not in CODE_EXTENSIONS:
+                continue
+            exported, has_default, star = _exports_of(delivered[resolved])
+            if star:
+                continue
+            if default_name and not has_default:
+                problems.append(f"{path} : import par défaut depuis '{spec}', mais {resolved} n'a pas d'export par défaut.")
+            for item in (named or "").split(","):
+                name = item.replace("type ", "", 1).strip().split(" as ")[0].strip()
+                if name and name not in exported:
+                    problems.append(f"{path} : '{name}' est importé depuis '{spec}', mais {resolved} ne l'exporte pas.")
+    return list(dict.fromkeys(problems))
+
+
 def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
     """(chemin, numéro de ligne, ligne) pour chaque commentaire trahissant un fichier incomplet."""
     issues = []
@@ -309,14 +510,51 @@ def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
     return issues
 
 
-def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str], dict[str, str]]:
+def review_diagnostic_output(
+    text: str,
+    read_base: Callable[[str], tuple[str | None, str | None]] | None = None,
+    list_dir: Callable[[str], set[str] | None] | None = None,
+    context_files: list[dict] | None = None,
+) -> tuple[list[dict], str | None, set[str], dict[str, str]]:
     """(fichiers extraits, problème à renvoyer à l'Analyste, chemins des fichiers à raccourci,
     {chemin: raison} des fichiers annoncés mais inexploitables).
 
     Les fichiers à raccourci sont extraits mais ne doivent JAMAIS être committés tels quels,
     même si l'Analyste ne corrige pas sa réponse (voir _diagnostic_guardrail, crewquestion.py).
+
+    read_base(chemin) -> (contenu, erreur) lit le fichier d'ORIGINE : il sert à résoudre les blocs
+    <<<MODIFICATION: ...>>> en fichiers complets (sans lui, une modification est inexploitable).
+    list_dir sert à vérifier les imports relatifs (voir find_import_problems).
     """
     files, broken = parse_file_sections(text)
+    edits, edit_broken = parse_edit_sections(text)
+    broken.update(edit_broken)
+    edited_paths: set[str] = set()
+    replaced_text: list[dict] = []
+    for path, blocks in edits.items():
+        if any(f["path"] == path for f in files):
+            files = [f for f in files if f["path"] != path]
+            broken[path] = "livré à la fois en <<<FICHIER>>> et en <<<MODIFICATION>>> : choisis un seul des deux"
+            continue
+        if read_base is None:
+            broken[path] = "modification impossible : lecture du fichier d'origine indisponible"
+            continue
+        base, error = read_base(path)
+        if base is None:
+            broken[path] = (
+                f"modification impossible : fichier d'origine illisible ({(error or 'erreur inconnue')[:120]}) "
+                "— pour créer un nouveau fichier, utilise <<<FICHIER>>>"
+            )
+            continue
+        content, error = apply_edits(base, blocks)
+        if content is None:
+            broken[path] = error or "modification inapplicable"
+            continue
+        files.append({"path": path, "content": content})
+        edited_paths.add(path)
+        # Seul le texte AJOUTÉ est inspecté : un commentaire déjà présent dans le fichier d'origine
+        # n'est pas un raccourci de l'Analyste.
+        replaced_text.append({"path": path, "content": "\n".join(replace for _, replace in blocks)})
     problems: list[str] = []
     if broken:
         problems.append(
@@ -331,16 +569,25 @@ def review_diagnostic_output(text: str) -> tuple[list[dict], str | None, set[str
             problems.append(
                 "Aucun fichier exploitable trouvé : encadre CHAQUE fichier livré par une ligne "
                 "'<<<FICHIER: chemin/relatif/du/fichier>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
-                "contenu COMPLET entre les deux. Si tu ne peux livrer aucun fichier, dis-le "
+                "contenu COMPLET entre les deux (ou, pour modifier un fichier existant, un bloc "
+                "'<<<MODIFICATION: chemin>>>'). Si tu ne peux livrer aucun fichier, dis-le "
                 "explicitement en le marquant 'NON réalisé' avec la raison."
             )
-    placeholders = find_placeholders(files)
+    placeholders = find_placeholders([f for f in files if f["path"] not in edited_paths])
+    placeholders += find_placeholders(replaced_text)
     if placeholders:
         listing = "\n".join(f"- {p} ligne {n} : {line}" for p, n, line in placeholders[:10])
         problems.append(
             "Contenu incomplet détecté (commentaires de remplacement qui seraient committés tels "
             f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
             "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
+        )
+    import_problems = find_import_problems(files, list_dir, context_files)
+    if import_problems:
+        problems.append(
+            "Incohérences entre fichiers (imports) :\n"
+            + "\n".join(f"- {issue}" for issue in import_problems[:10])
+            + "\nCorrige-les (les fichiers concernés restent à fournir EN ENTIER ou par modification)."
         )
     faulty = {p for p, _, _ in placeholders}
     return files, ("\n\n".join(problems) if problems else None), faulty, broken

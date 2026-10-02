@@ -156,6 +156,9 @@ diagnostic_task:
     3. Conclusion : retiens une hypothèse et écris une section "Traçabilité" : symptôme décrit →
        cause identifiée (fichier et fonction/ligne) → changement apporté. Pour une fonctionnalité :
        besoin → fichiers touchés → comportement obtenu.
+       Ajoute à "Traçabilité" deux lignes : "Ce qui infirmerait cette cause" (le constat qui prouverait
+       que tu t'es trompé) et "Vérification manuelle" (les étapes pour reproduire le problème puis
+       constater la correction, que la QA pourra suivre).
 
     Détermine la cause réelle du bug (ou ce que la fonctionnalité demandée nécessite), puis rédige le
     CODE SOURCE COMPLET des fichiers à créer ou modifier. Ce code sera committé TEL QUEL par la tâche
@@ -171,8 +174,10 @@ diagnostic_task:
     catégorie du workflow est "BUGFIX" : diagnostique la cause réelle à partir de ce que la demande
     ci-dessus décrit précisément (ex: un calcul faux, une validation de formulaire qui échoue, un
     comportement incorrect signalé par l'utilisateur), en lisant le code concerné.
-    Ce diagnostic doit rester raisonnable : au maximum 2-3 appels de lecture (`github_read_file` ou
-    `read_a_files_content`) avant de conclure et de rédiger le code. Si après ce budget la cause
+    Ce diagnostic doit rester raisonnable, avec un budget de lecture proportionnel au travail : UNE
+    lecture par fichier à MODIFIER (la liste "Fichiers à créer ou modifier" de l'Architecte, s'il y en
+    a une) plus 2 lectures de contexte, soit 5 lectures AU PLUS (`github_read_file` ou
+    `read_a_files_content`), avant de conclure et de rédiger le code. Si après ce budget la cause
     exacte reste incertaine, corrige la cause la PLUS PROBABLE à partir de ce que tu as déjà lu
     plutôt que de continuer à investiguer : un correctif imparfait mais rédigé vaut toujours mieux
     qu'une analyse jamais conclue, qui laisserait la tâche suivante sans rien à committer.
@@ -198,6 +203,10 @@ diagnostic_task:
     Sans repository cible (travail sur disque local), utilise `read_a_files_content` pour toute
     lecture.
 
+    Correctif MINIMAL : change uniquement ce que la cause ou la fonctionnalité exige ; ne reformate
+    pas, ne renomme pas, ne réordonne pas et ne réécris pas du code qui n'est pas concerné (un petit
+    changement se relit et se teste mieux).
+
     Énonce d'abord la liste des fichiers que tu comptes créer ou modifier et une justification d'une
     ligne pour chacun, puis livre CHAQUE fichier entre deux balises, chacune SEULE sur sa ligne :
     d'abord la ligne "<<<FICHIER: chemin/relatif.ext>>>", puis un bloc de code contenant
@@ -209,9 +218,22 @@ diagnostic_task:
     n'est pas committé. N'utilise ces balises QUE pour le contenu FINAL et complet d'un fichier :
     pour citer du code existant (diagnostic, traçabilité, auto-revue), écris un bloc de code
     normal, sans balises.
+    Pour modifier un fichier EXISTANT que tu as lu (surtout s'il dépasse environ 150 lignes) sans le
+    réécrire en entier, utilise à la place un bloc de modification : une ligne
+    "<<<MODIFICATION: chemin/relatif.ext>>>", puis un ou plusieurs blocs, chacun composé d'une ligne
+    "<<<<<<< CHERCHER", du texte EXACT à remplacer (copié de ta lecture, indentation comprise, sans
+    balise de code), d'une ligne "=======", du nouveau texte, d'une ligne ">>>>>>> REMPLACER", et enfin
+    une ligne "<<<FIN_MODIFICATION>>>". Chaque texte cherché doit apparaître UNE SEULE fois dans le
+    fichier : ajoute des lignes de contexte autour si besoin. Les blocs s'appliquent dans l'ordre, et le
+    système les applique lui-même au fichier d'origine : le fichier committé sera le fichier complet
+    ainsi modifié. Un fichier n'est jamais livré à la fois en "FICHIER" et en "MODIFICATION". Un
+    NOUVEAU fichier, ou un petit fichier, reste en "FICHIER" avec son contenu complet.
     Un contrôle automatique refuse ta réponse si un fichier contient un commentaire de raccourci
     ("// ...", "// ... reste", "reste du code inchangé", "code existant") : tu devras alors la
     refaire.
+
+    Tout import relatif vise un fichier que tu livres ou un fichier existant que tu as vu, et tout import
+    nommé correspond à un export réel : un contrôle automatique le vérifie et refuse ta réponse sinon.
 
     Avant de rendre ta réponse, fais une AUTO-REVUE de chaque fichier et termine par une section
     "Auto-revue" d'une ligne par fichier : imports tous présents et utilisés, exports réellement
@@ -219,17 +241,20 @@ diagnostic_task:
     ATTENTION pour un fichier déjà volumineux dont tu ne changes qu'une petite partie : la tâche
     suivante n'a AUCUN moyen de vérifier ou compléter ce que tu écris ici — ni de lire le fichier
     original, ni d'appliquer une modification partielle — elle committe tel quel, intégralement,
-    exactement ce que tu lui fournis. Si tu risques de ne pas pouvoir réécrire ce fichier EN ENTIER
-    sans le tronquer, NE LE METS PAS entre balises : committer une version coupée (donc
+    exactement ce que tu lui fournis. Pour un fichier volumineux dont tu ne changes qu'une partie,
+    utilise un bloc "MODIFICATION" (rien à recopier en entier). Si ce fichier ne peut être livré ni par un
+    bloc de modification ni EN ENTIER sans risque de troncature, NE LE METS PAS entre balises : committer une version coupée (donc
     corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
     ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
     ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
   expected_output: >
-    Les hypothèses classées, la section "Traçabilité", le plan (liste des fichiers prévus et leur
+    Les hypothèses classées, la section "Traçabilité" (avec "Ce qui infirmerait cette cause" et
+    "Vérification manuelle"), le plan (liste des fichiers prévus et leur
     justification, avec un signalement explicite "NON réalisé" pour tout fichier où le contenu
     complet n'a pas pu être fourni sans risque de troncature), puis chaque fichier entre une ligne
     "<<<FICHIER: chemin/du/fichier>>>" et une ligne "<<<FIN_FICHIER>>>", avec son code source COMPLET et
-    directement utilisable, et enfin la section "Auto-revue".
+    directement utilisable (ou, pour modifier un fichier existant, un bloc "<<<MODIFICATION: chemin>>>"
+    avec ses blocs CHERCHER / REMPLACER), et enfin la section "Auto-revue".
   agent: diagnostic_agent
 
 development_task:

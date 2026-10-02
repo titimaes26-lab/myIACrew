@@ -6,8 +6,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from analyst_output import (  # noqa: E402
     FILE_ABSENT,
     PRESENT_UNREADABLE,
+    apply_edits,
     build_delivery_report,
+    find_import_problems,
     find_placeholders,
+    parse_edit_sections,
     parse_file_sections,
     review_diagnostic_output,
 )
@@ -345,3 +348,119 @@ def test_text_after_closing_fence_is_flagged_even_for_prose_files():
     text = "<<<FICHIER: README.md>>>\n```\n# Titre\n```\nNote hors sujet\n<<<FIN_FICHIER>>>\n"
     files, broken = parse_file_sections(text)
     assert files == [] and "README.md" in broken and "clôture" in broken["README.md"]
+
+
+# --- Modifications ciblées -------------------------------------------------------------------
+
+def edit(path, *pairs):
+    body = "".join(f"<<<<<<< CHERCHER\n{a}\n=======\n{b}\n>>>>>>> REMPLACER\n" for a, b in pairs)
+    return f"<<<MODIFICATION: {path}>>>\n{body}<<<FIN_MODIFICATION>>>\n"
+
+
+def test_parse_edit_sections_reads_blocks_in_order():
+    edits, broken = parse_edit_sections("Plan\n" + edit("src/a.ts", ("a = 1", "a = 2"), ("b", "c\nd")))
+    assert edits == {"src/a.ts": [("a = 1", "a = 2"), ("b", "c\nd")]} and not broken
+
+
+def test_parse_edit_sections_rejects_truncated_or_empty_blocks():
+    truncated = "<<<MODIFICATION: src/a.ts>>>\n<<<<<<< CHERCHER\nx\n=======\ny\n"
+    edits, broken = parse_edit_sections(truncated)
+    assert not edits and "src/a.ts" in broken
+    edits, broken = parse_edit_sections("<<<MODIFICATION: src/b.ts>>>\n<<<FIN_MODIFICATION>>>\n")
+    assert not edits and "aucun bloc" in broken["src/b.ts"]
+
+
+def test_apply_edits_replaces_a_unique_match_and_keeps_crlf():
+    assert apply_edits("a\nb\nc\n", [("b", "B")]) == ("a\nB\nc\n", None)
+    assert apply_edits("a\r\nb\r\n", [("a", "A")]) == ("A\r\nb\r\n", None)
+
+
+def test_apply_edits_refuses_missing_ambiguous_or_empty_search():
+    assert "introuvable" in apply_edits("a\n", [("zzz", "y")])[1]
+    assert "2 fois" in apply_edits("x\nx\n", [("x", "y")])[1]
+    assert "vide" in apply_edits("a\n", [("  ", "y")])[1]
+
+
+def test_review_resolves_edits_into_complete_files():
+    base = "const a = 1;\nconst b = 2;\n"
+    files, issue, faulty, broken = review_diagnostic_output(
+        edit("src/x.ts", ("const b = 2;", "const b = 3;")), read_base=lambda path: (base, None)
+    )
+    assert files == [{"path": "src/x.ts", "content": "const a = 1;\nconst b = 3;\n"}]
+    assert issue is None and not broken
+
+
+def test_review_flags_unreadable_base_and_double_delivery():
+    files, issue, _, broken = review_diagnostic_output(
+        edit("src/x.ts", ("a", "b")), read_base=lambda path: (None, "ABSENT : introuvable")
+    )
+    assert not files and "src/x.ts" in broken and "modification impossible" in broken["src/x.ts"]
+    both = block("src/x.ts", "const a = 1;\n") + edit("src/x.ts", ("a", "b"))
+    files, issue, _, broken = review_diagnostic_output(both, read_base=lambda path: ("a\n", None))
+    assert not files and "à la fois" in broken["src/x.ts"]
+
+
+def test_review_without_base_reader_cannot_apply_edits():
+    _, issue, _, broken = review_diagnostic_output(edit("src/x.ts", ("a", "b")))
+    assert "src/x.ts" in broken and issue
+
+
+def test_placeholder_check_only_looks_at_added_text_for_edits():
+    base = "// ... reste du code historique\nconst a = 1;\n"
+    ok = review_diagnostic_output(edit("src/x.ts", ("const a = 1;", "const a = 2;")), read_base=lambda p: (base, None))
+    assert ok[1] is None
+    bad = review_diagnostic_output(edit("src/x.ts", ("const a = 1;", "// ... reste du code\nconst a = 2;")), read_base=lambda p: (base, None))
+    assert bad[1] and "src/x.ts" in bad[2]
+
+
+# --- Cohérence des imports -------------------------------------------------------------------
+
+def f(path, content):
+    return {"path": path, "content": content}
+
+
+def test_import_of_missing_named_export_is_flagged():
+    files = [f("src/App.tsx", "import { useCart, total } from './hooks/useCart';\n"),
+             f("src/hooks/useCart.ts", "export function useCart() { return 1; }\n")]
+    problems = find_import_problems(files)
+    assert len(problems) == 1 and "'total'" in problems[0]
+
+
+def test_valid_named_default_and_type_imports_are_accepted():
+    files = [f("src/App.tsx", "import Cart, { type Item, useCart as uc } from './cart';\n"),
+             f("src/cart.ts", "export default function Cart() {}\nexport interface Item {}\nexport const useCart = 1;\n")]
+    assert find_import_problems(files) == []
+
+
+def test_default_import_without_default_export_and_star_reexport():
+    files = [f("src/App.tsx", "import Cart from './cart';\n"), f("src/cart.ts", "export const x = 1;\n")]
+    assert "export par défaut" in find_import_problems(files)[0]
+    files[1] = f("src/cart.ts", "export * from './other';\n")
+    assert find_import_problems(files) == []
+
+
+def test_export_list_with_alias_counts_as_export():
+    files = [f("src/a.ts", "import { B } from './b';\n"), f("src/b.ts", "const x = 1;\nexport { x as B };\n")]
+    assert find_import_problems(files) == []
+
+
+def test_unresolved_relative_import_needs_a_directory_listing_and_stays_silent_on_unknown():
+    files = [f("src/App.tsx", "import Header from './components/Header';\n")]
+    assert find_import_problems(files) == []  # sans listing : jamais de signalement
+    assert find_import_problems(files, list_dir=lambda d: None) == []  # inconnu : jamais de signalement
+    problems = find_import_problems(files, list_dir=lambda d: {"App.tsx"} if d == "src" else set())
+    assert len(problems) == 1 and "./components/Header" in problems[0]
+    assert find_import_problems(files, list_dir=lambda d: {"Header.tsx"}) == []  # existe déjà dans le repo
+
+
+def test_index_resolution_and_js_suffix_and_assets():
+    files = [f("src/App.tsx", "import './App.css';\nimport u from './utils/index';\nimport x from './x.js';\n"),
+             f("src/utils/index.ts", "export default 1;\n"), f("src/x.ts", "export default 2;\n")]
+    assert find_import_problems(files, list_dir=lambda d: {"App.css"}) == []
+
+
+def test_context_files_resolve_imports_without_being_checked():
+    files = [f("src/App.tsx", "import { a } from './lib';\n")]
+    context = [f("src/lib.ts", "export const a = 1;\n")]
+    assert find_import_problems(files, context_files=context) == []
+    assert find_import_problems(files, list_dir=lambda d: set()) != []  # sans contexte : introuvable

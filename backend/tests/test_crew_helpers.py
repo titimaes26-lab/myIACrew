@@ -192,9 +192,9 @@ def test_design_task_yaml_placeholders_are_known():
     import pathlib, string, yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
     known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
-    for name in ("design_task", "architecture_task"):
+    for name in ("design_task", "architecture_task", "diagnostic_task"):
         fields = {f[1] for f in string.Formatter().parse(tasks[name]["description"]) if f[1]}
-        assert fields <= known, name
+        assert fields <= known | {"work_branch"}, name
 
 
 GOOD_ARCH = """## Existant
@@ -281,6 +281,55 @@ def test_architecture_issues_accepts_bold_and_backticked_entries():
 def test_architecture_task_has_a_non_retrying_guardrail():
     task = new_crew().architecture_task()
     assert task.guardrail is not None and task.guardrail_max_retries == 0
+
+
+def _edit_block(path, search, replace):
+    return (f"<<<MODIFICATION: {path}>>>\n<<<<<<< CHERCHER\n{search}\n=======\n{replace}\n"
+            ">>>>>>> REMPLACER\n<<<FIN_MODIFICATION>>>\n")
+
+
+def test_guardrail_resolves_a_targeted_edit_into_a_complete_committable_file():
+    crew = new_crew()
+    crew._base_readers = [(lambda path: ("const a = 1;\nconst b = 2;\n", None), lambda d: None)]
+    ok, _ = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "const b = 2;", "const b = 3;")))
+    assert ok and crew._analyst_files == [{"path": "src/x.ts", "content": "const a = 1;\nconst b = 3;\n"}]
+    assert not crew._not_extracted
+
+
+def test_guardrail_refuses_once_when_the_search_text_is_not_in_the_original():
+    crew = new_crew()
+    crew._base_readers = [(lambda path: ("const a = 1;\n", None), lambda d: None)]
+    ok, message = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "inexistant", "x")))
+    assert not ok and "introuvable" in message
+    ok, _ = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "inexistant", "x")))
+    assert ok and not crew._analyst_files and "src/x.ts" in crew._not_extracted
+
+
+def test_read_base_file_falls_back_to_the_next_source_then_reports_the_last_error():
+    crew = new_crew()
+    crew._base_readers = [
+        (lambda path: (None, "ERREUR : la branche 'feature/x' est introuvable"), lambda d: None),
+        (lambda path: ("base content", None), lambda d: {"x.ts"}),
+    ]
+    assert crew._read_base_file("src/x.ts") == ("base content", None)
+    assert crew._list_base_dir("src") == {"x.ts"}
+    crew._base_readers = [(lambda path: (None, "ABSENT : nope"), lambda d: None)]
+    assert crew._read_base_file("src/x.ts") == (None, "ABSENT : nope")
+    assert crew._list_base_dir("src") is None
+
+
+def test_guardrail_refuses_once_on_inconsistent_imports_then_accepts_with_a_note():
+    crew = new_crew()
+    crew._base_readers = [(lambda path: (None, "ABSENT"), lambda d: None)]
+    bad = (
+        "<<<FICHIER: src/App.tsx>>>\n```tsx\nimport { total } from './cart';\nexport default 1;\n```\n<<<FIN_FICHIER>>>\n"
+        "<<<FICHIER: src/cart.ts>>>\n```ts\nexport const sum = 1;\n```\n<<<FIN_FICHIER>>>\n"
+    )
+    ok, message = crew._diagnostic_guardrail(output(bad))
+    assert not ok and "imports" in message and "'total'" in message
+    ok, result = crew._diagnostic_guardrail(output(bad))
+    assert ok and "Incohérences entre fichiers" in result
+    assert {f["path"] for f in crew._analyst_files} == {"src/App.tsx", "src/cart.ts"}
 
 
 def test_local_writes_are_confined_to_workspace(tmp_path):

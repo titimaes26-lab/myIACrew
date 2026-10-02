@@ -43,6 +43,7 @@ from github_tools import (
     github_write_files,
     github_open_pull_request,
     _reject_invalid_syntax,
+    make_dir_lister,
     make_file_fetcher,
     track_edit_failures,
     write_files_to_branch,
@@ -685,6 +686,15 @@ def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
+def _list_local_dir(workspace: Path, directory: str) -> set[str] | None:
+    target = _local_target(workspace, directory) if directory else workspace.resolve()
+    if target is None:
+        return None
+    try:
+        return {entry.name for entry in target.iterdir()}
+    except Exception:
+        return None
+
 MAX_RETRY_CONTEXT_CHARS = 4000
 
 def _never_cache(_args: Any = None, _result: Any = None) -> bool:
@@ -987,7 +997,7 @@ class AppDevelopmentCrew():
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=diagnostic_llm, max_iter=5, verbose=True,
+            llm=diagnostic_llm, max_iter=7, verbose=True,
             # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus
             # critique du pipeline, dont tout le code livré dépend. Une seule passe de plan
             # (max_reasoning_attempts=1) pour rester raisonnable face au quota Gemini.
@@ -1098,6 +1108,9 @@ class AppDevelopmentCrew():
         # Cible FIXÉE par l'exécution (jamais par les arguments que le LLM passe aux outils) :
         # un owner vide passé par erreur ne doit jamais détourner un run GitHub vers le disque.
         self._work_branch = inputs.get("work_branch") or ""
+        self._base_branch = inputs.get("base_branch") or "main"
+        # Lecteurs du fichier d'ORIGINE (modifications ciblées, imports), créés à la demande.
+        self._base_readers = None
         self._repo_target = (owner, repo) if owner and repo else None
         # Par conversation (et non par branche : en mode local, work_branch est toujours vide).
         self._workspace = _conversation_workspace(str(inputs.get("conversation_id") or ""))
@@ -1124,6 +1137,44 @@ class AppDevelopmentCrew():
                 parts.append(raw[:MAX_RETRY_CONTEXT_CHARS])
         return ("\n\nRappel du contexte reçu (specs/architecture) :\n" + "\n---\n".join(parts)) if parts else ""
 
+    def _base_sources(self):
+        """[(lecteur de fichier, lecteur de dossier)] par ordre de préférence : la branche de
+        travail si elle existe déjà (un correctif d'un tour précédent y est), sinon la branche de
+        base — comme diagnostic_task le demande à l'Analyste pour ses propres lectures."""
+        if getattr(self, "_base_readers", None) is not None:
+            return self._base_readers
+        target = getattr(self, "_repo_target", None)
+        if target is None:
+            workspace = self._workspace
+            sources = [(lambda path: _read_local_file(workspace, path), lambda d: _list_local_dir(workspace, d))]
+        else:
+            owner, repo = target
+            branches = [b for b in (self._work_branch, getattr(self, "_base_branch", "main")) if b]
+            sources = [
+                (make_file_fetcher(owner, repo, branch), make_dir_lister(owner, repo, branch))
+                for branch in dict.fromkeys(branches)
+            ]
+        self._base_readers = sources
+        return sources
+
+    def _read_base_file(self, path: str) -> tuple[str | None, str | None]:
+        last_error = "aucune source de lecture"
+        for fetch, _ in self._base_sources():
+            content, error = fetch(path)
+            if content is not None:
+                return content, None
+            last_error = error or last_error
+            # Seule une absence CONFIRMÉE justifie de tenter la branche suivante ; une erreur de
+            # branche (work_branch pas encore créée) est, elle, un « non vérifiable » : on continue.
+        return None, last_error
+
+    def _list_base_dir(self, directory: str) -> set[str] | None:
+        for _, list_dir in self._base_sources():
+            names = list_dir(directory)
+            if names is not None:
+                return names
+        return None
+
     def _diagnostic_guardrail(self, task_output):
         """Refuse UNE fois une sortie de l'Analyste inexploitable (aucun fichier, balise de fin
         manquante, commentaires de type "// ... reste du code") pour qu'il la corrige ; à la 2e
@@ -1135,7 +1186,10 @@ class AppDevelopmentCrew():
         sauf ceux qu'elle retire explicitement (chemin suivi de "NON réalisé").
         """
         raw = getattr(task_output, "raw", "") or ""
-        files, issue, faulty_paths, broken = review_diagnostic_output(raw)
+        files, issue, faulty_paths, broken = review_diagnostic_output(
+            raw, read_base=self._read_base_file, list_dir=self._list_base_dir,
+            context_files=list(getattr(self, "_analyst_files", []) or []),
+        )
         merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
         not_extracted = dict(getattr(self, "_not_extracted", {}))
         delivered_now = {f["path"] for f in files}

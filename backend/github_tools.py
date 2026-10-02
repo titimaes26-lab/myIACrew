@@ -227,6 +227,26 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
     return fetch
 
 
+def make_dir_lister(owner: str, repo: str, branch: str) -> Callable[[str], set[str] | None]:
+    """Fonction dossier -> noms des entrées, ou None si inconnu (dépôt, branche ou dossier
+    introuvable, erreur réseau). Un seul get_repo est fait pour toutes les listes."""
+    try:
+        gh_repo = _get_repo(owner, repo)
+    except Exception:
+        return lambda directory: None
+
+    def list_dir(directory: str) -> set[str] | None:
+        try:
+            contents = gh_repo.get_contents(directory or "", ref=branch)
+        except Exception:
+            return None
+        if not isinstance(contents, list):
+            return None
+        return {item.name for item in contents}
+
+    return list_dir
+
+
 @tool("github_read_file")
 def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> str:
     """
