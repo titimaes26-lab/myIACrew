@@ -1376,6 +1376,10 @@ async def delete_history_entry(
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
 
     print(f"  → Suppression en cours : user_request={entry.user_request[:50]}", flush=True)
+    # Les mesures par agent n'ont pas de clé étrangère : sans cette suppression explicite, elles
+    # survivraient à l'exécution que l'utilisateur vient de supprimer (données orphelines, invisibles).
+    for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id == execution_id)).all():
+        session.delete(agent_run)
     session.delete(entry)
     session.commit()
     print(f"  → Suppression confirmée en base", flush=True)

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 export interface TooltipState {
   x: number;
@@ -36,5 +36,22 @@ export function useChartTooltip() {
 
   const hide = useCallback(() => setTip(null), []);
 
-  return { containerRef, tip, showAtPointer, showAtElement, hide };
+  // Au toucher, « pointerleave » survient dès que le doigt se lève : masquer là ferait disparaître
+  // l'infobulle aussitôt affichée. Elle reste alors jusqu'au prochain appui hors d'une marque.
+  const hideUnlessTouch = useCallback((event: { pointerType?: string }) => {
+    if (event.pointerType !== 'touch') setTip(null);
+  }, []);
+
+  const visible = tip !== null;
+  useEffect(() => {
+    if (!visible) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest?.('[data-viz-mark]')) setTip(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [visible]);
+
+  return { containerRef, tip, showAtPointer, showAtElement, hide, hideUnlessTouch };
 }

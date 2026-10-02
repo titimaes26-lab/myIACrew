@@ -22,7 +22,7 @@ interface HorizontalChartProps {
 // Barres horizontales sur UN axe (jamais deux échelles). Chaque ligne est une cible de survol et de
 // focus clavier ; les graduations sont écrites une seule fois, sous la dernière ligne.
 export default function HorizontalChart({ rows, ticks, formatTick }: HorizontalChartProps) {
-  const { containerRef, tip, showAtPointer, showAtElement, hide } = useChartTooltip();
+  const { containerRef, tip, showAtPointer, showAtElement, hide, hideUnlessTouch } = useChartTooltip();
   const max = ticks[ticks.length - 1] || 1;
   const gridLines = ticks.map((tick) => <div key={tick} className="viz-hgrid" style={{ left: `${(tick / max) * 100}%` }} />);
 
@@ -35,8 +35,10 @@ export default function HorizontalChart({ rows, ticks, formatTick }: HorizontalC
           tabIndex={0}
           role="group"
           aria-label={row.ariaLabel}
+          data-viz-mark=""
+          onPointerDown={(event) => showAtPointer(event, row.tooltip)}
           onPointerMove={(event) => showAtPointer(event, row.tooltip)}
-          onPointerLeave={hide}
+          onPointerLeave={hideUnlessTouch}
           onFocus={(event) => showAtElement(event.currentTarget, row.tooltip)}
           onBlur={hide}
         >

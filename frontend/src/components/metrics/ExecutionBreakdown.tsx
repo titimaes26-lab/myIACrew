@@ -66,12 +66,12 @@ export default function ExecutionBreakdown({ executionId }: { executionId: numbe
   const current = loaded?.executionId === executionId ? loaded : null;
 
   return (
-    <div className="viz-root viz-break" style={{ border: 'none', padding: 0, margin: '8px 0 0', background: 'transparent' }}>
+    <div className="viz-break">
       <button type="button" className="viz-break-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         📊 {open ? 'Masquer' : 'Voir'} la performance par agent
       </button>
       {open && (
-        <div className="viz-card viz-break-body">
+        <div className="viz-root viz-break-body">
           {!current && <p className="viz-sub">Chargement…</p>}
           {current?.error && <p role="alert">❌ {current.error}</p>}
           {current?.runs && current.runs.length === 0 && (

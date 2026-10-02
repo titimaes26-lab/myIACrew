@@ -1,3 +1,4 @@
+import { useCallback, useState, type KeyboardEvent } from 'react';
 import type { DailyMetricsRow } from '../../types';
 import { useChartTooltip } from '../../hooks/useChartTooltip';
 import { useElementWidth } from '../../hooks/useElementWidth';
@@ -11,8 +12,15 @@ const MIN_PX_PER_LABEL = 64; // largeur d'une date (« 29 sept. ») plus de l'ai
 
 // Appels LLM par jour : une seule série (le titre la nomme, pas de légende), colonnes <= 24 px.
 export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] }) {
-  const { containerRef, tip, showAtPointer, showAtElement, hide } = useChartTooltip();
-  const width = useElementWidth(containerRef);
+  const { containerRef, tip, showAtPointer, showAtElement, hide, hideUnlessTouch } = useChartTooltip();
+  const { width, ref: widthRef } = useElementWidth();
+  // Le même élément sert au positionnement de l'infobulle ET à la mesure de largeur.
+  const setContainer = useCallback((node: HTMLDivElement | null) => {
+    containerRef.current = node;
+    widthRef(node);
+  }, [containerRef, widthRef]);
+  // Une seule colonne dans l'ordre de tabulation (« roving tabindex ») ; les flèches changent de jour.
+  const [focusIndex, setFocusIndex] = useState(0);
   const days = fillDays(daily);
   const peak = Math.max(0, ...days.map((d) => d.llm_calls));
   const ticks = niceTicks(peak, 3);
@@ -21,6 +29,14 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
   // Autant d'étiquettes que la largeur en permet (2 au minimum : premier et dernier jour).
   const fitting = Math.min(MAX_X_LABELS, Math.max(2, Math.floor((width || 600) / MIN_PX_PER_LABEL)));
   const labelStep = Math.ceil(days.length / fitting);
+
+  const moveFocus = (event: KeyboardEvent, index: number) => {
+    const target = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: days.length - 1 }[event.key];
+    if (target === undefined || target < 0 || target >= days.length) return;
+    event.preventDefault();
+    setFocusIndex(target);
+    containerRef.current?.querySelectorAll<HTMLElement>('.viz-col')[target]?.focus();
+  };
 
   const tooltipFor = (d: DailyMetricsRow) => (
     <>
@@ -42,7 +58,7 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
       }}
       empty={daily.length === 0 ? 'Aucune exécution terminée sur cette période.' : null}
     >
-      <div className="viz-cwrap" ref={containerRef}>
+      <div className="viz-cwrap" ref={setContainer}>
         <div className="viz-yaxis" aria-hidden="true">
           {ticks.map((tick) => (
             <span key={tick} className="viz-ytick" style={{ bottom: `${(tick / max) * 100}%` }}>{formatInteger(tick)}</span>
@@ -57,12 +73,15 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
               <div
                 key={d.date}
                 className="viz-col"
-                tabIndex={0}
+                tabIndex={index === Math.min(focusIndex, days.length - 1) ? 0 : -1}
                 role="group"
+                data-viz-mark=""
                 aria-label={`${formatDay(d.date)} : ${d.llm_calls} appels LLM, ${d.executions} exécution${d.executions > 1 ? 's' : ''}, ${d.failed} échec${d.failed > 1 ? 's' : ''}`}
+                onPointerDown={(event) => showAtPointer(event, tooltipFor(d))}
                 onPointerMove={(event) => showAtPointer(event, tooltipFor(d))}
-                onPointerLeave={hide}
-                onFocus={(event) => showAtElement(event.currentTarget, tooltipFor(d))}
+                onPointerLeave={hideUnlessTouch}
+                onKeyDown={(event) => moveFocus(event, index)}
+                onFocus={(event) => { setFocusIndex(index); showAtElement(event.currentTarget, tooltipFor(d)); }}
                 onBlur={hide}
               >
                 {d.llm_calls > 0 && <div className="viz-colbar" style={{ height: `${(d.llm_calls / max) * 100}%` }} />}

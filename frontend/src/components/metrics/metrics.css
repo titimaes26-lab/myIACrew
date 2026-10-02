@@ -159,8 +159,12 @@
 
 /* Détail d'une exécution (sous un message du fil). */
 .viz-break { margin-top: 8px; }
-.viz-break-toggle { font: inherit; font-size: 12px; background: transparent; border: 1px solid var(--viz-border); border-radius: 6px; padding: 3px 10px; color: inherit; cursor: pointer; }
-.viz-break-body { margin-top: 8px; padding: 10px; }
+/* Le bouton vit dans la bulle du fil (fond clair fixe) : couleurs propres, pas les jetons du graphique. */
+.viz-break-toggle { font: inherit; font-size: 12px; background: transparent; border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 6px; padding: 3px 10px; color: inherit; cursor: pointer; }
+.viz-break-toggle:hover { background: rgba(0, 0, 0, 0.05); }
+.viz-break-toggle:focus-visible { outline: 2px solid #2a78d6; outline-offset: 1px; }
+/* Le détail déplié porte sa propre surface (clair ou sombre) et son encre : lisible sur la bulle. */
+.viz-root.viz-break-body { margin: 8px 0 0; padding: 10px; }
 .viz-break .viz-table td, .viz-break .viz-table th { padding: 4px 6px; }
 .viz-miniplot { display: block; position: relative; height: 12px; min-width: 70px; }
 .viz-miniplot > i { position: absolute; left: 0; top: 0; height: 12px; background: var(--viz-s1); border-radius: 0 4px 4px 0; min-width: 2px; }
