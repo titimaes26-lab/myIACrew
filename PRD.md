@@ -1,17 +1,19 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.1 — Mise à jour le 2026-10-01
+> Version : 1.2 — Mise à jour le 2026-10-02
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour.
 
 ---
 
 ## 1. Synthèse & Vision
 
-- **Concept** : un studio web qui qualifie une demande de développement en langage naturel, puis délègue son exécution à une équipe d'agents CrewAI (game designer, architecte, développeur, QA) capable de lire/écrire du code directement sur un repository GitHub cible et d'en proposer les changements via Pull Request.
+- **Concept** : un studio web qui qualifie une demande de développement en langage naturel, puis délègue son exécution à une équipe de 6 agents CrewAI (qualification, game/product designer, architecte, analyste diagnostic, développeur, QA) capable de lire du code sur un repository GitHub cible, de produire le code complet, de le committer sur une branche de travail et d'ouvrir une Pull Request.
 - **Genre** : outil interne d'assistance au développement (multi-agent orchestration tool), pas une application grand public.
 - **Plateforme cible** : Web — frontend Vite + React 19 + TypeScript (déployé sur Vercel), backend FastAPI + CrewAI (déployé sur Render), base de données PostgreSQL (Supabase), authentification Supabase Auth.
 - **Public visé** : l'équipe/le·s propriétaire·s du studio, authentifié·s (comptes créés manuellement dans le dashboard Supabase — pas d'auto-inscription).
-- **Boucle principale** : décrire un besoin → qualification automatique du type de demande → choix/ajustement du workflow → exécution par les agents → récupération du résultat (texte + éventuellement une Pull Request sur le repo cible) → historisation en base.
+- **Boucle principale** : décrire un besoin dans un fil de conversation → qualification automatique (ou choix manuel) du type de demande → exécution par les agents en tâche de fond avec progression en direct → résultat par agent (texte + éventuellement une Pull Request sur le repo cible) → historisation en base.
+- **Principe de qualité** : la fiabilité ne repose pas sur la confiance dans le texte des LLM. Les faits (fichiers committés, URL de PR, verdict minimal) sont constatés par des outils et des contrôles Python, sans appel LLM supplémentaire (voir 2.7).
 
 ---
 
@@ -20,51 +22,74 @@
 ### 2.1 Boucle principale (Core Loop)
 
 1. **Connexion** : l'utilisateur se connecte avec email + mot de passe (Supabase Auth). Sans session valide, seul l'écran de connexion est accessible.
-2. **Qualification** (`POST /api/qualify`) : l'utilisateur décrit son besoin dans un textarea libre. Un agent unique (`qualification_agent`, sans outils) classe la demande en une des 4 catégories et renvoie un résumé, un indicateur de clarté, et jusqu'à 4 questions de clarification. Le rapport est aussi sauvegardé dans `docs/qualification_report.md` sur le disque du backend.
-3. **Renseignement du repository cible** (optionnel) : owner / repo / branche de base GitHub.
-4. **Exécution** (`POST /api/execute`) : selon le workflow choisi, un sous-ensemble d'agents s'exécute séquentiellement (voir 2.2). Si un repo GitHub est fourni, le backend génère un nom de branche de travail unique (`crewai/<workflow>-<hex8>`) et l'agent développeur y committe ses changements puis ouvre une Pull Request.
-5. **Restitution** : le résultat brut du crew s'affiche dans l'UI et est historisé dans la table `executionhistory` (Supabase Postgres).
+2. **Conversation** : chaque échange appartient à un fil (`Conversation`). Les tours précédents sont résumés et fournis aux agents (10 derniers tours au plus) pour comprendre un message de suivi (« corrige ça », « ajoute aussi Y »).
+3. **Qualification** (`POST /api/qualify`, mode « Détection automatique ») : `qualification_agent` (sans outils) classe la demande en une des 4 catégories avec une confiance, une alternative éventuelle et jusqu'à 4 questions de clarification. Sous 0.6 de confiance, la demande est jugée floue et l'utilisateur est questionné. L'utilisateur peut aussi choisir le workflow à la main et court-circuiter cette étape.
+4. **Repository cible** (optionnel) : owner / repo / branche de base GitHub, renseignés dans le formulaire « Repository cible ». Les combinaisons déjà utilisées sont proposées (`GET /api/repo-targets`).
+5. **Exécution** (`POST /api/execute`) : la réponse est immédiate (`status: running`) et le crew s'exécute en tâche de fond, séquentiellement (voir 2.2). Si un repo est fourni, une branche de travail `crewai/<workflow>-<hex8>` est créée au premier tour puis **réutilisée aux tours suivants** de la conversation (même branche, même PR). Une seule exécution à la fois par conversation (`409` sinon).
+6. **Progression** : le frontend sonde `GET /api/conversations/{id}/progress` ; chaque agent terminé apparaît au fur et à mesure avec sa durée d'exécution.
+7. **Restitution** : le résultat combiné par agent est stocké dans `executionhistory` ; après le crew, le backend vérifie via l'API GitHub qu'une branche et une PR à jour existent réellement.
 
 ### 2.2 Workflows disponibles
 
 | Type de demande | Tâches exécutées (séquentiel) |
 |---|---|
 | `ANALYSE_ONLY` | `design_task` → `architecture_task` |
-| `BUGFIX` | `development_task` → `qa_task` |
-| `FEATURE` | `architecture_task` → `development_task` → `qa_task` |
-| `DESIGN_AND_DEV` (défaut) | `design_task` → `architecture_task` → `development_task` → `qa_task` |
+| `BUGFIX` | `diagnostic_task` → `development_task` → `qa_task` |
+| `FEATURE` | `architecture_task` → `diagnostic_task` → `development_task` → `qa_task` |
+| `DESIGN_AND_DEV` (défaut) | `design_task` → `architecture_task` → `diagnostic_task` → `development_task` → `qa_task` |
+
+Contexte explicite par tâche (pas toutes les sorties précédentes) : `architecture` reçoit `design` ; `diagnostic` reçoit `design` + `architecture` ; `development` reçoit `diagnostic` ; `qa` reçoit `design` + `diagnostic` + `development`.
 
 ### 2.3 Agents CrewAI
 
-| Agent | Rôle | Outils | Timeout (défaut) |
-|---|---|---|---|
-| `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) | 45s |
-| `product_designer_agent` | Spécifications fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub | 90s |
-| `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub | 90s |
-| `developer_agent` | Implémentation du code | lecture/écriture disque local + lecture/écriture GitHub + branche + Pull Request | 120s |
-| `qa_agent` | Revue qualité du code produit | lecture disque local + lecture GitHub | 90s |
+| Agent | Rôle | Outils | Itérations max | Timeout LLM |
+|---|---|---|---|---|
+| `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) | 2 | 45 s |
+| `product_designer_agent` | Specs fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub | 3 | 90 s |
+| `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub | 5 | 90 s |
+| `diagnostic_agent` | Diagnostic de la cause et rédaction du code source complet | lecture seule (disque local + GitHub) | 7 | 120 s |
+| `developer_agent` | Commit fidèle du code de l'Analyste et ouverture de la PR | écriture seule : commit des fichiers de l'Analyste, branche, `check_syntax`, PR | 6 | 90 s |
+| `qa_agent` | Vérification outillée et verdict | `qa_verify_delivered_files`, lecture, `check_syntax` | 10 | 90 s |
 
-**Suivi de performance** : chaque agent rapporte son temps d'exécution (`execution_duration`) qui est affiché progressivement dans l'UI au cours de l'exécution du workflow. Cela permet de monitorer les goulots d'étranglement et d'ajuster les timeouts selon les besoins.
+Séparation voulue : l'Analyste ne peut pas écrire sur GitHub, le Développeur ne peut pas lire ni raisonner — il committe tel quel. Chaque agent rapporte son temps d'exécution (`execution_duration`), affiché dans l'UI.
 
 ### 2.4 Intégration GitHub (repo cible dynamique)
 
 - L'utilisateur choisit le repository (owner/repo) et la branche de base à chaque exécution — rien n'est câblé en dur.
-- Le `developer_agent` ne peut jamais écrire directement sur `main`/`master` (refus explicite côté outil `github_write_file`) : il doit créer une branche de travail avant toute écriture, puis ouvrir une Pull Request.
+- Aucune écriture directe sur `main`/`master` (refus côté outils) : branche de travail obligatoire, puis Pull Request.
+- Le commit passe par l'outil `github_commit_analyst_files` : les fichiers de l'Analyste sont extraits **en Python** de sa réponse (balises), sans recopie par un LLM. Les fichiers Python/JSON/YAML invalides sont refusés avant commit.
+- La description de la PR est **générée à partir des faits** (voir 2.7) ; elle est ouverte en brouillon si la livraison est partielle (repli sur une PR normale si le dépôt n'accepte pas les brouillons) et, si une PR existe déjà pour la branche, seule sa zone générée est mise à jour.
+- Sans repository cible, l'écriture se fait dans un espace de travail local isolé par conversation (`LOCAL_WORKSPACE_DIR`), jamais sur le code du serveur.
 - Nécessite la variable d'environnement `GITHUB_TOKEN` (PAT avec accès contenu + pull requests) côté backend.
 
 ### 2.5 Authentification
 
 - Supabase Auth (email + mot de passe). Pas d'auto-inscription côté frontend : les comptes se créent depuis le dashboard Supabase.
 - Le frontend envoie le token de session Supabase en `Authorization: Bearer` sur chaque appel API.
-- Le backend valide ce token à chaque requête en interrogeant `SUPABASE_URL/auth/v1/user` (`backend/auth.py`) ; sans token valide, réponse `401`.
+- Le backend valide ce token à chaque requête en interrogeant `SUPABASE_URL/auth/v1/user` (`backend/auth.py`) ; sans token valide, réponse `401`. Les conversations et l'historique sont filtrés par `user_id`.
 
 ### 2.6 Résilience LLM
 
-- **LLM utilisé** : Gemini (`gemini/gemini-3.5-flash-lite` par défaut, configurable via `GEMINI_MODEL`).
-- **Limitation quota** : Gemini free tier impose une limite de **15 requêtes/minute** par projet/modèle. Le système maintient une pause minimale de **5.0 secondes** entre les appels LLM (`QuotaManager.min_interval_seconds`) pour respecter cette limite et éviter les erreurs 429 RESOURCE_EXHAUSTED.
-- **Retry automatique** : en cas d'erreur 429/quota ou 503/surcharge (« high demand »/« overloaded »), un wrapper de retry consolidé (`_is_retryable_error()`, `_compute_backoff_wait()`) retente l'appel avec backoff exponentiel (départ : 1s, max : 32s). Si la boucle d'exécution entière échoue sur quota, le crew rejoue les tâches restantes après le délai d'attente adaptatif.
-- **Contrôle guardrail** : les tâches rejouées après une erreur quota conservent leur budget de tentatives indépendant — par exemple, `diagnostic_task` réinitialise son compteur de défaillances guardrail lors d'une reprise, évitant des rejets prématurés dus aux tentatives antérieures.
-- **Débit global** : `max_rpm=3` sur l'instance LLM et la pause minimale de 5.0s réduisent le débit par agent pour prévenir les dépassements lors d'exécutions parallèles.
+- **LLM utilisé** : Gemini (`gemini/gemini-3.5-flash-lite` par défaut, configurable via `GEMINI_MODEL`), avec une température et un timeout par agent (2.3).
+- **Quota** : le free tier impose environ **15 requêtes/minute** par projet/modèle. Une pause minimale de **5 s** entre appels (`QuotaManager.min_interval_seconds`) et `max_rpm=13` sur le crew limitent le débit ; le retry absorbe les 429 transitoires.
+- **Retry** : une erreur 429/quota ou 503/surcharge est retentie avec attente `retry after N + 2 s` si Gemini l'indique, sinon `base_delay × 2^(essai-1)`. Qualification : 5 essais, base 12 s. Crew : 5 essais, base 15 s.
+- **Reprise résumable** : sur erreur de quota après que certaines tâches ont terminé, **seules les tâches restantes** sont rejouées ; les sorties déjà obtenues continuent d'alimenter les suivantes. Le budget de relance du guardrail de diagnostic est réinitialisé quand `diagnostic_task` est rejouée.
+- **Pas d'appel LLM de plus pour contrôler** : les guardrails de 2.7 sont déterministes ; seul le diagnostic peut être relancé une fois.
+
+### 2.7 Contrôles automatiques de qualité
+
+Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent** (note ajoutée à la sortie) sauf le diagnostic, qui refuse une fois.
+
+| Agent | Consignes imposées | Contrôle automatique |
+|---|---|---|
+| Qualification | 6 exemples de cas limites, confiance obligatoire, questions fermées ; question sur le repository pour un BUGFIX/FEATURE sans repo (« renseigne le formulaire Repository cible, ou réponds *local* ») | `confidence < 0.6` force `is_clear = false` et une question ; repli explicite (`fallback`) si la sortie est inexploitable |
+| Designer | Identifiants stables `F1 [Must]`, critères `AC-F1-1` (Étant donné / Quand / Alors), MVP borné (5 Must, 3 critères chacun), exigences non fonctionnelles, composants avec états, gabarit jeu ou application, section « Contrôle » | Note « Contrôle automatique des specs » : section manquante, Must sans critère, critère vague sans seuil mesurable |
+| Architecte | Lecture de `package.json`/`tsconfig.json` (4 lectures), conventions reprises, « Dépendances à ajouter », contrats d'interface par fichier, tableau de couverture, risques | Note « Contrôle automatique de l'architecture » : sections, lignes `CRÉER\|MODIFIER chemin : rôle`, chemins dupliqués ou hors projet, fichier de code sans contrat |
+| Diagnostic | Hypothèses, traçabilité avec « ce qui infirmerait la cause » et « vérification manuelle », correctif minimal, 5 lectures au plus ; fichiers entre `<<<FICHIER>>>`, ou **modifications ciblées** `<<<MODIFICATION: chemin>>>` (blocs CHERCHER / REMPLACER) résolues en Python contre le fichier d'origine | Refus unique si : fichier tronqué ou sans balise de fin, commentaire de raccourci (`// ... reste du code`), bloc inapplicable (texte absent ou présent plusieurs fois), **import incohérent** (export manquant, import relatif sans cible) ; à la 2e tentative, les fichiers fautifs sont exclus du commit et signalés |
+| Développeur | Message de commit conventionnel (`type: résumé`, 72 car.), titre de PR conventionnel, recopie exacte des chemins et URL | Bloc « Livraison constatée par les outils » ajouté au rapport (fichiers réellement committés, non livrés, URL de PR renvoyée) ; toute URL de PR citée sans venir d'un outil est signalée ; description de PR neutralisant `@mentions` et mots-clés de fermeture (`fixes #n`) |
+| QA | Tableau `Critère \| Statut \| Preuve \| Correctif suggéré` ; KO avec `fichier:ligne` et correctif ; NON VÉRIFIABLE avec raison et test manuel | **Verdict minimal imposé** : `NO_GO` si un critère est KO, un problème bloquant est listé ou aucun fichier n'est committé ; `GO_AVEC_RESERVES` si des fichiers sont non livrés ou un critère NON VÉRIFIABLE. Un verdict plus indulgent est réécrit en place avec une note ; un plus sévère est conservé. Rapport de l'outil enrichi du périmètre (fichiers hors plan de l'architecte ou manquants) et de la cohérence des imports |
+
+**Limites assumées** : la validation TypeScript/JavaScript est heuristique (délimiteurs équilibrés, imports, exports) — il n'y a ni `tsc` ni build ; la vérification de PR côté QA reste celle de l'outil et du backend, pas du LLM.
 
 ---
 
@@ -74,63 +99,72 @@
 
 | Couche | Rôle | Fichiers clés |
 |---|---|---|
-| Frontend (Vue) | Formulaire, affichage des rapports/résultats, auth UI | `frontend/src/App.tsx`, `frontend/src/Login.tsx` |
+| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `hooks/useConversation.ts` |
 | Client Supabase | Session, token d'accès | `frontend/src/supabaseClient.ts` |
-| API (Logique HTTP) | Endpoints, validation des entrées, auth, persistance | `backend/main.py`, `backend/auth.py` |
-| Orchestration agents | Définition et exécution des agents/tâches CrewAI | `backend/crewquestion.py`, `backend/agentsquestion.yaml`, `backend/tasksquestion.yaml` |
-| Outils agents | Actions concrètes (lecture disque, lecture/écriture GitHub) | `backend/tools.py`, `backend/github_tools.py` |
-| Persistance | Modèle et accès à la base de données | `backend/database.py` |
+| API (Logique HTTP) | Endpoints, validation des entrées, auth, exécution en tâche de fond, persistance, vérification de livraison | `backend/main.py`, `backend/auth.py` |
+| Orchestration agents | Définition et exécution des agents/tâches CrewAI, guardrails, retry | `backend/crewquestion.py`, `backend/agentsquestion.yaml`, `backend/tasksquestion.yaml` |
+| Contrôles de qualité (purs) | Lecture de la sortie de l'Analyste, livraison (commit/PR), rapport QA | `backend/analyst_output.py`, `backend/delivery.py`, `backend/qa_report.py` |
+| Outils agents | Actions concrètes (lecture disque, lecture/écriture GitHub, vérification de syntaxe) | `backend/tools.py`, `backend/github_tools.py` |
+| Persistance | Modèles et accès à la base de données | `backend/database.py` |
 
 ### 3.2 Flux de données
 
 ```
 Utilisateur (navigateur)
   → Login.tsx (Supabase Auth) → session + access_token
-  → App.tsx (Studio) : fetch /api/qualify puis /api/execute (Authorization: Bearer <token>)
+  → Studio.tsx / useConversation : POST /api/qualify (mode auto) puis POST /api/execute
        → main.py : Depends(get_current_user) valide le token auprès de Supabase
-       → crewquestion.py : construit les inputs (user_request, repo_owner, repo_name,
-         base_branch, work_branch, repo_instructions) et lance le Crew CrewAI
-            → agents utilisent tools.py (disque local) et/ou github_tools.py (API GitHub)
-       → résultat brut renvoyé au frontend + écrit dans ExecutionHistory (Postgres/Supabase)
+       → /api/execute répond tout de suite ; asyncio.create_task lance _execute_crew_and_persist
+            → crewquestion.py : run_dynamic_crew (tâches sélectionnées, contexte par tâche,
+              guardrails, retry résumable) ; agents → tools.py / github_tools.py
+            → chaque agent terminé est persisté (section + durée) dans ExecutionHistory.result
+            → verify_github_delivery : branche et PR à jour confirmées via l'API GitHub
+  → useConversation sonde /api/conversations/{id}/progress puis lit /messages
 ```
 
-Il n'y a pas de state manager global côté frontend : `App.tsx` gère l'état via `useState` local (session, formulaire, résultats).
+L'état frontend est local au hook `useConversation` (pas de store global).
 
 ---
 
 ## 4. Modèles de Données & État
 
-### 4.1 État frontend (`Studio`, dans `App.tsx`)
+### 4.1 État frontend
 
-```ts
-prompt: string                    // demande utilisateur en texte libre
-loadingQualif / loadingExec: bool // états de chargement des deux étapes
-report: QualificationReport | null
-selectedWorkflow: string          // ANALYSE_ONLY | BUGFIX | FEATURE | DESIGN_AND_DEV
-clarifications: string
-executionResult: string | null
-errorMessage: string | null
-repoOwner / repoName / baseBranch: string  // repo GitHub cible (optionnel)
-```
+Défini dans `frontend/src/types.ts` et `hooks/useConversation.ts` : `ChatTurn` (message, statut `clarifying | running | success | failed | cancelled`, workflow, résumé de l'agent, questions, résultat), `pendingClarification`, `workflowType` (`AUTO` ou une des 4 catégories), `RepoTarget { owner, name, branch }`. Le brouillon de saisie est conservé localement et effacé à la déconnexion.
 
 ### 4.2 Contrats API
 
 ```ts
 // POST /api/qualify
 Request  { user_request: string; conversation_id?: number;
-           has_repo_target?: boolean }  // sans repo cible, une demande BUGFIX/FEATURE déclenche une question
+           has_repo_target?: boolean }  // sans repo cible, BUGFIX/FEATURE déclenchent une question
 Response { summary: string; reasoning: string; is_clear: boolean;
            request_type: 'ANALYSE_ONLY' | 'BUGFIX' | 'FEATURE' | 'DESIGN_AND_DEV';
-           alternative_type: <request_type> | null; confidence: number /* 0-1, < 0.6 => is_clear=false */;
+           alternative_type: <request_type> | null;
+           confidence: number;            // 0-1, < 0.6 => is_clear = false
            questions: string[]; fallback: boolean }
 
-// POST /api/execute
+// POST /api/execute  (répond immédiatement ; l'exécution continue en tâche de fond)
 Request  { user_request: string; target_workflow: string; clarifications?: string;
-           repo_owner?: string; repo_name?: string; base_branch?: string }
-Response { status: string; id: number; workflow: string; result: string }
+           repo_owner?: string; repo_name?: string; base_branch?: string;
+           conversation_id?: number }
+Response { status: 'running'; id: number; conversation_id: number }
+Erreurs  404 conversation introuvable · 409 exécution déjà en cours · 401 non authentifié
+
+// GET /api/conversations/{id}/progress   → sondage pendant une exécution
+Response { id: number | null; status: string | null; current_step: string | null;
+           completed_agents: Record<string, string> }   // sections d'agents terminés
+
+// Autres
+POST /api/conversations (title?) · GET /api/conversations
+GET  /api/conversations/{id}/messages → ExecutionHistory[]
+GET  /api/repo-targets → { repo_owner, repo_name, base_branch }[]   (20 derniers, distincts)
+GET  /api/history?limit&offset → ExecutionHistory[] · DELETE /api/history/{id}
 ```
 
 ### 4.3 Persistance (Supabase Postgres, via SQLModel)
+
+**Table `conversation`** : `id`, `user_id` (indexé), `title`, `created_at`, `updated_at`.
 
 **Table `executionhistory`** (`backend/database.py`) :
 
@@ -140,11 +174,16 @@ Response { status: string; id: number; workflow: string; result: string }
 | `user_request` | text | demande initiale |
 | `workflow` | text | workflow exécuté |
 | `clarifications` | text (nullable) | précisions apportées par l'utilisateur |
-| `result` | text | sortie brute du Crew |
+| `result` | text (nullable) | sortie du crew, une section par agent avec sa durée |
+| `status` | text | `running` \| `success` \| `failed` |
+| `current_step` | text (nullable) | étape en cours (`design`, `architecture`, `diagnostic`, `development`, `qa`), vidée à la fin |
+| `user_id` | text (indexé) | auteur (id Supabase) |
+| `conversation_id` | int (indexé) | fil de conversation |
+| `repo_owner`, `repo_name`, `base_branch`, `work_branch` | text (nullable) | cible GitHub et branche de travail |
+| `api_calls_count`, `rate_limit_hits`, `total_wait_time_seconds` | int / float (nullable) | coût et attentes de quota de l'exécution |
+| `created_at`, `updated_at` | datetime | horodatages |
 
-Le repository/branche GitHub ciblés et l'URL de PR **ne sont pas** stockés dans des colonnes dédiées — seulement dans le texte libre de `result` si l'agent les y mentionne.
-
-Le schéma `auth` (utilisateurs, mots de passe hashés, sessions) est géré entièrement par Supabase, hors du contrôle du code applicatif.
+L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le texte du résultat (bloc « Livraison constatée par les outils »). Le schéma `auth` est géré entièrement par Supabase. Les colonnes ajoutées après coup sont rattrapées par des migrations légères au démarrage.
 
 ---
 
@@ -155,44 +194,48 @@ Le schéma `auth` (utilisateurs, mots de passe hashés, sessions) est géré ent
 | Écran | Composant | Condition d'affichage | Description |
 |---|---|---|---|
 | Connexion | `Login.tsx` | pas de session Supabase active | Formulaire email + mot de passe |
-| Chargement | inline dans `App.tsx` | vérification de session en cours | Texte "Chargement..." |
-| Studio | `Studio` (dans `App.tsx`) | session active | Formulaire de demande → rapport de qualification → repo cible → sélection workflow → exécution → résultat |
+| Chargement | inline dans `App.tsx` | vérification de session en cours | Texte « Chargement... » |
+| Studio | `Studio.tsx` | session active | Fil de conversation (`ChatThread`, `ChatMessage` qui affiche l'indicateur d'étapes `StepIndicator` et le résumé par agent `AgentSummary`), saisie (`ChatInput`, qui contient le choix du workflow et le formulaire du repo cible `RepoTargetFields`), historique des conversations (`HistoryPanel`), en-tête (`StudioHeader`) |
 
 ### 5.2 Navigation
 
-Pas de routeur : un seul écran conditionnel (`Login` vs `Studio`) piloté par l'état de session Supabase (`onAuthStateChange`).
+Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'état de session Supabase (`onAuthStateChange`). Dans le Studio, l'historique est un panneau ; reprendre une conversation recharge ses tours.
 
 ---
 
 ## 6. Exigences Non-Fonctionnelles
 
-- **Performance** : pas d'exigence temps réel — les exécutions d'agents peuvent prendre plusieurs dizaines de secondes à plusieurs minutes (limité par `max_rpm=3` et pause quota 5.0s côté LLM). Temps d'exécution observés pour workflow complet (DESIGN_AND_DEV) : ~120–180 secondes en conditions normales. Chaque agent rapporte son temps d'exécution (`execution_duration`) pour le monitoring.
-- **Limites Gemini free tier** : 15 requêtes/minute par projet/modèle. Le système s'adapte avec `min_interval_seconds=5.0` (une pause de 5s entre agents assure un débit d'environ 12 req/min sur une exécution séquentielle, laissant de la marge pour les pics ou les tentatives de retry).
-- **Résilience** : retry automatique sur erreurs Gemini 429/quota et 503/surcharge, avec backoff exponentiel (1s → 32s). Rejeu des tâches restantes après quota error, avec réinitialisation indépendante des budgets guardrail.
-- **Sécurité** : toutes les routes API (`/api/qualify`, `/api/execute`) exigent un token Supabase valide. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale.
-- **Persistance** : historique des exécutions en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible.
+- **Performance** : pas d'exigence temps réel. Une exécution complète (`DESIGN_AND_DEV`) peut durer plusieurs minutes (pause de 5 s entre appels, `max_rpm=13`, 5 agents) ; l'utilisateur suit la progression et peut fermer l'onglet, car l'exécution continue côté serveur.
+- **Limites Gemini free tier** : environ 15 requêtes/minute. Le système s'adapte (pause, retry, reprise résumable) mais un quota épuisé peut allonger fortement une exécution.
+- **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
+- **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
+- **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
+- **Tests** : suite backend `pytest` (environ 260 tests) couvrant les contrôles purs, les guardrails et les outils ; typecheck frontend `tsc --noEmit`. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
-- **Responsive** : mise en page simple (`maxWidth: 850px`, centrée), pas de layout mobile dédié.
+- **Responsive** : mise en page simple, pas de layout mobile dédié.
 - **Accessibilité** : non ciblée spécifiquement (pas d'audit WCAG).
 
 ---
 
 ## 7. Questions Ouvertes
 
-- [ ] Faut-il stocker le repo/branche GitHub cible et l'URL de la PR générée comme colonnes dédiées dans `executionhistory`, plutôt que seulement dans le texte du résultat ?
-- [ ] Faut-il lier chaque `ExecutionHistory` à l'utilisateur Supabase qui l'a déclenchée (actuellement anonyme une fois le token validé) ?
+- [ ] Faut-il stocker l'URL de la Pull Request générée dans une colonne dédiée de `executionhistory`, plutôt que seulement dans le texte du résultat ?
 - [ ] Le CORS `allow_origins=["*"]` doit-il être restreint au domaine Vercel de production ?
-- [ ] Les fichiers `docs/*.md` écrits sur le disque local de Render ont-ils encore une utilité maintenant que l'écriture peut se faire directement sur GitHub ?
+- [ ] Les fichiers `docs/*.md` écrits sur le disque local de Render ont-ils encore une utilité maintenant que l'écriture se fait directement sur GitHub ?
+- [ ] Faut-il ajouter une vraie compilation (`tsc`, build) dans un bac à sable pour la QA, au lieu des vérifications statiques ?
+- [ ] Faut-il repasser en « prête à relire » une PR ouverte en brouillon quand un tour ultérieur complète la livraison (l'API REST ne le permet pas, il faudrait GraphQL) ?
+- [ ] Un échantillon d'exécutions réelles doit-il servir à calibrer les seuils des contrôles (0.6 de confiance, bornes du designer, budgets de lecture) ?
 
 ---
 
 ## 8. Checklist du Livrable
 
-- [x] Boucle principale et workflows documentés
-- [x] Agents, outils et permissions par agent listés
-- [x] Intégration GitHub (branche de travail, PR, refus d'écriture sur main) décrite
+- [x] Boucle principale (conversations, exécution asynchrone, progression) et workflows documentés
+- [x] 6 agents, outils, budgets et timeouts listés
+- [x] Intégration GitHub (branche réutilisée, commit extrait en Python, PR générée, vérification de livraison) décrite
+- [x] Contrôles automatiques de qualité par agent documentés
 - [x] Authentification Supabase documentée
 - [x] Contrats API et modèles de données/état décrits
-- [x] Schéma de la table `executionhistory`
+- [x] Schémas des tables `conversation` et `executionhistory`
 - [x] Écrans et navigation listés
 - [x] Questions ouvertes identifiées
