@@ -12,6 +12,11 @@ export interface QualificationReport {
   fallback?: boolean;
 }
 
+export interface BulkDeleteResult {
+  deleted: number[];
+  skipped: { id: number; reason: 'running' | 'not_found' }[];
+}
+
 export interface ExecutionHistoryEntry {
   id: number;
   user_request: string;

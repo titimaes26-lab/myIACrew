@@ -312,6 +312,44 @@ def test_deleting_an_execution_removes_its_agent_runs_and_only_its_own(session):
     assert any(r.execution_id == running.id for r in session.exec(select(AgentRun)))
 
 
+def _bulk(session, ids, user="u1"):
+    return asyncio.run(main.bulk_delete_history(
+        payload=main.BulkDeleteInput(ids=ids), session=session, user={"id": user},
+    ))
+
+
+def test_bulk_delete_removes_only_own_non_running_executions_and_their_agent_runs(session):
+    a, b = _execution(session, "u1"), _execution(session, "u1", status="failed")
+    running = _execution(session, "u1", status="running")
+    foreign = _execution(session, "u2")
+    kept = _execution(session, "u1")
+    for entry in (a, b, running, foreign, kept):
+        _agent_run(session, entry, "design")
+    result = _bulk(session, [a.id, b.id, running.id, foreign.id, 9999])
+    assert result["deleted"] == [a.id, b.id]
+    assert result["skipped"] == [
+        {"id": running.id, "reason": "running"},
+        {"id": foreign.id, "reason": "not_found"},
+        {"id": 9999, "reason": "not_found"},
+    ]
+    left = {e.id for e in session.exec(select(ExecutionHistory))}
+    assert left == {running.id, foreign.id, kept.id}
+    assert {r.execution_id for r in session.exec(select(AgentRun))} == {running.id, foreign.id, kept.id}
+
+
+def test_bulk_delete_ignores_duplicates_and_accepts_an_empty_list(session):
+    a = _execution(session, "u1")
+    assert _bulk(session, [a.id, a.id, a.id]) == {"deleted": [a.id], "skipped": []}
+    assert _bulk(session, []) == {"deleted": [], "skipped": []}
+
+
+def test_bulk_delete_rejects_more_than_the_maximum(session):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as excinfo:
+        _bulk(session, list(range(1, main.BULK_DELETE_MAX + 2)))
+    assert excinfo.value.status_code == 422
+
+
 @pytest.fixture()
 def run_engine(monkeypatch):
     from sqlalchemy.pool import StaticPool

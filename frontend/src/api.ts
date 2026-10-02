@@ -1,4 +1,4 @@
-import type { AgentRunView, ExecutionHistoryEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
+import type { AgentRunView, BulkDeleteResult,ExecutionHistoryEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
 
 // /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
 // fond côté backend, voir _execute_crew_and_persist dans main.py) : ce corps de réponse ne
@@ -87,5 +87,12 @@ export function apiClient(apiUrl: string, accessToken: string) {
     deleteHistoryEntry: (id: number) =>
       fetch(`${apiUrl}/api/history/${id}`, { method: 'DELETE', headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<{ status: string; id: number }>(res)),
+
+    deleteHistoryEntries: (ids: number[]) =>
+      fetch(`${apiUrl}/api/history/bulk-delete`, {
+        method: 'POST',
+        headers: authHeaders(accessToken),
+        body: JSON.stringify({ ids }),
+      }).then((res) => parseJsonOrThrow<BulkDeleteResult>(res)),
   };
 }

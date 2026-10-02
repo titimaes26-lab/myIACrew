@@ -197,6 +197,11 @@ class WorkflowExecutionInput(BaseModel):
 class ConversationCreateInput(BaseModel):
     title: Optional[str] = None
 
+BULK_DELETE_MAX = 100
+
+class BulkDeleteInput(BaseModel):
+    ids: List[int]
+
 def _current_memory_mb() -> Optional[float]:
     """RSS (mémoire physique réellement utilisée par ce process) en Mo, lue depuis
     /proc/self/status (Linux uniquement — couvre tout environnement de déploiement réaliste ici :
@@ -1348,6 +1353,14 @@ async def get_history(
     )
     return session.exec(statement).all()
 
+def _delete_execution(session: Session, entry: ExecutionHistory) -> None:
+    """Supprime une exécution et ses mesures par agent (sans commit).
+    Les mesures n'ont pas de clé étrangère : sans cette suppression explicite, elles survivraient
+    à l'exécution supprimée (données orphelines, invisibles)."""
+    for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id == entry.id)).all():
+        session.delete(agent_run)
+    session.delete(entry)
+
 @app.delete("/api/history/{execution_id}")
 async def delete_history_entry(
     execution_id: int,
@@ -1381,11 +1394,41 @@ async def delete_history_entry(
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
 
     print(f"  → Suppression en cours : user_request={entry.user_request[:50]}", flush=True)
-    # Les mesures par agent n'ont pas de clé étrangère : sans cette suppression explicite, elles
-    # survivraient à l'exécution que l'utilisateur vient de supprimer (données orphelines, invisibles).
-    for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id == execution_id)).all():
-        session.delete(agent_run)
-    session.delete(entry)
+    _delete_execution(session, entry)
     session.commit()
     print("  → Suppression confirmée en base", flush=True)
     return {"status": "deleted", "id": execution_id}
+
+@app.post("/api/history/bulk-delete")
+async def bulk_delete_history(
+    payload: BulkDeleteInput,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Supprime plusieurs exécutions en un seul commit. Une exécution en cours ou introuvable
+    (inconnue OU appartenant à un autre utilisateur) est ignorée sans faire échouer le lot."""
+    ids = list(dict.fromkeys(payload.ids))
+    if len(ids) > BULK_DELETE_MAX:
+        raise HTTPException(status_code=422, detail=f"{BULK_DELETE_MAX} exécutions au plus par suppression.")
+    entries = {}
+    if ids:
+        rows = session.exec(
+            select(ExecutionHistory).where(
+                ExecutionHistory.id.in_(ids), ExecutionHistory.user_id == user.get("id")
+            )
+        ).all()
+        entries = {row.id: row for row in rows}
+    deleted: List[int] = []
+    skipped = []
+    for execution_id in ids:
+        entry = entries.get(execution_id)
+        if entry is None:
+            skipped.append({"id": execution_id, "reason": "not_found"})
+        elif entry.status == "running":
+            # Même raison que pour la suppression unitaire (voir delete_history_entry).
+            skipped.append({"id": execution_id, "reason": "running"})
+        else:
+            _delete_execution(session, entry)
+            deleted.append(execution_id)
+    session.commit()
+    return {"deleted": deleted, "skipped": skipped}

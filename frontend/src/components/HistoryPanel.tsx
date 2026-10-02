@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api';
 import type { ExecutionHistoryEntry } from '../types';
-import { toServerDate } from '../utils/serverDate';
+import { useHistorySelection } from '../hooks/useHistorySelection';
+import HistoryEntryRow from './HistoryEntryRow';
+import HistorySelectionBar from './HistorySelectionBar';
 
 interface HistoryPanelProps {
   apiUrl: string;
@@ -9,17 +11,24 @@ interface HistoryPanelProps {
   onResumeConversation: (conversationId: number) => void;
 }
 
-const STATUS_LABEL: Record<ExecutionHistoryEntry['status'], string> = {
-  running: '🔄 En cours',
-  success: '✅ Succès',
-  failed: '❌ Échec',
-};
+const SKIP_REASON_LABEL = { running: 'en cours', not_found: 'introuvable' } as const;
+
+function plural(count: number, singular: string, pluralForm: string): string {
+  return `${count} ${count > 1 ? pluralForm : singular}`;
+}
 
 export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation }: HistoryPanelProps) {
   const [entries, setEntries] = useState<ExecutionHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const selectableIds = useMemo(
+    () => entries.filter((entry) => entry.status !== 'running').map((entry) => entry.id),
+    [entries],
+  );
+  const { selected, toggle, selectAll, clear } = useHistorySelection(selectableIds);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,15 +53,45 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
   const handleDelete = async (id: number) => {
     if (!window.confirm('Supprimer cette exécution de l\'historique ?')) return;
 
-    setDeletingId(id);
+    setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       await apiClient(apiUrl, accessToken).deleteHistoryEntry(id);
       setEntries((current) => current.filter((entry) => entry.id !== id));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Suppression impossible.');
     } finally {
-      setDeletingId(null);
+      setBusy(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Supprimer ${plural(ids.length, 'cette exécution', 'ces exécutions')} de l'historique ?`)) return;
+
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await apiClient(apiUrl, accessToken).deleteHistoryEntries(ids);
+      const removed = new Set(result.deleted);
+      // Les lignes ignorées (en cours, déjà supprimées ailleurs) restent affichées, sauf « introuvable ».
+      result.skipped.filter((item) => item.reason === 'not_found').forEach((item) => removed.add(item.id));
+      setEntries((current) => current.filter((entry) => !removed.has(entry.id)));
+      clear();
+      if (result.skipped.length > 0) {
+        const reasons = [...new Set(result.skipped.map((item) => SKIP_REASON_LABEL[item.reason]))].join(', ');
+        setNotice(
+          `${plural(result.deleted.length, 'supprimée', 'supprimées')}, `
+          + `${plural(result.skipped.length, 'ignorée', 'ignorées')} : ${reasons}`,
+        );
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Suppression impossible.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -62,47 +101,31 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
 
       {loading && <p style={{ color: '#666', fontSize: '14px' }}>Chargement...</p>}
       {error && <p role="alert" style={{ color: '#991b1b', fontSize: '14px' }}>❌ {error}</p>}
+      {notice && <p role="status" style={{ color: '#92400e', fontSize: '14px' }}>ℹ️ {notice}</p>}
       {!loading && !error && entries.length === 0 && (
         <p style={{ color: '#666', fontSize: '14px' }}>Aucune exécution pour l'instant.</p>
       )}
 
+      <HistorySelectionBar
+        selectableCount={selectableIds.length}
+        selectedCount={selected.size}
+        busy={busy}
+        onSelectAll={selectAll}
+        onClear={clear}
+        onDelete={handleBulkDelete}
+      />
+
       <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
         {entries.map((entry) => (
-          <li
+          <HistoryEntryRow
             key={entry.id}
-            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', padding: '10px', border: '1px solid #e1e4e8', borderRadius: '6px' }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: '13px', color: '#666' }}>
-                {toServerDate(entry.created_at).toLocaleString('fr-FR')} · {entry.workflow} · {STATUS_LABEL[entry.status]}
-                {entry.repo_owner && entry.repo_name && ` · ${entry.repo_owner}/${entry.repo_name}`}
-              </div>
-              <div style={{ fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {entry.user_request}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-              {entry.conversation_id !== null && (
-                <button
-                  type="button"
-                  onClick={() => onResumeConversation(entry.conversation_id!)}
-                  style={{ padding: '6px 10px', backgroundColor: '#e0f2fe', color: '#075985', border: '1px solid #7dd3fc', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}
-                >
-                  Reprendre
-                </button>
-              )}
-              {entry.status !== 'running' && (
-                <button
-                  type="button"
-                  onClick={() => handleDelete(entry.id)}
-                  disabled={deletingId === entry.id}
-                  style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: deletingId === entry.id ? 'not-allowed' : 'pointer', fontSize: '13px' }}
-                >
-                  {deletingId === entry.id ? '...' : 'Supprimer'}
-                </button>
-              )}
-            </div>
-          </li>
+            entry={entry}
+            checked={selected.has(entry.id)}
+            busy={busy}
+            onToggle={toggle}
+            onResume={onResumeConversation}
+            onDelete={handleDelete}
+          />
         ))}
       </ul>
     </div>

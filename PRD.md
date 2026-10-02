@@ -184,6 +184,7 @@ Response { period_days: number; workflow: string | null;
 Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_seconds, llm_calls, llm_errors,
            tokens_known, prompt_tokens, completion_tokens, total_tokens, tool_calls, tool_errors }[]
 GET  /api/history?limit&offset → ExecutionHistory[] · DELETE /api/history/{id}
+POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [{id, reason: "running"|"not_found"}]}  (un seul commit ; supprime aussi les `agentrun` ; id étranger/inconnu → not_found ; en cours → running)
 ```
 
 ### 4.3 Persistance (Supabase Postgres, via SQLModel)
