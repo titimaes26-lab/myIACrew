@@ -1,10 +1,7 @@
 design_task:
   description: >
     Sur la base de la demande ({user_request}), commence par déterminer s'il s'agit d'un jeu
-    ou d'une application/logiciel classique, puis définis les spécifications fonctionnelles
-    adaptées : pour un jeu, les mécaniques, les règles, les entités nécessaires et le flux
-    utilisateur ; pour une application, les fonctionnalités, les règles métier, les entités
-    de données et les parcours utilisateur.
+    ou d'une application/logiciel classique, puis applique le gabarit correspondant (ci-dessous).
 
     Contexte de la conversation (tours précédents de cet utilisateur, à prendre en compte
     si la demande actuelle s'appuie dessus, ex: "ajoute aussi Y") :
@@ -23,14 +20,40 @@ design_task:
     Raisonne dans cet ordre, sans sauter d'étape :
     1. Besoin réel : reformule en 2-3 phrases le problème que la demande cherche à résoudre.
     2. Utilisateurs / joueurs : qui utilise quoi, dans quel but.
-    3. Fonctionnalités, classées MoSCoW (Must / Should / Could / Won't) : le "Must" forme le MVP à
-       livrer d'abord ; garde-le assez petit pour être codé en une seule passe.
+    3. Fonctionnalités, classées MoSCoW, chacune sur UNE ligne au format "- F1 [Must] titre court" :
+       identifiants stables F1, F2, F3... (jamais renumérotés). Le "Must" forme le MVP à livrer
+       d'abord : 5 fonctionnalités "Must" AU PLUS, assez petites pour être codées en une seule passe.
+       3 "Should" et 3 "Could" au plus, une ligne chacun. Chaque "Won't" tient en une ligne avec sa
+       raison. Une fonctionnalité "Must" de trop est à rétrograder en "Should", pas à garder.
     4. Règles et cas limites : valeurs extrêmes, états vides, erreurs, conditions de victoire/défaite
        pour un jeu, validations pour une application.
-    5. Critères d'acceptation TESTABLES pour chaque fonctionnalité "Must", au format
+    5. Critères d'acceptation TESTABLES pour chaque fonctionnalité "Must" : 3 AU PLUS par fonctionnalité,
+       identifiés AC-F1-1, AC-F1-2... (le numéro de la fonctionnalité puis un rang), au format
        "Étant donné ... / Quand ... / Alors ..." : la QA s'en servira pour juger la livraison.
+       Aucun terme vague (rapide, fluide, intuitif, simple, convivial, joli, moderne) sans seuil
+       mesurable : écris "s'affiche en moins de 1 seconde", pas "s'affiche rapidement".
+    6. Exigences non fonctionnelles : accessibilité, responsive, performance, persistance (sauvegarde,
+       données conservées ou non). Une ligne par point pertinent pour cette demande ; écris
+       "non spécifié" plutôt que d'inventer.
+    7. Composants d'interface requis : une ligne par composant au format
+       "- NomDuComposant (F1) : états : vide, chargement, erreur, succès" (garde les états utiles,
+       et rattache chaque composant à au moins une fonctionnalité).
     Tout point que la demande ne tranche pas va dans une section "Hypothèses retenues" (ce que tu as
     supposé et pourquoi), jamais comblé en silence.
+
+    Gabarit pour un JEU : ajoute à la section "Règles et cas limites" la boucle de gameplay en
+    quelques étapes, les ressources et l'économie avec leurs valeurs de départ chiffrées et leurs
+    bornes, la progression, les conditions de victoire et de défaite, et ce qui est équilibré par
+    quel paramètre.
+    Gabarit pour une APPLICATION : ajoute les parcours utilisateur de bout en bout, les entités de
+    données avec leurs champs et validations, les règles métier, et les états ou permissions qui
+    changent ce que l'utilisateur voit.
+
+    Termine par une section "Contrôle" qui répond OUI ou NON, une ligne chacune : chaque fonctionnalité
+    "Must" a-t-elle au moins un critère AC ? Un terme vague est-il resté sans seuil mesurable ?
+    Chaque composant d'interface renvoie-t-il à une fonctionnalité ? Corrige avant de répondre si une
+    réponse est NON. Garde la spécification complète sous environ 1200 mots, titres de section en
+    "##" (pas de "###" par fonctionnalité).
 
     Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
     d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
@@ -38,10 +61,11 @@ design_task:
     ne s'est produit. Si tu inclus un exemple de code illustratif, indique explicitement qu'il s'agit
     d'un exemple non exécuté.
   expected_output: >
-    Un document de spécifications avec, dans cet ordre : "Besoin", "Utilisateurs", "Existant" (si un
-    repository est fourni), "Fonctionnalités (MoSCoW)", "Règles et cas limites", "Critères
-    d'acceptation" (Étant donné / Quand / Alors, pour chaque fonctionnalité Must), "Hypothèses
-    retenues" et les composants d'interface requis.
+    Un document de spécifications avec, dans cet ordre, des titres "##" : "Besoin", "Utilisateurs",
+    "Existant" (si un repository est fourni), "Fonctionnalités (MoSCoW)" (lignes "- F1 [Must] ..."),
+    "Règles et cas limites", "Critères d'acceptation" (AC-F1-1... au format Étant donné / Quand /
+    Alors, pour chaque fonctionnalité Must), "Exigences non fonctionnelles", "Composants d'interface",
+    "Hypothèses retenues" et "Contrôle" (réponses OUI/NON).
   agent: product_designer_agent
 
 architecture_task:

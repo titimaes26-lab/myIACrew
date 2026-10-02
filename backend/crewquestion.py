@@ -837,6 +837,44 @@ def _qa_verdict_guardrail(task_output):
         "comme NO_GO tant qu'une vérification humaine n'a pas eu lieu."
     )
 
+DESIGN_REQUIRED_HEADINGS = (
+    "Besoin", "Utilisateurs", "Fonctionnalités", "Règles et cas limites",
+    "Critères d'acceptation", "Hypothèses retenues",
+)
+_DESIGN_VAGUE_TERMS = re.compile(
+    r"\b(rapide(?:ment)?|fluide|intuitif|intuitive|simple|convivial|ergonomique|joli|moderne)\b", re.IGNORECASE
+)
+_DESIGN_MUST_FEATURE = re.compile(r"\bF(\d+)\b[^\n]*\[\s*Must\s*\]", re.IGNORECASE)
+
+def _design_spec_issues(raw: str) -> List[str]:
+    """Anomalies vérifiables d'un document de specs du designer (titres, identifiants, termes vagues)."""
+    issues = []
+    for heading in DESIGN_REQUIRED_HEADINGS:
+        if not re.search(rf"^#+\s*.*{re.escape(heading)}", raw, re.IGNORECASE | re.MULTILINE):
+            issues.append(f"Section « {heading} » absente.")
+    for number in sorted({m.group(1) for m in _DESIGN_MUST_FEATURE.finditer(raw)}, key=int):
+        if not re.search(rf"\bAC-F{number}-\d+", raw):
+            issues.append(f"F{number} [Must] n'a aucun critère d'acceptation AC-F{number}-n.")
+    for line in raw.splitlines():
+        criterion = re.search(r"\bAC-F\d+-\d+", line)
+        if criterion:
+            body = line[criterion.end():]
+            if _DESIGN_VAGUE_TERMS.search(body) and not re.search(r"\d", body):
+                issues.append(f"Critère vague sans seuil mesurable : « {line.strip()[:90]} ».")
+    return issues
+
+def _design_spec_guardrail(task_output):
+    """Signale les anomalies des specs SANS relancer le designer (une relance coûterait un appel
+    LLM de plus sous un quota serré) : la note est lue par l'architecte et la QA."""
+    raw = getattr(task_output, "raw", "") or ""
+    issues = _design_spec_issues(raw)
+    if not issues:
+        return True, task_output
+    return True, (
+        f"{raw}\n\n## Contrôle automatique des specs\n"
+        + "\n".join(f"- {issue}" for issue in issues)
+    )
+
 # --- CREW BASE ---
 @CrewBase
 class AppDevelopmentCrew():
@@ -949,7 +987,8 @@ class AppDevelopmentCrew():
 
     @task
     def design_task(self) -> Task:
-        return Task(config=self.tasks_config['design_task'], agent=self.product_designer_agent(), output_file='docs/specs_design.md')
+        return Task(config=self.tasks_config['design_task'], agent=self.product_designer_agent(), output_file='docs/specs_design.md',
+                    guardrail=_design_spec_guardrail, guardrail_max_retries=0)
 
     @task
     def architecture_task(self) -> Task:

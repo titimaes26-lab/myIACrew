@@ -123,6 +123,59 @@ def test_qualification_prompt_asks_for_repo_form_not_chat():
     assert "Repository cible" in prompt and "« local »" in prompt
 
 
+GOOD_SPEC = """## Besoin
+x
+## Utilisateurs
+y
+## Fonctionnalités (MoSCoW)
+- F1 [Must] Ajouter une tâche
+- F2 [Should] Filtrer
+## Règles et cas limites
+z
+## Critères d'acceptation
+- AC-F1-1 Étant donné une liste vide / Quand j'ajoute / Alors elle s'affiche en moins de 1 seconde
+## Hypothèses retenues
+h
+"""
+
+
+def test_design_spec_issues_complete_spec_has_none():
+    assert cq._design_spec_issues(GOOD_SPEC) == []
+
+
+def test_design_spec_issues_flags_must_without_criterion():
+    issues = cq._design_spec_issues(GOOD_SPEC.replace("- F2 [Should] Filtrer", "- F2 [Must] Filtrer"))
+    assert any("F2 [Must]" in i for i in issues) and not any("F1 [Must]" in i for i in issues)
+
+
+def test_design_spec_issues_flags_vague_criterion_but_not_measurable_one():
+    vague = cq._design_spec_issues(GOOD_SPEC + "- AC-F1-2 Alors l'écran s'affiche rapidement\n")
+    assert any("Critère vague" in i for i in vague)
+    assert cq._design_spec_issues(GOOD_SPEC + "- AC-F1-3 Alors l'écran s'affiche rapidement en moins de 2 s\n") == []
+
+
+def test_design_spec_issues_flags_missing_sections():
+    issues = cq._design_spec_issues("## Besoin\nseulement ça")
+    assert any("Utilisateurs" in i for i in issues) and any("Hypothèses retenues" in i for i in issues)
+
+
+def test_design_spec_guardrail_never_fails_and_annotates_only_on_issues():
+    class Out:
+        raw = GOOD_SPEC
+    ok, result = cq._design_spec_guardrail(Out())
+    assert ok is True and result is not None and "Contrôle automatique" not in str(result)
+    Out.raw = "## Besoin\nx"
+    ok, result = cq._design_spec_guardrail(Out())
+    assert ok is True and "## Contrôle automatique des specs" in result
+
+
+def test_design_task_yaml_placeholders_are_known():
+    import pathlib, string, yaml
+    tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
+    fields = {f[1] for f in string.Formatter().parse(tasks["design_task"]["description"]) if f[1]}
+    assert fields <= {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
+
+
 def test_local_writes_are_confined_to_workspace(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/App.tsx").write_text("old\n")
