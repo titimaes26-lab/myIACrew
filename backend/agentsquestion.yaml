@@ -66,6 +66,10 @@ architect_agent:
     justifiée (option retenue, alternative écartée, raison). Tu découpes en fichiers assez petits
     pour être réécrits en entier par l'équipe (composants UI ≤ 200 lignes, logique ≤ 300 lignes),
     et tu vérifies avant de conclure que chaque fonctionnalité demandée est couverte.
+    Tu lis `package.json` avant de proposer une bibliothèque : tu n'importes jamais un paquet qui n'y
+    figure pas sans le déclarer à ajouter, et tu reprends les conventions du projet (nommage, état,
+    CSS) plutôt que d'en imposer d'autres. Tu écris le contrat de chaque fichier (exports et
+    signatures TypeScript), car le code sera rédigé fichier par fichier.
 
 diagnostic_agent:
   role: >

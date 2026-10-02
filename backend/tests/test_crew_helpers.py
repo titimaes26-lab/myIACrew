@@ -191,8 +191,74 @@ def test_design_spec_guardrail_never_fails_and_annotates_only_on_issues():
 def test_design_task_yaml_placeholders_are_known():
     import pathlib, string, yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
-    fields = {f[1] for f in string.Formatter().parse(tasks["design_task"]["description"]) if f[1]}
-    assert fields <= {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
+    known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
+    for name in ("design_task", "architecture_task"):
+        fields = {f[1] for f in string.Formatter().parse(tasks[name]["description"]) if f[1]}
+        assert fields <= known, name
+
+
+GOOD_ARCH = """## Existant
+Projet vide.
+## Cible
+src/ avec composants.
+## Décisions
+Décision : useState | Alternative écartée : Redux | Pourquoi : simple
+## Dépendances à ajouter
+aucune
+## Contrats d'interface
+- src/App.tsx : export default function App(): JSX.Element
+- src/hooks/useCart.ts : export function useCart(): { items: Item[] }
+## Fichiers à créer ou modifier
+- CRÉER src/App.tsx : composant racine
+- MODIFIER src/hooks/useCart.ts : logique du panier
+## Couverture
+| Exigence | Fichier(s) |
+| F1 | src/App.tsx |
+## Risques
+- Taille : découper
+"""
+
+
+def test_architecture_issues_complete_plan_has_none():
+    assert cq._architecture_issues(GOOD_ARCH) == []
+
+
+def test_architecture_issues_flags_missing_sections_and_empty_file_list():
+    issues = cq._architecture_issues("## Existant\nrien")
+    assert any("Cible" in i for i in issues) and any("Aucune ligne" in i for i in issues)
+
+
+def test_architecture_issues_flags_malformed_duplicate_and_outside_paths():
+    plan = GOOD_ARCH + "- CRÉER src/App.tsx : doublon\n- CRÉER ../evil.ts : hors projet\n- CRÉER src/x.ts sans rôle\n"
+    issues = cq._architecture_issues(plan)
+    assert any("plusieurs fois" in i for i in issues)
+    assert any("hors du projet" in i for i in issues)
+    assert any("mal formée" in i for i in issues)
+
+
+def test_architecture_issues_flags_code_file_without_contract():
+    plan = GOOD_ARCH.replace("- MODIFIER src/hooks/useCart.ts : logique du panier", "- MODIFIER src/hooks/useCart.ts : logique du panier\n- CRÉER src/utils/format.ts : formats")
+    issues = cq._architecture_issues(plan)
+    assert any("src/utils/format.ts n'a pas de contrat" in i for i in issues)
+    assert not any("useCart" in i for i in issues)
+
+
+def test_architecture_guardrail_never_fails_and_annotates_only_on_issues():
+    class Out:
+        raw = GOOD_ARCH
+    out = Out()
+    ok, result = cq._architecture_guardrail(out)
+    assert ok is True and result is out
+    Out.raw = "## Existant\nrien"
+    ok, result = cq._architecture_guardrail(Out())
+    assert ok is True and "## Contrôle automatique de l'architecture" in result
+
+
+def test_architecture_task_wiring_and_budget():
+    crew = new_crew()
+    task = crew.architecture_task()
+    assert task.guardrail is not None and task.guardrail_max_retries == 0
+    assert crew.architect_agent().max_iter == 5
 
 
 def test_local_writes_are_confined_to_workspace(tmp_path):

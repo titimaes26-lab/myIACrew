@@ -837,6 +837,24 @@ def _qa_verdict_guardrail(task_output):
         "comme NO_GO tant qu'une vérification humaine n'a pas eu lieu."
     )
 
+def _missing_heading_issues(raw: str, headings) -> List[str]:
+    return [
+        f"Section « {heading} » absente."
+        for heading in headings
+        if not re.search(rf"^#+\s*.*{re.escape(heading)}", raw, re.IGNORECASE | re.MULTILINE)
+    ]
+
+def _make_issue_note_guardrail(issues_fn, title: str):
+    """Guardrail qui signale les anomalies SANS relancer l'agent (une relance coûterait un appel
+    LLM de plus sous un quota serré) : la note ajoutée est lue par les tâches suivantes."""
+    def guardrail(task_output):
+        raw = getattr(task_output, "raw", "") or ""
+        issues = issues_fn(raw)
+        if not issues:
+            return True, task_output
+        return True, f"{raw}\n\n## {title}\n" + "\n".join(f"- {issue}" for issue in issues)
+    return guardrail
+
 DESIGN_REQUIRED_HEADINGS = (
     "Besoin", "Utilisateurs", "Fonctionnalités", "Règles et cas limites",
     "Critères d'acceptation", "Hypothèses retenues",
@@ -854,10 +872,7 @@ def _design_spec_issues(raw: str) -> List[str]:
     # Apostrophes typographiques courantes dans une sortie LLM : sans normalisation, un titre
     # « Critères d’acceptation » serait signalé absent à tort.
     raw = raw.replace("\u2019", "'").replace("\u2018", "'")
-    issues = []
-    for heading in DESIGN_REQUIRED_HEADINGS:
-        if not re.search(rf"^#+\s*.*{re.escape(heading)}", raw, re.IGNORECASE | re.MULTILINE):
-            issues.append(f"Section « {heading} » absente.")
+    issues = _missing_heading_issues(raw, DESIGN_REQUIRED_HEADINGS)
     must_numbers = {m.group(1) for m in _DESIGN_MUST_BEFORE.finditer(raw)}
     must_numbers |= {m.group(1) for m in _DESIGN_MUST_AFTER.finditer(raw)}
     covered = {m.group(1) for m in _DESIGN_CRITERION_ID.finditer(raw)}
@@ -875,17 +890,41 @@ def _design_spec_issues(raw: str) -> List[str]:
                 issues.append(f"Critère vague sans seuil mesurable : « {line.strip()[:90]} ».")
     return issues
 
-def _design_spec_guardrail(task_output):
-    """Signale les anomalies des specs SANS relancer le designer (une relance coûterait un appel
-    LLM de plus sous un quota serré) : la note est lue par l'architecte et la QA."""
-    raw = getattr(task_output, "raw", "") or ""
-    issues = _design_spec_issues(raw)
-    if not issues:
-        return True, task_output
-    return True, (
-        f"{raw}\n\n## Contrôle automatique des specs\n"
-        + "\n".join(f"- {issue}" for issue in issues)
-    )
+_design_spec_guardrail = _make_issue_note_guardrail(_design_spec_issues, "Contrôle automatique des specs")
+
+ARCHITECTURE_REQUIRED_HEADINGS = (
+    "Existant", "Cible", "Décisions", "Contrat", "Fichiers à créer ou modifier", "Couverture", "Risques",
+)
+_ARCH_FILE_LINE = re.compile(r"^\s*[-*]\s*\**\s*(?:CRÉER|CREER|MODIFIER)\b\**\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_ARCH_FILE_ENTRY = re.compile(r"^`?([^\s`:]+)`?\s*:\s*\S")
+_ARCH_CODE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx")
+
+def _architecture_issues(raw: str) -> List[str]:
+    """Anomalies vérifiables du plan de l'architecte : sections, format de la liste de fichiers,
+    chemins dupliqués ou hors projet, fichier de code sans contrat d'interface."""
+    raw = raw.replace("\u2019", "'").replace("\u2018", "'")
+    issues = _missing_heading_issues(raw, ARCHITECTURE_REQUIRED_HEADINGS)
+    entries = [m.group(1).strip() for m in _ARCH_FILE_LINE.finditer(raw)]
+    if not entries:
+        issues.append("Aucune ligne « - CRÉER|MODIFIER <chemin> : <rôle> » dans la liste des fichiers.")
+    contracts = re.search(r"^#+\s*.*Contrat[^\n]*\n(.*?)(?=^#+\s|\Z)", raw, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    seen = set()
+    for entry in entries:
+        parsed = _ARCH_FILE_ENTRY.match(entry)
+        if not parsed:
+            issues.append(f"Ligne de fichier mal formée (attendu « chemin : rôle ») : « {entry[:70]} ».")
+            continue
+        path = parsed.group(1)
+        if path.startswith("/") or ".." in path.split("/"):
+            issues.append(f"Chemin hors du projet : {path}.")
+        if path in seen:
+            issues.append(f"Chemin listé plusieurs fois : {path}.")
+        seen.add(path)
+        if contracts and path.endswith(_ARCH_CODE_EXTENSIONS) and path not in contracts.group(1):
+            issues.append(f"{path} n'a pas de contrat d'interface (exports et signatures).")
+    return issues
+
+_architecture_guardrail = _make_issue_note_guardrail(_architecture_issues, "Contrôle automatique de l'architecture")
 
 # --- CREW BASE ---
 @CrewBase
@@ -912,7 +951,7 @@ class AppDevelopmentCrew():
         return Agent(
             config=self.agents_config['architect_agent'],
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=architect_llm, max_iter=3, verbose=True,
+            llm=architect_llm, max_iter=5, verbose=True,
         )
 
     @agent
@@ -1004,7 +1043,8 @@ class AppDevelopmentCrew():
 
     @task
     def architecture_task(self) -> Task:
-        return Task(config=self.tasks_config['architecture_task'], agent=self.architect_agent(), output_file='docs/architecture_spec.md')
+        return Task(config=self.tasks_config['architecture_task'], agent=self.architect_agent(), output_file='docs/architecture_spec.md',
+                    guardrail=_architecture_guardrail, guardrail_max_retries=0)
 
     @task
     def diagnostic_task(self) -> Task:
