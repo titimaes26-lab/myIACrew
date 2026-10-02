@@ -8,9 +8,13 @@ import pytest  # noqa: E402
 import crewquestion as cq  # noqa: E402
 import github_tools as gt  # noqa: E402
 from delivery import (  # noqa: E402
+    GENERATED_END,
+    GENERATED_START,
     build_pull_request_body,
     conventional_commit_message,
     extract_section,
+    extract_user_request,
+    merge_pull_request_body,
     render_delivery_block,
     unconfirmed_pr_urls,
 )
@@ -23,6 +27,8 @@ from delivery import (  # noqa: E402
     ("feat(cart): ajoute le panier", "BUGFIX", "feat(cart): ajoute le panier"),
     ("Mise en place", None, "chore: mise en place"),
     ("", "BUGFIX", "fix: mise à jour"),
+    ("fix : corrige la remise", "BUGFIX", "fix: corrige la remise"),
+    ("Feat(panier) : ajoute le panier", "BUGFIX", "feat(panier): ajoute le panier"),
 ])
 def test_conventional_commit_message_prefix(message, workflow, expected):
     assert conventional_commit_message(message, workflow) == expected
@@ -73,48 +79,90 @@ def test_unconfirmed_pr_urls_and_delivery_block():
 class FakePR:
     html_url = "https://github.com/o/r/pull/7"
 
-    def __init__(self):
-        self.edited = None
+    def __init__(self, body=None, title="Titre humain"):
+        self.body, self.title, self.edits = body, title, []
 
-    def edit(self, title, body):
-        self.edited = (title, body)
+    def edit(self, **kwargs):
+        self.edits.append(kwargs)
+        self.body = kwargs.get("body", self.body)
 
 
 class FakeRepo:
-    def __init__(self, existing=None, error=None):
-        self.existing, self.error, self.created = existing, error, None
+    def __init__(self, existing=None, drafts_supported=True, error=None):
+        self.existing, self.drafts_supported, self.error, self.created = existing, drafts_supported, error, []
 
     def get_pulls(self, state, head, base):
         return [self.existing] if self.existing else []
 
     def create_pull(self, title, body, head, base, draft):
+        from github import GithubException
         if self.error:
             raise self.error
-        self.created = (title, head, base, draft)
+        if draft and not self.drafts_supported:
+            raise GithubException(422, {"message": "Draft pull requests are not supported in this repository"}, {})
+        self.created.append((title, body, head, base, draft))
         return FakePR()
 
 
-def test_open_or_update_pull_request_creates_a_draft(monkeypatch):
+def test_open_or_update_pull_request_creates_a_draft_with_a_marked_generated_zone(monkeypatch):
     repo = FakeRepo()
     monkeypatch.setattr(gt, "_get_repo", lambda owner, name: repo)
-    url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: t", "b", draft=True)
-    assert url == FakePR.html_url and "(brouillon)" in message and repo.created == ("fix: t", "crewai/x", "main", True)
+    url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: t", "corps", draft=True)
+    title, body, head, base, draft = repo.created[0]
+    assert url == FakePR.html_url and "(brouillon)" in message and draft is True
+    assert body == f"{GENERATED_START}\ncorps\n{GENERATED_END}"
 
 
-def test_open_or_update_pull_request_updates_the_existing_one(monkeypatch):
-    existing = FakePR()
+def test_draft_unsupported_repository_falls_back_to_a_normal_pull_request(monkeypatch):
+    repo = FakeRepo(drafts_supported=False)
+    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: repo)
+    url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: t", "corps", draft=True)
+    assert url == FakePR.html_url and "brouillons non pris en charge" in message
+    assert [c[4] for c in repo.created] == [False]
+
+
+def test_existing_pull_request_keeps_its_title_and_human_text_and_only_the_generated_zone_changes(monkeypatch):
+    existing = FakePR(body=f"Ma note de relecture\n\n{GENERATED_START}\nancien\n{GENERATED_END}\n\nMerci")
     repo = FakeRepo(existing=existing)
     monkeypatch.setattr(gt, "_get_repo", lambda owner, name: repo)
-    url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: t", "body")
-    assert url == FakePR.html_url and "mis à jour" in message
-    assert existing.edited == ("fix: t", "body") and repo.created is None
+    url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: autre titre", "nouveau")
+    assert url == FakePR.html_url and "mise à jour" in message and repo.created == []
+    assert existing.edits == [{"body": existing.body}] and "title" not in existing.edits[0]
+    assert "Ma note de relecture" in existing.body and "Merci" in existing.body
+    assert "nouveau" in existing.body and "ancien" not in existing.body and existing.title == "Titre humain"
 
 
-def test_open_or_update_pull_request_422_is_informative_not_an_error(monkeypatch):
+def test_other_422_errors_show_the_real_github_message(monkeypatch):
     from github import GithubException
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: FakeRepo(error=GithubException(422, {}, {})))
+    error = GithubException(422, {"message": "Validation Failed", "errors": [{"message": "No commits between main and crewai/x"}]}, {})
+    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: FakeRepo(error=error))
     url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "t", "b")
     assert url is None and message.startswith("INFO : aucune Pull Request créée")
+    assert "Validation Failed" in message and "No commits between main and crewai/x" in message
+
+
+def test_merge_pull_request_body_cases():
+    assert merge_pull_request_body(None, "g") == f"{GENERATED_START}\ng\n{GENERATED_END}"
+    appended = merge_pull_request_body("Texte humain", "g")
+    assert appended.startswith("Texte humain") and appended.endswith(GENERATED_END)
+    replaced = merge_pull_request_body(f"a\n{GENERATED_START}\nvieux \\1 \\g<0>\n{GENERATED_END}\nb", "neuf \\1")
+    assert "neuf \\1" in replaced and "vieux" not in replaced and replaced.startswith("a\n") and replaced.endswith("\nb")
+
+
+def test_extract_user_request_strips_the_prompt_envelope():
+    wrapped = "Demande initiale : Le total est faux\nType d'exécution : BUGFIX\nPrécisions apportées : Aucune."
+    assert extract_user_request(wrapped) == "Le total est faux"
+    with_notes = "Demande initiale : Le total est faux\nType d'exécution : BUGFIX\nPrécisions apportées : sur la page panier"
+    assert extract_user_request(with_notes) == "Le total est faux — Précisions : sur la page panier"
+    assert extract_user_request("texte brut sans enveloppe") == "texte brut sans enveloppe"
+
+
+def test_fallback_write_path_is_described_as_not_observed_rather_than_empty():
+    body = build_pull_request_body("", "r", None, [], {}, None, commit_tool_used=False)
+    assert "Non constaté" in body and "Aucun fichier n'a pu être committé" not in body
+    assert "Aucun fichier n'a pu être committé" in build_pull_request_body("", "r", None, [], {}, None, commit_tool_used=True)
+    assert "non constatés" in render_delivery_block([], {}, [], True, [], commit_tool_used=False)
+    assert "n'a rien pu committer" in render_delivery_block([], {}, [], True, [], commit_tool_used=True)
 
 
 # --- Outils et guardrail du crew -------------------------------------------------------------
@@ -194,3 +242,20 @@ def test_developer_uses_the_templated_pull_request_tool_only():
     assert "github_open_delivery_pull_request" in names and "github_open_pull_request" not in names
     task = crew.development_task()
     assert task.guardrail is not None and task.guardrail_max_retries == 0
+
+
+def test_crew_state_extracts_the_request_and_tracks_commit_tool_usage(monkeypatch):
+    crew = cq.AppDevelopmentCrew()
+    crew._reset_execution_state({
+        "repo_owner": "o", "repo_name": "r", "work_branch": "crewai/x",
+        "user_request": "Demande initiale : Le total est faux\nType d'exécution : BUGFIX\nPrécisions apportées : Aucune.",
+    })
+    assert crew._user_request == "Le total est faux" and crew._commit_tool_used is False
+    crew._analyst_files = [{"path": "src/a.ts", "content": "x"}]
+    monkeypatch.setattr(cq, "write_files_to_branch", lambda *args: "OK : 1")
+    crew._build_commit_analyst_files_tool().run(commit_message="m")
+    assert crew._commit_tool_used is True
+
+
+def test_github_open_pull_request_raw_tool_is_gone():
+    assert not hasattr(gt, "github_open_pull_request")

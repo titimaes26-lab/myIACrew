@@ -10,6 +10,7 @@ from typing import Callable, NamedTuple
 from crewai.tools import tool
 from github import Auth, Github, GithubException, InputGitTreeElement
 
+from delivery import merge_pull_request_body
 from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
 from tools import check_syntax_content
 
@@ -699,7 +700,7 @@ def verify_github_delivery(
     Appelée par main.py une fois le crew terminé, jamais en se fiant au texte produit par l'agent
     développeur : qa_task (tasksquestion.yaml) le dit elle-même explicitement, la QA n'a aucun
     outil pour confirmer qu'une PR a réellement été ouverte, donc rien côté agents ne peut détecter
-    un rapport de "succès" où github_create_branch/github_write_file/github_open_pull_request
+    un rapport de "succès" où github_create_branch/github_write_file/github_open_delivery_pull_request
     auraient échoué en silence (erreur retournée comme simple texte à l'agent, jamais une
     exception) ou n'auraient tout simplement jamais été appelés.
 
@@ -869,47 +870,40 @@ def verify_github_delivery(
     )
 
 
+def _github_422_detail(e: GithubException) -> str:
+    """Message(s) réellement renvoyés par GitHub pour une erreur 422 (et non un texte supposé)."""
+    data = e.data if isinstance(e.data, dict) else {}
+    parts = [str(data.get("message") or "")]
+    parts += [str(item.get("message")) for item in data.get("errors", []) if isinstance(item, dict) and item.get("message")]
+    return " ; ".join(p for p in parts if p) or "motif non précisé par GitHub"
+
+
 def open_or_update_pull_request(
     owner: str, repo: str, branch: str, base_branch: str, title: str, body: str, draft: bool = False
 ) -> tuple[str | None, str]:
-    """(URL, message). Met à jour la Pull Request OUVERTE de la branche si elle existe (titre et
-    description), sinon en crée une — en brouillon si `draft`. Évite le doublon que créerait un
-    2e tour de conversation sur la même branche de travail."""
+    """(URL, message). Sur une Pull Request OUVERTE existante pour la branche, seule la zone générée
+    de sa description est mise à jour (titre et texte ajouté à la main conservés) ; sinon une PR est
+    créée, en brouillon si `draft` — avec repli sur une PR normale quand le dépôt n'accepte pas les
+    brouillons (dépôts privés des offres gratuites). Évite le doublon d'un 2e tour sur la même branche."""
     try:
         gh_repo = _get_repo(owner, repo)
         existing = next(iter(gh_repo.get_pulls(state="open", head=f"{owner}:{branch}", base=base_branch)), None)
         if existing is not None:
-            existing.edit(title=title, body=body)
-            return existing.html_url, f"OK : Pull Request déjà ouverte, titre et description mis à jour : {existing.html_url}"
-        pr = gh_repo.create_pull(title=title, body=body, head=branch, base=base_branch, draft=draft)
+            existing.edit(body=merge_pull_request_body(getattr(existing, "body", None), body))
+            return existing.html_url, f"OK : Pull Request déjà ouverte, sa description générée a été mise à jour : {existing.html_url}"
+        full_body = merge_pull_request_body(None, body)
         label = "(brouillon) " if draft else ""
+        try:
+            pr = gh_repo.create_pull(title=title, body=full_body, head=branch, base=base_branch, draft=draft)
+        except GithubException as e:
+            if e.status != 422 or not draft:
+                raise
+            pr = gh_repo.create_pull(title=title, body=full_body, head=branch, base=base_branch, draft=False)
+            label = "(normale : brouillons non pris en charge par ce dépôt) "
         return pr.html_url, f"OK : Pull Request {label}créée avec succès : {pr.html_url}"
     except GithubException as e:
         if e.status == 422:
-            return None, "INFO : aucune Pull Request créée : aucune modification à proposer entre la branche de travail et la base."
+            return None, f"INFO : aucune Pull Request créée : GitHub a refusé (422) : {_github_422_detail(e)}"
         return None, _github_error(e)
     except Exception as e:
         return None, f"ERREUR : {str(e)}"
-
-
-@tool("github_open_pull_request")
-def github_open_pull_request(owner: str, repo: str, branch: str, base_branch: str, title: str, body: str) -> str:
-    """
-    Ouvre une Pull Request de la branche de travail vers la branche de base.
-    À appeler une fois toutes les modifications commitées via github_write_file/github_write_files.
-    Arguments:
-        owner (str), repo (str): repository cible.
-        branch (str): branche de travail (head).
-        base_branch (str): branche de destination (base).
-        title (str), body (str): titre et description de la Pull Request.
-    """
-    try:
-        gh_repo = _get_repo(owner, repo)
-        pr = gh_repo.create_pull(title=title, body=body, head=branch, base=base_branch)
-        return f"OK : Pull Request créée avec succès : {pr.html_url}"
-    except GithubException as e:
-        if e.status == 422:
-            return "INFO : une Pull Request existe peut-être déjà pour cette branche, ou aucune modification à proposer."
-        return _github_error(e)
-    except Exception as e:
-        return f"ERREUR : {str(e)}"

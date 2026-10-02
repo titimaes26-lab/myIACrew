@@ -52,6 +52,7 @@ from delivery import (
     build_pull_request_body,
     conventional_commit_message,
     extract_section,
+    extract_user_request,
     render_delivery_block,
     unconfirmed_pr_urls,
 )
@@ -1048,7 +1049,7 @@ class AppDevelopmentCrew():
             # 6 (pas 8) : depuis la séparation avec diagnostic_agent (voir ci-dessus), cette tâche
             # n'a plus AUCUN diagnostic à faire, seulement à committer un code déjà rédigé — le
             # flux GitHub complet pour un BUGFIX (create_branch, write_file(s), check_syntax,
-            # open_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
+            # github_open_delivery_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
             # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
             # entier dans le même budget.
             llm=developer_llm, max_iter=6, verbose=True,
@@ -1141,7 +1142,8 @@ class AppDevelopmentCrew():
         self._pull_request_urls = []
         self._analyst_raw = ""
         self._request_type = ""
-        self._user_request = str(inputs.get("user_request") or "")
+        self._user_request = extract_user_request(str(inputs.get("user_request") or ""))
+        self._commit_tool_used = False
 
     def _diagnostic_retry_context(self) -> str:
         """Specs/architecture reçues par diagnostic_task : CrewAI ne les repasse PAS à l'agent
@@ -1291,6 +1293,7 @@ class AppDevelopmentCrew():
                     "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
                 )
             manifest = format_manifest(files)
+            crew_self._commit_tool_used = True
             commit_message = conventional_commit_message(commit_message, getattr(crew_self, "_request_type", ""))
             rejections: dict[str, str] = {}
             target = getattr(crew_self, "_repo_target", None)
@@ -1352,6 +1355,7 @@ class AppDevelopmentCrew():
                 summary, getattr(crew_self, "_user_request", ""), getattr(crew_self, "_request_type", ""),
                 sorted(crew_self._committed_paths), gaps,
                 extract_section(getattr(crew_self, "_analyst_raw", ""), "Traçabilité"),
+                commit_tool_used=getattr(crew_self, "_commit_tool_used", False),
             )
             url, message = open_or_update_pull_request(
                 owner, repo, crew_self._work_branch, getattr(crew_self, "_base_branch", "main"),
@@ -1373,6 +1377,7 @@ class AppDevelopmentCrew():
             sorted(self._committed_paths), self._delivery_gaps(), list(self._pull_request_urls),
             getattr(self, "_repo_target", None) is not None,
             unconfirmed_pr_urls(raw, self._pull_request_urls),
+            commit_tool_used=getattr(self, "_commit_tool_used", False),
         )
         return True, f"{raw}\n\n{block}"
 
