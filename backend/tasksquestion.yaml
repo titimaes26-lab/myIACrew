@@ -273,7 +273,7 @@ development_task:
     1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch} (un
        seul appel, idempotent : si la branche existe déjà, l'outil te le confirme sans erreur, tu
        peux l'utiliser directement).
-    2. Appelle `github_commit_analyst_files` (un seul argument : commit_message ; le repository
+    2. Appelle `github_commit_analyst_files` (un seul argument : commit_message, au format « type: résumé » avec type feat, fix, refactor ou chore et 72 caractères au plus ; le repository
        et la branche {work_branch} sont fixés par l'exécution) : il committe EN UN SEUL APPEL tous
        les fichiers de l'Analyste, extraits
        automatiquement de sa réponse — tu n'as RIEN à recopier, donc aucun risque de troncature. Sa
@@ -305,9 +305,12 @@ development_task:
        semblent les plus à risque. En cas de problème, recommitte le fichier concerné en entier
        avec `github_write_file` (jamais un extrait) — mais NE retarde jamais l'étape 2 pour ça :
        qa_task (la tâche suivante) revérifie de toute façon après coup.
-    4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
-       (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant
-       les changements (reprends le plan de l'Analyste).
+    4. Une fois toutes les modifications commitées, appelle `github_open_delivery_pull_request` avec
+       un `title` court au même format conventionnel (ex: « fix: corrige le calcul de la remise ») et un
+       `summary` de 1 à 3 phrases (reprends le plan de l'Analyste). L'outil génère lui-même le reste de
+       la description (fichiers livrés et non livrés, traçabilité, vérification manuelle), ouvre la
+       Pull Request en brouillon si la livraison est partielle, et met à jour celle qui existe déjà pour
+       la branche {work_branch} vers {base_branch} au lieu d'en créer une seconde.
     Ne modifie jamais directement la branche {base_branch}.
     Sans repository cible (travail local), appelle aussi `github_commit_analyst_files` : il écrit
     alors les fichiers de l'Analyste dans l'espace de travail local de la conversation. C'est
@@ -316,6 +319,7 @@ development_task:
     Réaction aux réponses des outils (ne jamais improviser autre chose) :
     - "OK" : passe à l'étape suivante.
     - "INFO : la branche ... existe déjà" : continue avec cette branche.
+    - "INFO : aucune Pull Request créée ..." : note-le dans ton rapport avec la raison, sans réessayer.
     - Fichier REJETÉ ou "ERREUR : écriture refusée" : ne retente pas, note-le comme non livré avec
       la raison exacte, passe au suivant.
     - Erreur réseau/GitHub transitoire ou "non fast-forward" : retente UNE seule fois, avec un
@@ -329,7 +333,9 @@ development_task:
   expected_output: >
     Un rapport au format fixe : "Plan d'exécution" (fichiers attendus d'après l'Analyste),
     "Committés" (un chemin par ligne), "Non livrés" (chemin : raison exacte, ou "aucun"), "Pull
-    Request" (URL renvoyée par l'outil, ou la raison de son absence).
+    Request" (URL recopiée EXACTEMENT telle que renvoyée par l'outil, ou la raison de son absence ; n'invente
+    jamais une URL). Un contrôle automatique ajoute ensuite à ton rapport ce que les outils ont réellement
+    constaté.
   agent: developer_agent
 
 qa_task:

@@ -192,7 +192,7 @@ def test_design_task_yaml_placeholders_are_known():
     import pathlib, string, yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
     known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
-    for name in ("design_task", "architecture_task", "diagnostic_task"):
+    for name in ("design_task", "architecture_task", "diagnostic_task", "development_task"):
         fields = {f[1] for f in string.Formatter().parse(tasks[name]["description"]) if f[1]}
         assert fields <= known | {"work_branch"}, name
 

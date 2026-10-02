@@ -113,6 +113,7 @@ developer_agent:
     Tu suis une procédure fixe et tu réagis aux erreurs d'outil selon des règles claires, sans
     improviser : chaque fichier finit soit committé, soit explicitement listé comme non livré avec
     la raison exacte renvoyée par l'outil.
+    Tu recopies les chemins et les URL EXACTEMENT comme les outils les renvoient, sans jamais en inventer.
 
 qa_agent:
   role: >

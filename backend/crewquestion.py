@@ -41,12 +41,19 @@ from github_tools import (
     github_create_branch,
     github_write_file,
     github_write_files,
-    github_open_pull_request,
+    open_or_update_pull_request,
     _reject_invalid_syntax,
     make_dir_lister,
     make_file_fetcher,
     track_edit_failures,
     write_files_to_branch,
+)
+from delivery import (
+    build_pull_request_body,
+    conventional_commit_message,
+    extract_section,
+    render_delivery_block,
+    unconfirmed_pr_urls,
 )
 from analyst_output import (
     FILE_ABSENT,
@@ -1036,7 +1043,7 @@ class AppDevelopmentCrew():
                 self._build_commit_analyst_files_tool(),
                 check_syntax,
                 github_create_branch, github_write_file, github_write_files,
-                github_open_pull_request,
+                self._build_open_pull_request_tool(),
             ],
             # 6 (pas 8) : depuis la séparation avec diagnostic_agent (voir ci-dessus), cette tâche
             # n'a plus AUCUN diagnostic à faire, seulement à committer un code déjà rédigé — le
@@ -1089,7 +1096,8 @@ class AppDevelopmentCrew():
 
     @task
     def development_task(self) -> Task:
-        return Task(config=self.tasks_config['development_task'], agent=self.developer_agent(), output_file='docs/implementation_log.md')
+        return Task(config=self.tasks_config['development_task'], agent=self.developer_agent(), output_file='docs/implementation_log.md',
+                    guardrail=self._development_report_guardrail, guardrail_max_retries=0)
 
     @task
     def qa_task(self) -> Task:
@@ -1127,6 +1135,13 @@ class AppDevelopmentCrew():
         # concernait : un commit ultérieur réussi efface leur entrée.
         self._write_rejections = {}
         self._diagnostic_guardrail_failures = 0
+        # Faits de livraison constatés par les OUTILS (voir _development_report_guardrail) : chemins
+        # réellement committés, URLs de PR renvoyées par l'outil, dernière réponse de l'Analyste.
+        self._committed_paths = set()
+        self._pull_request_urls = []
+        self._analyst_raw = ""
+        self._request_type = ""
+        self._user_request = str(inputs.get("user_request") or "")
 
     def _diagnostic_retry_context(self) -> str:
         """Specs/architecture reçues par diagnostic_task : CrewAI ne les repasse PAS à l'agent
@@ -1183,6 +1198,7 @@ class AppDevelopmentCrew():
         sauf ceux qu'elle retire explicitement (chemin suivi de "NON réalisé").
         """
         raw = getattr(task_output, "raw", "") or ""
+        self._analyst_raw = raw
         files, issue, faulty_paths, broken = review_diagnostic_output(
             raw, read_base=self._read_base_file, list_dir=self._list_base_dir,
             context_files=list(getattr(self, "_analyst_files", []) or []),
@@ -1275,6 +1291,7 @@ class AppDevelopmentCrew():
                     "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
                 )
             manifest = format_manifest(files)
+            commit_message = conventional_commit_message(commit_message, getattr(crew_self, "_request_type", ""))
             rejections: dict[str, str] = {}
             target = getattr(crew_self, "_repo_target", None)
             if target is None:
@@ -1291,6 +1308,10 @@ class AppDevelopmentCrew():
             for f in files:
                 crew_self._write_rejections.pop(f["path"], None)
             crew_self._write_rejections.update(rejections)
+            for f in files:
+                crew_self._committed_paths.discard(f["path"])
+            if result.startswith("OK"):
+                crew_self._committed_paths.update(f["path"] for f in files if f["path"] not in rejections)
             retry_hint = "" if result.startswith("OK") else _RETRY_HINT
             return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}{retry_hint}"
 
@@ -1298,6 +1319,62 @@ class AppDevelopmentCrew():
         # fichiers, mais une erreur n'est jamais resservie (voir aussi _RETRY_HINT).
         github_commit_analyst_files.cache_function = _cache_success_only
         return github_commit_analyst_files
+
+    def _delivery_gaps(self) -> dict[str, str]:
+        """{chemin: raison} des fichiers de l'Analyste qui ne sont PAS dans le dernier commit réussi."""
+        gaps = dict(getattr(self, "_not_extracted", {}) or {})
+        for path, reason in (getattr(self, "_write_rejections", {}) or {}).items():
+            if path not in self._committed_paths:
+                gaps[path] = reason
+        return gaps
+
+    def _build_open_pull_request_tool(self):
+        crew_self = self
+
+        @tool("github_open_delivery_pull_request")
+        def github_open_delivery_pull_request(title: str, summary: str = "") -> str:
+            """
+            Ouvre (ou met à jour, si elle existe déjà) la Pull Request de la branche de travail vers
+            la branche de base. La description complète (fichiers livrés et non livrés, traçabilité,
+            vérification manuelle) est GÉNÉRÉE à partir des faits : tu ne fournis que le titre et un
+            court résumé. La PR est ouverte en brouillon si la livraison est partielle.
+            Le repository et les branches sont ceux de l'exécution en cours.
+            Arguments:
+                title (str): titre court, format conventionnel (ex: « fix: corrige le calcul de la remise »).
+                summary (str): résumé en 1 à 3 phrases des changements.
+            """
+            target = getattr(crew_self, "_repo_target", None)
+            if target is None:
+                return "INFO : aucun repository cible, donc aucune Pull Request à ouvrir (travail local)."
+            owner, repo = target
+            gaps = crew_self._delivery_gaps()
+            body = build_pull_request_body(
+                summary, getattr(crew_self, "_user_request", ""), getattr(crew_self, "_request_type", ""),
+                sorted(crew_self._committed_paths), gaps,
+                extract_section(getattr(crew_self, "_analyst_raw", ""), "Traçabilité"),
+            )
+            url, message = open_or_update_pull_request(
+                owner, repo, crew_self._work_branch, getattr(crew_self, "_base_branch", "main"),
+                conventional_commit_message(title, getattr(crew_self, "_request_type", "")), body, draft=bool(gaps),
+            )
+            if url and url not in crew_self._pull_request_urls:
+                crew_self._pull_request_urls.append(url)
+            return message
+
+        github_open_delivery_pull_request.cache_function = _cache_success_only
+        return github_open_delivery_pull_request
+
+    def _development_report_guardrail(self, task_output):
+        """Ajoute au rapport du Développeur ce que les OUTILS ont réellement constaté (fichiers
+        committés, URL de PR renvoyée), et signale toute URL de PR citée sans être issue d'un outil.
+        Jamais de relance : un rapport inexact est corrigé par ce bloc, pas par un appel LLM de plus."""
+        raw = getattr(task_output, "raw", "") or ""
+        block = render_delivery_block(
+            sorted(self._committed_paths), self._delivery_gaps(), list(self._pull_request_urls),
+            getattr(self, "_repo_target", None) is not None,
+            unconfirmed_pr_urls(raw, self._pull_request_urls),
+        )
+        return True, f"{raw}\n\n{block}"
 
     def _build_qa_verify_tool(self):
         crew_self = self
@@ -1437,6 +1514,7 @@ class AppDevelopmentCrew():
             wanted = [tasks_by_key[k] for k in context_plan.get(key, []) if k in tasks_by_key]
             task_obj.context = wanted if wanted else None
         self._reset_execution_state(inputs)
+        self._request_type = request_type
 
         step_keys = [key for key, _ in selected]
         selected_tasks = [task for _, task in selected]

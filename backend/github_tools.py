@@ -869,6 +869,29 @@ def verify_github_delivery(
     )
 
 
+def open_or_update_pull_request(
+    owner: str, repo: str, branch: str, base_branch: str, title: str, body: str, draft: bool = False
+) -> tuple[str | None, str]:
+    """(URL, message). Met à jour la Pull Request OUVERTE de la branche si elle existe (titre et
+    description), sinon en crée une — en brouillon si `draft`. Évite le doublon que créerait un
+    2e tour de conversation sur la même branche de travail."""
+    try:
+        gh_repo = _get_repo(owner, repo)
+        existing = next(iter(gh_repo.get_pulls(state="open", head=f"{owner}:{branch}", base=base_branch)), None)
+        if existing is not None:
+            existing.edit(title=title, body=body)
+            return existing.html_url, f"OK : Pull Request déjà ouverte, titre et description mis à jour : {existing.html_url}"
+        pr = gh_repo.create_pull(title=title, body=body, head=branch, base=base_branch, draft=draft)
+        label = "(brouillon) " if draft else ""
+        return pr.html_url, f"OK : Pull Request {label}créée avec succès : {pr.html_url}"
+    except GithubException as e:
+        if e.status == 422:
+            return None, "INFO : aucune Pull Request créée : aucune modification à proposer entre la branche de travail et la base."
+        return None, _github_error(e)
+    except Exception as e:
+        return None, f"ERREUR : {str(e)}"
+
+
 @tool("github_open_pull_request")
 def github_open_pull_request(owner: str, repo: str, branch: str, base_branch: str, title: str, body: str) -> str:
     """
