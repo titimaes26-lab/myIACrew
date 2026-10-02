@@ -895,19 +895,36 @@ _design_spec_guardrail = _make_issue_note_guardrail(_design_spec_issues, "Contr�
 ARCHITECTURE_REQUIRED_HEADINGS = (
     "Existant", "Cible", "Décisions", "Contrat", "Fichiers à créer ou modifier", "Couverture", "Risques",
 )
-_ARCH_FILE_LINE = re.compile(r"^\s*[-*]\s*\**\s*(?:CRÉER|CREER|MODIFIER)\b\**\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_ARCH_FILE_LINE = re.compile(r"^\s*[-*]\s*\**\s*(?:CRÉER|CREER|MODIFIER)\b\**\s*(.*)$", re.MULTILINE)
 _ARCH_FILE_ENTRY = re.compile(r"^`?([^\s`:]+)`?\s*:\s*\S")
 _ARCH_CODE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx")
+
+def _markdown_section(raw: str, keyword: str) -> Optional[str]:
+    """Corps de la première section dont le titre contient `keyword`, jusqu'au titre suivant."""
+    lines = raw.splitlines()
+    for index, line in enumerate(lines):
+        if re.match(r"^#+\s", line) and keyword.lower() in line.lower():
+            body = []
+            for following in lines[index + 1:]:
+                if re.match(r"^#+\s", following):
+                    break
+                body.append(following)
+            return "\n".join(body)
+    return None
 
 def _architecture_issues(raw: str) -> List[str]:
     """Anomalies vérifiables du plan de l'architecte : sections, format de la liste de fichiers,
     chemins dupliqués ou hors projet, fichier de code sans contrat d'interface."""
     raw = raw.replace("\u2019", "'").replace("\u2018", "'")
     issues = _missing_heading_issues(raw, ARCHITECTURE_REQUIRED_HEADINGS)
-    entries = [m.group(1).strip() for m in _ARCH_FILE_LINE.finditer(raw)]
+    # Seule la section dédiée est lue : une puce de prose ("- Modifier App.tsx pour ...") ailleurs
+    # dans le plan n'est pas une ligne de la liste de fichiers. Sans section, repli sur tout le texte.
+    files_section = _markdown_section(raw, "Fichiers à créer ou modifier")
+    entries = [m.group(1).strip() for m in _ARCH_FILE_LINE.finditer(files_section if files_section is not None else raw)]
     if not entries:
         issues.append("Aucune ligne « - CRÉER|MODIFIER <chemin> : <rôle> » dans la liste des fichiers.")
-    contracts = re.search(r"^#+\s*.*Contrat[^\n]*\n(.*?)(?=^#+\s|\Z)", raw, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    contracts = _markdown_section(raw, "Contrat")
+    contract_lines = [line.strip().lstrip("-* ").replace("`", "") for line in (contracts or "").splitlines()]
     seen = set()
     for entry in entries:
         parsed = _ARCH_FILE_ENTRY.match(entry)
@@ -920,7 +937,9 @@ def _architecture_issues(raw: str) -> List[str]:
         if path in seen:
             issues.append(f"Chemin listé plusieurs fois : {path}.")
         seen.add(path)
-        if contracts and path.endswith(_ARCH_CODE_EXTENSIONS) and path not in contracts.group(1):
+        if contracts is not None and path.endswith(_ARCH_CODE_EXTENSIONS) and not any(
+            re.match(rf"^\**{re.escape(path)}\**\s*:", line) for line in contract_lines
+        ):
             issues.append(f"{path} n'a pas de contrat d'interface (exports et signatures).")
     return issues
 

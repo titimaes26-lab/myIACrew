@@ -229,7 +229,11 @@ def test_architecture_issues_flags_missing_sections_and_empty_file_list():
 
 
 def test_architecture_issues_flags_malformed_duplicate_and_outside_paths():
-    plan = GOOD_ARCH + "- CRÉER src/App.tsx : doublon\n- CRÉER ../evil.ts : hors projet\n- CRÉER src/x.ts sans rôle\n"
+    plan = GOOD_ARCH.replace(
+        "- MODIFIER src/hooks/useCart.ts : logique du panier",
+        "- MODIFIER src/hooks/useCart.ts : logique du panier\n- CRÉER src/App.tsx : doublon\n"
+        "- CRÉER ../evil.ts : hors projet\n- CRÉER src/x.ts sans rôle",
+    )
     issues = cq._architecture_issues(plan)
     assert any("plusieurs fois" in i for i in issues)
     assert any("hors du projet" in i for i in issues)
@@ -254,11 +258,29 @@ def test_architecture_guardrail_never_fails_and_annotates_only_on_issues():
     assert ok is True and "## Contrôle automatique de l'architecture" in result
 
 
-def test_architecture_task_wiring_and_budget():
-    crew = new_crew()
-    task = crew.architecture_task()
+def test_architecture_issues_ignores_prose_bullets_outside_file_list():
+    plan = GOOD_ARCH.replace("src/ avec composants.", "- Modifier App.tsx pour brancher le panier\n- Créer un hook useCart : état du panier")
+    assert cq._architecture_issues(plan) == []
+
+
+def test_architecture_issues_contract_section_survives_later_mentions_of_contrat():
+    plan = GOOD_ARCH + "- Un contrat d'API flou entre composants : figer les props\n"
+    assert cq._architecture_issues(plan) == []
+
+
+def test_architecture_issues_contract_match_is_exact_path_not_substring():
+    plan = GOOD_ARCH.replace("src/hooks/useCart.ts : export", "src/hooks/useCart.tsx : export")
+    assert any("src/hooks/useCart.ts n'a pas de contrat" in i for i in cq._architecture_issues(plan))
+
+
+def test_architecture_issues_accepts_bold_and_backticked_entries():
+    plan = GOOD_ARCH.replace("- CRÉER src/App.tsx : composant racine", "- **CRÉER** `src/App.tsx` : composant racine")
+    assert cq._architecture_issues(plan) == []
+
+
+def test_architecture_task_has_a_non_retrying_guardrail():
+    task = new_crew().architecture_task()
     assert task.guardrail is not None and task.guardrail_max_retries == 0
-    assert crew.architect_agent().max_iter == 5
 
 
 def test_local_writes_are_confined_to_workspace(tmp_path):

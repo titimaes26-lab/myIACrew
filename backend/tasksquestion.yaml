@@ -116,7 +116,8 @@ architecture_task:
        tirées de la demande. Chaque exigence est couverte par au moins un fichier et aucun fichier
        n'est orphelin. Signale tout écart.
     8. Risques : 2 à 3 risques techniques de cette conception, chacun avec sa parade en une ligne.
-    Garde l'ensemble sous environ 1000 mots, titres de section en "##".
+    Garde l'ensemble sous environ 1000 mots HORS section "Contrats d'interface" (qui compte une
+    ligne par fichier de code, sans limite globale), titres de section en "##".
 
     Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
     d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
