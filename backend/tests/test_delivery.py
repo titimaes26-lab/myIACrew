@@ -11,6 +11,7 @@ from delivery import (  # noqa: E402
     GENERATED_END,
     GENERATED_START,
     build_pull_request_body,
+    sanitize_for_github,
     conventional_commit_message,
     extract_section,
     extract_user_request,
@@ -29,6 +30,9 @@ from delivery import (  # noqa: E402
     ("", "BUGFIX", "fix: mise à jour"),
     ("fix : corrige la remise", "BUGFIX", "fix: corrige la remise"),
     ("Feat(panier) : ajoute le panier", "BUGFIX", "feat(panier): ajoute le panier"),
+    ("fix:", "BUGFIX", "fix: mise à jour"),
+    ("feat", "BUGFIX", "feat: mise à jour"),
+    ("Fix(cart)!:", "FEATURE", "fix(cart)!: mise à jour"),
 ])
 def test_conventional_commit_message_prefix(message, workflow, expected):
     assert conventional_commit_message(message, workflow) == expected
@@ -53,7 +57,8 @@ def test_pull_request_body_flags_partial_delivery_and_includes_facts():
         "Corrige la remise.", "Le total ne prend pas la remise\n" + "x" * 600, "BUGFIX",
         ["src/cart.ts"], {"src/big.ts": "contenu incomplet"}, "symptôme → cause",
     )
-    assert "Livraison partielle" in body and "brouillon" in body
+    assert "Livraison partielle" in body and "ne pas fusionner" in body
+    assert "brouillon" not in body  # la PR peut être normale si le dépôt refuse les brouillons
     assert "- `src/cart.ts`" in body and "- `src/big.ts` : contenu incomplet" in body
     assert "symptôme → cause" in body and "(BUGFIX)" in body
     assert "x" * 500 not in body
@@ -257,5 +262,35 @@ def test_crew_state_extracts_the_request_and_tracks_commit_tool_usage(monkeypatc
     assert crew._commit_tool_used is True
 
 
-def test_github_open_pull_request_raw_tool_is_gone():
-    assert not hasattr(gt, "github_open_pull_request")
+def test_sanitize_for_github_neutralizes_mentions_closing_keywords_and_markers():
+    clean = sanitize_for_github("cc @alice, Fixes #12, closes o/r#7, resolved: #3, mail a@b.fr, `@code`")
+    assert "@alice" not in clean and "@\u200balice" in clean
+    assert "Fixes #12" not in clean and "Fixes \u200b#12" in clean
+    assert "closes \u200bo/r#7" in clean and "resolved: \u200b#3" in clean
+    assert "a@b.fr" in clean and "`@code`" in clean  # e-mail et code inchangés
+    assert GENERATED_START not in sanitize_for_github(f"x {GENERATED_START} y")
+
+
+def test_pull_request_body_neutralizes_side_effects_in_every_generated_field():
+    body = build_pull_request_body("Résumé. Fixes #12", "demande cc @alice", "BUGFIX", ["a.ts"], {}, "cause → closes #34 @bob")
+    for risky in ("@alice", "@bob", "Fixes #12", "closes #34"):
+        assert risky not in body
+    assert "@\u200balice" in body and "#34" in body  # lisible : le numéro reste visible
+
+
+def test_merge_pull_request_body_drops_markers_from_generated_content():
+    merged = merge_pull_request_body("humain", f"avant {GENERATED_END} après")
+    assert merged.count(GENERATED_END) == 1 and merged.count(GENERATED_START) == 1
+    again = merge_pull_request_body(merged, "neuf")
+    assert "avant" not in again and again.count(GENERATED_END) == 1 and again.startswith("humain")
+
+
+def test_extract_section_accepts_plain_text_heading_with_inline_content():
+    assert extract_section("Traçabilité : A → B\nsuite\n## Plan\nx", "Traçabilité") == "A → B\nsuite"
+    assert extract_section("Traçabilité :\nA → B\nPlan : y", "Traçabilité") == "A → B"
+    assert extract_section("Voir la Traçabilité plus haut : oui", "Traçabilité") is None  # pas un titre
+
+
+def test_extract_user_request_without_the_execution_type_line():
+    assert extract_user_request("Demande initiale : texte seul") == "texte seul"
+    assert extract_user_request("Demande initiale : texte\nPrécisions apportées : ici") == "texte — Précisions : ici"

@@ -7,12 +7,20 @@ import re
 CONVENTIONAL_COMMIT = re.compile(
     r"^(feat|fix|refactor|chore|docs|test|style|perf|build|ci)(\([^)\n]+\))?(!?)\s*:\s*(\S.*)$", re.IGNORECASE
 )
+_BARE_COMMIT_TYPE = re.compile(
+    r"^(feat|fix|refactor|chore|docs|test|style|perf|build|ci)(\([^)\n]+\))?(!?)\s*:?$", re.IGNORECASE
+)
 _COMMIT_TYPE_BY_WORKFLOW = {"BUGFIX": "fix", "FEATURE": "feat", "DESIGN_AND_DEV": "feat", "ANALYSE_ONLY": "docs"}
 MAX_COMMIT_SUBJECT = 72
 MAX_SECTION_CHARS = 1500
 MAX_REQUEST_CHARS = 400
 PULL_REQUEST_URL = re.compile(r"https://github\.com/[^\s)>\]]+/pull/\d+")
 _HEADING = re.compile(r"^\s*(#{1,6}\s|\*\*[^*\n]+\*\*\s*:?\s*$)")
+_OTHER_PLAIN_SECTION = re.compile(
+    r"^\s*[-*>]*\s*(hypoth[èe]ses?|plan|auto-?revue|fichiers?|conclusion|limites?|r[ée]sum[ée])\b[^:\n]{0,40}:",
+    re.IGNORECASE,
+)
+_PLAIN_HEADING = re.compile(r"^\s*[A-Za-zÀ-ÿ][^:\n]{0,60}:")
 
 
 def conventional_commit_message(message: str, request_type: str | None = None) -> str:
@@ -25,6 +33,9 @@ def conventional_commit_message(message: str, request_type: str | None = None) -
     if conventional:
         kind, scope, bang, subject = conventional.groups()
         first = f"{kind.lower()}{scope or ''}{bang}: {subject}"
+    elif bare := _BARE_COMMIT_TYPE.fullmatch(first):
+        # « fix: » sans résumé : le type de l'auteur est gardé, le résumé est générique.
+        first = f"{bare.group(1).lower()}{bare.group(2) or ''}{bare.group(3)}: mise à jour"
     else:
         if len(first) > 1 and first[0].isupper() and first[1].islower():
             first = first[0].lower() + first[1:]
@@ -35,21 +46,53 @@ def conventional_commit_message(message: str, request_type: str | None = None) -
 
 
 def extract_section(raw: str, keyword: str, limit: int = MAX_SECTION_CHARS) -> str | None:
-    """Corps de la première section dont le titre (« ## … » ou « **…** ») contient `keyword`,
-    jusqu'au titre ou à la balise de fichier suivant ; None s'il est absent ou vide."""
+    """Corps de la première section dont le titre (« ## … », « **…** » ou une ligne « Mot-clé : … »
+    en tête de ligne) contient `keyword`, jusqu'au titre ou à la balise de fichier suivant ; None
+    s'il est absent ou vide. Un titre en texte brut peut porter le début du contenu après « : »."""
     lines = (raw or "").splitlines()
+    wanted = keyword.lower()
     for index, line in enumerate(lines):
-        if keyword.lower() in line.lower() and _HEADING.match(line):
-            body = []
-            for following in lines[index + 1:]:
-                if _HEADING.match(following) or following.strip().startswith("<<<"):
-                    break
-                body.append(following)
-            text = "\n".join(body).strip()
-            if not text:
-                return None
-            return text[:limit] + ("…" if len(text) > limit else "")
+        lowered = line.lower()
+        if wanted not in lowered:
+            continue
+        inline, inline_mode = "", False
+        if _HEADING.match(line):
+            pass
+        elif _PLAIN_HEADING.match(line) and lowered.lstrip(" -*>").startswith(wanted):
+            # Titre en texte brut : le mot-clé OUVRE la ligne (« Voir la Traçabilité : … » n'en est pas un).
+            inline, inline_mode = line.split(":", 1)[1].strip(), True
+        else:
+            continue
+        body = [inline] if inline else []
+        for following in lines[index + 1:]:
+            if _HEADING.match(following) or following.strip().startswith("<<<"):
+                break
+            # Après un titre en texte brut, les titres bruts des autres sections de l'Analyste
+            # (« Plan : … », « Auto-revue : … ») terminent aussi la section.
+            if inline_mode and _OTHER_PLAIN_SECTION.match(following):
+                break
+            body.append(following)
+        text = "\n".join(body).strip()
+        if not text:
+            return None
+        return text[:limit] + ("…" if len(text) > limit else "")
     return None
+
+
+_ZERO_WIDTH = "\u200b"
+_MENTION = re.compile(r"(?<![\w`])@(?=[A-Za-z0-9])")
+_CLOSING_KEYWORD = re.compile(
+    r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+/[\w.-]+)?#\d+)", re.IGNORECASE
+)
+
+
+def sanitize_for_github(text: str) -> str:
+    """Neutralise ce qui aurait un effet de BORD sur GitHub : @mention (notification d'un
+    utilisateur réel), mot-clé de fermeture suivi d'un n° d'issue (« fixes #12 » la fermerait à la
+    fusion) et marqueurs de la zone générée (qui fausseraient sa mise à jour). Le texte reste lisible."""
+    text = text.replace(GENERATED_START, "&lt;!-- myiacrew:start --&gt;").replace(GENERATED_END, "&lt;!-- myiacrew:end --&gt;")
+    text = _MENTION.sub("@" + _ZERO_WIDTH, text)
+    return _CLOSING_KEYWORD.sub(lambda m: f"{m.group(1)}{m.group(2)}{_ZERO_WIDTH}{m.group(3)}", text)
 
 
 def build_pull_request_body(
@@ -61,12 +104,14 @@ def build_pull_request_body(
     traceability: str | None,
     commit_tool_used: bool = True,
 ) -> str:
-    request_line = " ".join((request or "").split())[:MAX_REQUEST_CHARS]
+    request_line = " ".join(sanitize_for_github(request or "").split())[:MAX_REQUEST_CHARS]
+    summary = sanitize_for_github(summary or "")
+    traceability = sanitize_for_github(traceability) if traceability else traceability
     parts = []
     if not_delivered:
         parts.append(
-            "> ⚠️ **Livraison partielle** : des fichiers n'ont pas pu être livrés (voir plus bas), "
-            "cette Pull Request est ouverte en brouillon."
+            "> ⚠️ **Livraison partielle** : des fichiers n'ont pas pu être livrés (voir plus bas). "
+            "À ne pas fusionner avant d'avoir traité les fichiers non livrés."
         )
     parts.append("## Résumé\n" + ((summary or "").strip() or "_Aucun résumé fourni._"))
     if request_line:
@@ -93,6 +138,8 @@ def extract_user_request(final_prompt: str) -> str:
     text = final_prompt or ""
     request = re.search(r"Demande initiale\s*:\s*(.*?)\n\s*Type d'exécution", text, re.DOTALL)
     clarifications = re.search(r"Précisions apportées\s*:\s*(.*)$", text, re.DOTALL)
+    if request is None:
+        request = re.match(r"\s*Demande initiale\s*:\s*(.*?)\s*(?=Précisions apportées\s*:|$)", text, re.DOTALL)
     result = (request.group(1) if request else text).strip()
     if clarifications and not clarifications.group(1).strip().lower().startswith("aucune"):
         result += f" — Précisions : {clarifications.group(1).strip()}"
@@ -108,6 +155,7 @@ def merge_pull_request_body(existing: str | None, generated: str) -> str:
     """Description finale : le contenu généré est encadré par des marqueurs ; sur une PR existante,
     seule cette zone est remplacée (un texte ajouté à la main autour est conservé), et une
     description sans marqueurs (PR humaine ou ancienne) reçoit la zone en fin de texte."""
+    generated = generated.replace(GENERATED_START, "").replace(GENERATED_END, "")
     block = f"{GENERATED_START}\n{generated}\n{GENERATED_END}"
     current = (existing or "").strip()
     if not current:
