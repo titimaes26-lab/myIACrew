@@ -3,7 +3,7 @@ import traceback
 import os
 import uuid
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +17,10 @@ from crewquestion import (
     build_conversation_context, track_execution_metrics,
     AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
 )
-from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory
+from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun
+from agent_metrics import (
+    agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize,
+)
 from auth import get_current_user, close_http_client
 from github_tools import verify_github_delivery, get_branch_head_sha, GitHubVerificationUnavailable
 
@@ -425,6 +428,19 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     except Exception as e:
         print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}", flush=True)
 
+def _persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics) -> None:
+    """Une ligne AgentRun par agent mesuré (voir agent_metrics). Best-effort : une mesure qui ne
+    s'enregistre pas ne doit jamais faire échouer ni masquer le résultat de l'exécution."""
+    try:
+        rows = build_agent_run_rows(
+            run_metrics, execution_id=db_entry.id, conversation_id=db_entry.conversation_id,
+            user_id=db_entry.user_id, workflow=db_entry.workflow,
+        )
+        session.add_all([AgentRun(**row) for row in rows])
+    except Exception as e:
+        print(f"AVERTISSEMENT : métriques par agent non enregistrées pour execution_id={db_entry.id} : {type(e).__name__}: {e}", flush=True)
+
+
 def _persist_completed_agent(
     execution_id: int, agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
 ) -> None:
@@ -707,6 +723,9 @@ async def _run_crew_and_persist(
                             on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(db_entry.id, agent_name, output, duration),
                         )
                 finally:
+                    # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette
+                    # attente, les derniers appels LLM pourraient manquer aux métriques lues plus bas.
+                    await asyncio.to_thread(flush_events)
                     memory_ticker.cancel()
                     try:
                         await memory_ticker
@@ -815,6 +834,7 @@ async def _run_crew_and_persist(
                 db_entry.api_calls_count = run_metrics.api_calls_count
                 db_entry.rate_limit_hits = run_metrics.rate_limit_hits
                 db_entry.total_wait_time_seconds = run_metrics.total_wait_time
+                _persist_agent_runs(session, db_entry, run_metrics)
                 db_entry.updated_at = datetime.now(timezone.utc)
                 conversation.updated_at = datetime.now(timezone.utc)
                 session.add(db_entry)
@@ -847,6 +867,7 @@ async def _run_crew_and_persist(
                     db_entry.api_calls_count = run_metrics.api_calls_count
                     db_entry.rate_limit_hits = run_metrics.rate_limit_hits
                     db_entry.total_wait_time_seconds = run_metrics.total_wait_time
+                    _persist_agent_runs(session, db_entry, run_metrics)
                 db_entry.updated_at = datetime.now(timezone.utc)
                 conversation.updated_at = datetime.now(timezone.utc)
                 session.add(db_entry)
@@ -1240,6 +1261,68 @@ async def list_repo_targets(
         if len(targets) >= 20:
             break
     return targets
+
+@app.get("/api/metrics/summary")
+async def metrics_summary(
+    days: int = 30,
+    workflow: Optional[str] = None,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Performance par agent sur les `days` derniers jours (exécutions TERMINÉES de l'utilisateur),
+    éventuellement restreinte à un workflow : durées p50/p95, appels LLM, tokens, outils, tendance."""
+    days = max(1, min(days, 365))
+    # Borne AVEC fuseau : SQLModel refuse de lier un datetime naïf à ces colonnes.
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    uid = user.get("id")
+    statement = (
+        select(
+            ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.workflow,
+            ExecutionHistory.created_at, ExecutionHistory.updated_at,
+            ExecutionHistory.rate_limit_hits, ExecutionHistory.total_wait_time_seconds,
+        )
+        .where(ExecutionHistory.user_id == uid)
+        .where(ExecutionHistory.created_at >= since)
+        .where(ExecutionHistory.status.in_(("success", "failed")))
+        .order_by(ExecutionHistory.created_at.desc())
+        .limit(1000)
+    )
+    if workflow:
+        statement = statement.where(ExecutionHistory.workflow == workflow)
+    executions = [
+        {
+            "id": r[0], "status": r[1], "workflow": r[2], "created_at": r[3], "updated_at": r[4],
+            "rate_limit_hits": r[5], "total_wait_time_seconds": r[6],
+        }
+        for r in session.exec(statement).all()
+    ]
+    runs = []
+    if executions:
+        runs = [
+            row.model_dump()
+            for row in session.exec(
+                select(AgentRun)
+                .where(AgentRun.user_id == uid)
+                .where(AgentRun.execution_id.in_([e["id"] for e in executions]))
+            ).all()
+        ]
+    return summarize(runs, executions, days, workflow)
+
+@app.get("/api/executions/{execution_id}/agent-runs")
+async def execution_agent_runs(
+    execution_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Détail par agent d'UNE exécution (durée, appels LLM, tokens, outils), dans l'ordre du pipeline."""
+    entry = session.get(ExecutionHistory, execution_id)
+    if not entry or entry.user_id != user.get("id"):
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    rows = [
+        row.model_dump()
+        for row in session.exec(select(AgentRun).where(AgentRun.execution_id == execution_id)).all()
+    ]
+    return [agent_run_view(row) for row in sort_pipeline(rows)]
 
 @app.get("/api/history", response_model=List[ExecutionHistory])
 async def get_history(

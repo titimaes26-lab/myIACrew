@@ -59,6 +59,27 @@ class ExecutionHistory(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+# Performance d'UN agent pour UNE exécution (voir agent_metrics.build_agent_run_rows). Table NEUVE :
+# create_all la crée sur une base existante, aucune migration ALTER n'est nécessaire.
+class AgentRun(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    execution_id: int = Field(index=True)
+    conversation_id: Optional[int] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    workflow: str = ""
+    agent: str  # clé d'étape : design | architecture | diagnostic | development | qa | system
+    status: str = "completed"  # completed | incomplete | n/a
+    duration_seconds: Optional[float] = None
+    llm_calls: int = 0
+    llm_errors: int = 0
+    usage_calls: int = 0  # appels LLM dont l'usage de tokens est connu (moyennes de tokens)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    tool_calls: int = 0
+    tool_errors: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 # SQLModel.metadata.create_all() ne modifie jamais le schéma d'une table déjà existante.
 # Ces instructions rattrapent les colonnes ajoutées après la création initiale de la table
 # sur une base déjà en place (ex: Supabase en production). Sans effet sur une base neuve

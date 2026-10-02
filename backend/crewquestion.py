@@ -6,8 +6,7 @@ import json
 import re
 import functools
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from contextvars import ContextVar, copy_context
+from contextvars import copy_context
 from pathlib import Path
 from typing import List, Literal, Callable, Any, Optional
 from dotenv import load_dotenv
@@ -48,6 +47,12 @@ from github_tools import (
     track_edit_failures,
     write_files_to_branch,
 )
+from agent_metrics import (  # noqa: F401
+    ExecutionMetrics,
+    _current_metrics,
+    register_event_listeners,
+    track_execution_metrics,
+)
 from qa_report import (
     QA_VERDICT,
     qa_report_issues,
@@ -76,42 +81,9 @@ from analyst_output import (
 )
 
 # --- MÉTRIQUES & PAUSES ---
-class ExecutionMetrics:
-    def __init__(self):
-        self.start_time = time.time()
-        self.api_calls_count = 0
-        self.rate_limit_hits = 0
-        self.total_wait_time = 0.0
-
-    def record_call(self):
-        self.api_calls_count += 1
-
-    def record_rate_limit(self, wait_seconds: float):
-        self.rate_limit_hits += 1
-        self.total_wait_time += wait_seconds
-
-    def record_wait(self, wait_seconds: float):
-        self.total_wait_time += wait_seconds
-
-# Métriques de l'exécution actuellement suivie (voir track_execution_metrics), pour
-# renvoyer à l'utilisateur le coût/la performance de SA requête plutôt qu'un compteur
-# global cumulé depuis le démarrage du serveur et partagé entre tous les utilisateurs.
-# contextvars (et non un simple global) car correctement isolé entre requêtes concurrentes,
-# et propagé automatiquement dans un thread lancé via asyncio.to_thread (utilisé par
-# kickoff_async). Attention : loop.run_in_executor() nu ne copie PAS ce contexte tout
-# seul (cf. _generate_summary, qui doit le faire explicitement via copy_context().run(...)
-# pour son pool dédié) — ne pas supposer que la propagation est automatique partout.
-_current_metrics: ContextVar["ExecutionMetrics | None"] = ContextVar("current_metrics", default=None)
-
-@contextmanager
-def track_execution_metrics():
-    """Active un ExecutionMetrics dédié le temps du bloc, à lire une fois celui-ci terminé."""
-    m = ExecutionMetrics()
-    token = _current_metrics.set(m)
-    try:
-        yield m
-    finally:
-        _current_metrics.reset(token)
+# ExecutionMetrics, _current_metrics et track_execution_metrics vivent dans agent_metrics.py (mesure
+# par agent à partir des événements CrewAI) ; réexportés ici car main.py les importe d'ici.
+register_event_listeners()
 
 # Partagés entre retry_on_rate_limit_async (ci-dessous, utilisé par analyze_user_request) et le
 # retry résumable de run_dynamic_crew (plus bas) : une seule définition de "qu'est-ce qu'une
@@ -136,7 +108,7 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
             while True:
                 m = _current_metrics.get()
                 if m is not None:
-                    m.record_call()
+                    m.record_attempt()
                 try:
                     return await func(*args, **kwargs)
                 except Exception as e:
@@ -1666,6 +1638,9 @@ class AppDevelopmentCrew():
                         # task_obj.execution_duration : propriété CrewAI (start_time/end_time posés
                         # en interne pendant task_obj.execute()), None si l'un des deux est absent.
                         duration = task_obj.execution_duration
+                        current = _current_metrics.get()
+                        if current is not None:
+                            current.record_agent_done(agent_name, duration)
                         try:
                             on_task_output_complete(agent_name, raw_output, duration)
                         except Exception as e:
@@ -1712,7 +1687,7 @@ class AppDevelopmentCrew():
 
                 m = _current_metrics.get()
                 if m is not None:
-                    m.record_call()
+                    m.record_attempt()
                 try:
                     # track_edit_failures() : isole le suivi des échecs répétés de
                     # github_edit_file (voir github_tools.py) à CETTE exécution, pour qu'il ne se
