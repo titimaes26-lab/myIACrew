@@ -17,6 +17,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from errors import ErrorCode
+
 import yaml
 
 SYSTEM_BUCKET = "system"  # appels LLM hors agent (ex : synthèse finale du résultat)
@@ -306,13 +308,13 @@ def _round(value: Optional[float], digits: int = 1) -> Optional[float]:
 # causes ou échec sans code. Un code inconnu (futur) s'affiche tel quel plutôt que d'être masqué.
 UNCLASSIFIED_FAILURE = "UNCLASSIFIED"
 FAILURE_LABELS = {
-    "QUOTA_EXHAUSTED": "Quota du modèle épuisé",
-    "LLM_UNAVAILABLE": "Modèle indisponible ou surchargé",
-    "LLM_TIMEOUT": "Délai du modèle dépassé",
-    "GITHUB_UNAVAILABLE": "GitHub injoignable",
-    "GUARDRAIL_FAILED": "Contrôle de qualité non respecté",
-    "INTERRUPTED": "Interrompue (redémarrage du serveur)",
-    "INTERNAL_ERROR": "Erreur interne",
+    ErrorCode.QUOTA_EXHAUSTED: "Quota du modèle épuisé",
+    ErrorCode.LLM_UNAVAILABLE: "Modèle indisponible ou surchargé",
+    ErrorCode.LLM_TIMEOUT: "Délai du modèle dépassé",
+    ErrorCode.GITHUB_UNAVAILABLE: "GitHub injoignable",
+    ErrorCode.GUARDRAIL_FAILED: "Contrôle de qualité non respecté",
+    ErrorCode.INTERRUPTED: "Interrompue (redémarrage du serveur)",
+    ErrorCode.INTERNAL_ERROR: "Erreur interne",
     UNCLASSIFIED_FAILURE: "Cause non enregistrée",
 }
 

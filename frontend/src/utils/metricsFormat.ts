@@ -34,11 +34,13 @@ export function formatDay(isoDate: string): string {
 }
 
 // Graduations « propres » (0, 10, 20…) : au plus `count` + 1 valeurs, la dernière >= max.
-export function niceTicks(max: number, count = 4): number[] {
+export function niceTicks(max: number, count = 4, integer = false): number[] {
   if (!Number.isFinite(max) || max <= 0) return [0, 1];
-  const rough = max / count;
+  // integer : décomptes d'exécutions, pas de graduation fractionnaire (0,5 exécution n'existe pas).
+  const rough = Math.max(max / count, integer ? 1 : 0);
   const magnitude = 10 ** Math.floor(Math.log10(rough));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((candidate) => candidate >= rough) ?? 10 * magnitude;
+  const multipliers = integer ? [1, 2, 5, 10] : [1, 2, 2.5, 5, 10];
+  const step = multipliers.map((m) => m * magnitude).find((candidate) => candidate >= rough) ?? 10 * magnitude;
   const ticks: number[] = [];
   for (let value = 0; value < max + step * 0.999; value += step) ticks.push(Math.round(value * 1e6) / 1e6);
   return ticks;

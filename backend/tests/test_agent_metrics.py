@@ -537,3 +537,25 @@ def test_summary_endpoint_exposes_failure_causes_for_the_user_and_period_only(se
     session.commit()
     result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"}))
     assert result["failures"] == [{"code": "LLM_TIMEOUT", "label": "Délai du modèle dépassé", "count": 1}]
+
+
+def test_every_code_the_classifier_can_emit_has_a_dashboard_label():
+    import asyncio as _asyncio
+    from agent_metrics import FAILURE_LABELS
+    from errors import ErrorCode, classify_exception
+    samples = [
+        RuntimeError("429 quota"), RuntimeError("503 unavailable"), _asyncio.TimeoutError(),
+        RuntimeError("guardrail failed"), RuntimeError("inconnue"),
+    ]
+    emitted = {classify_exception(exc).code for exc in samples} | {ErrorCode.INTERRUPTED, ErrorCode.GITHUB_UNAVAILABLE}
+    assert emitted <= set(FAILURE_LABELS)
+
+
+def test_summary_flags_truncation_when_the_execution_limit_is_reached(session, monkeypatch):
+    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 2)
+    for _ in range(3):
+        _execution(session, "u1")
+    result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"}))
+    assert result["truncated"] is True and result["executions"]["total"] == 2
+    fewer = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u9"}))
+    assert fewer["truncated"] is False

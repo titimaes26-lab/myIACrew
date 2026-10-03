@@ -194,6 +194,7 @@ Response { period_days: number; workflow: string | null;
            agents: { agent, label, runs, incomplete, duration_p50, duration_p95, avg_llm_calls, llm_errors,
                      token_runs, avg_prompt_tokens, avg_completion_tokens, avg_tool_calls, tool_errors }[];
            failures: { code, label, count }[];   // échecs par cause (error_code), du plus fréquent au moins fréquent
+           truncated: boolean;                   // vrai si la limite de 1000 exécutions est atteinte (la période n'est pas couverte en entier)
            daily: { date, executions, failed, llm_calls, tokens }[] }
 
 // GET /api/executions/{id}/agent-runs   → détail par agent d'UNE exécution (404 si elle n'est pas à l'utilisateur)

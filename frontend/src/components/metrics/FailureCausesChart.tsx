@@ -7,8 +7,9 @@ import HorizontalChart, { type HorizontalRow } from './HorizontalChart';
 // Échecs par cause : une seule série (nombre d'exécutions), un seul axe, du plus fréquent au moins
 // fréquent. Sans échec sur la période, la carte l'annonce au lieu de disparaître.
 export default function FailureCausesChart({ failures, total }: { failures: FailureCauseRow[]; total: number }) {
+  const hasUnclassified = failures.some((f) => f.code === 'UNCLASSIFIED');
   const failed = failures.reduce((sum, f) => sum + f.count, 0);
-  const ticks = niceTicks(Math.max(0, ...failures.map((f) => f.count)), 4);
+  const ticks = niceTicks(Math.max(0, ...failures.map((f) => f.count)), 4, true);
   const max = ticks[ticks.length - 1] || 1;
 
   const rows: HorizontalRow[] = failures.map((f) => {
@@ -35,13 +36,13 @@ export default function FailureCausesChart({ failures, total }: { failures: Fail
     <ChartCard
       title="Échecs par cause"
       subtitle={failed > 0
-        ? `${failed} exécution${failed > 1 ? 's' : ''} en échec sur ${total}. Les échecs d'avant le suivi des causes sont regroupés à part.`
-        : 'Aucune exécution en échec sur cette période.'}
+        ? `${failed} exécution${failed > 1 ? 's' : ''} en échec sur ${total}.${hasUnclassified ? " Les échecs d'avant le suivi des causes sont regroupés à part." : ''}`
+        : 'Cause de chaque exécution en échec.'}
       table={{
         columns: ['Cause', 'Échecs', 'Part des échecs'],
         rows: failures.map((f) => [f.label, String(f.count), formatPercent(f.count, failed)]),
       }}
-      empty={failures.length === 0 ? 'Aucun échec à analyser : tout est passé.' : null}
+      empty={failures.length === 0 ? 'Aucun échec sur cette période : toutes les exécutions terminées ont réussi.' : null}
     >
       <HorizontalChart rows={rows} ticks={ticks} formatTick={(tick) => formatInteger(tick)} />
     </ChartCard>

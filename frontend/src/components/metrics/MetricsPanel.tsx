@@ -67,12 +67,15 @@ export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; 
       {data && data.executions.total === 0 && (
         <p className="viz-empty">Aucune exécution terminée sur cette période. Lancez une demande, puis revenez ici.</p>
       )}
+      {data?.truncated && (
+        <p className="viz-sub">Calculé sur les 1000 exécutions les plus récentes de la période.</p>
+      )}
       {data && data.executions.total > 0 && (
         <div className={loading ? 'viz-loading' : undefined}>
           <Tiles summary={data} />
           <AgentDurationChart agents={data.agents} />
           <AgentTokensChart agents={data.agents} />
-          <FailureCausesChart failures={data.failures} total={data.executions.total} />
+          <FailureCausesChart failures={data.failures ?? []} total={data.executions.total} />
           <DailyCallsChart daily={data.daily} />
           <AgentTable summary={data} />
         </div>

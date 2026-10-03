@@ -145,6 +145,8 @@ export interface MetricsSummary {
   };
   agents: AgentMetricsRow[];
   failures: FailureCauseRow[];
+  // Vrai quand la limite d'exécutions analysées est atteinte (la période n'est alors pas couverte en entier).
+  truncated?: boolean;
   daily: DailyMetricsRow[];
 }
 

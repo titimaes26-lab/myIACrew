@@ -1472,6 +1472,7 @@ async def list_repo_targets(
     return targets
 
 _IN_CLAUSE_CHUNK = 500
+_METRICS_EXECUTION_LIMIT = 1000
 
 @app.get("/api/metrics/summary")
 async def metrics_summary(
@@ -1500,7 +1501,7 @@ async def metrics_summary(
         .where(ExecutionHistory.created_at >= since)
         .where(ExecutionHistory.status.in_(("success", "failed")))
         .order_by(ExecutionHistory.created_at.desc())
-        .limit(1000)
+        .limit(_METRICS_EXECUTION_LIMIT)
     )
     if workflow:
         statement = statement.where(ExecutionHistory.workflow == workflow)
@@ -1524,7 +1525,11 @@ async def metrics_summary(
                 .where(AgentRun.execution_id.in_(ids[start:start + _IN_CLAUSE_CHUNK]))
             ).all()
         )
-    return summarize(runs, executions, days, workflow, tz_offset)
+    result = summarize(runs, executions, days, workflow, tz_offset)
+    # Tout le tableau de bord (dont les échecs par cause) est calculé sur cet échantillon : on le dit quand
+    # la limite est atteinte plutôt que de laisser croire que la période entière est couverte.
+    result["truncated"] = len(executions) >= _METRICS_EXECUTION_LIMIT
+    return result
 
 @app.get("/api/executions/{execution_id}/agent-runs")
 async def execution_agent_runs(
