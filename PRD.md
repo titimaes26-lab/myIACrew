@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.3 — Mise à jour le 2026-10-02
+> Version : 1.4 — Mise à jour le 2026-10-03
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique.
 
 ---
 
@@ -222,11 +222,13 @@ L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le t
 |---|---|---|---|
 | Connexion | `Login.tsx` | pas de session Supabase active | Formulaire email + mot de passe |
 | Chargement | inline dans `App.tsx` | vérification de session en cours | Texte « Chargement... » |
-| Studio | `Studio.tsx` | session active | Tableau de bord de performance (`MetricsPanel`, ouvert par le bouton « 📊 Performance » de `StudioHeader`), fil de conversation (`ChatThread`, `ChatMessage` qui affiche l'indicateur d'étapes `StepIndicator` et le résumé par agent `AgentSummary`), saisie (`ChatInput`, qui contient le choix du workflow et le formulaire du repo cible `RepoTargetFields`), historique des conversations (`HistoryPanel`), en-tête (`StudioHeader`). Chaque message terminé peut déplier sa performance par agent (`ExecutionBreakdown`) |
+| Studio | `Studio.tsx` | session active | Tableau de bord de performance (`MetricsPanel`, ouvert par le bouton « 📊 Performance » de `StudioHeader`), fil de conversation (`ChatThread`, `ChatMessage` qui affiche l'indicateur d'étapes `StepIndicator` et le résumé par agent `AgentSummary`), saisie (`ChatInput`, qui contient le choix du workflow et le formulaire du repo cible `RepoTargetFields`), historique des exécutions (`HistoryPanel` : lignes `HistoryEntryRow`, barre `HistorySelectionBar`, état de sélection `hooks/useHistorySelection.ts`), en-tête (`StudioHeader`). Chaque message terminé peut déplier sa performance par agent (`ExecutionBreakdown`) |
 
 ### 5.2 Navigation
 
 Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'état de session Supabase (`onAuthStateChange`). Dans le Studio, l'historique est un panneau ; reprendre une conversation recharge ses tours.
+
+**Sélection multiple de l'historique** : chaque ligne a une case à cocher (libellé accessible avec date et demande) ; Maj+clic coche ou décoche une plage ; « Tout sélectionner » (état indéterminé si partiel) porte sur les lignes affichées (les 20 plus récentes) ; compteur, « Supprimer la sélection (N) » (confirmation avec le nombre) et « Annuler la sélection ». Une exécution `running` n'est pas sélectionnable (case désactivée, info-bulle). Si le serveur ignore certaines lignes, un message le dit (« 1 supprimée, 1 ignorée : en cours ») et seules les lignes supprimées ou introuvables disparaissent. Pas de pagination (hors périmètre).
 
 ---
 
