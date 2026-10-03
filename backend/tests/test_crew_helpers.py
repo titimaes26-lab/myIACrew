@@ -189,7 +189,9 @@ def test_design_spec_guardrail_never_fails_and_annotates_only_on_issues():
 
 
 def test_design_task_yaml_placeholders_are_known():
-    import pathlib, string, yaml
+    import pathlib
+    import string
+    import yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
     known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
     for name in ("design_task", "architecture_task", "diagnostic_task", "development_task"):

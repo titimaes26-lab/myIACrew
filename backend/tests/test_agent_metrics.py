@@ -2,7 +2,6 @@ import asyncio
 import os
 import sys
 import threading
-from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -370,7 +369,6 @@ def run_engine(monkeypatch):
 
 def _launch(run_engine, monkeypatch, fake_run):
     """Lance main._run_crew_and_persist avec un faux crew (aucun LLM, aucun GitHub)."""
-    from types import SimpleNamespace
 
     class FakeCrew:
         run_dynamic_crew = fake_run

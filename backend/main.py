@@ -11,7 +11,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
-from typing import List, NamedTuple, Optional
+from dataclasses import dataclass
+from typing import Any, List, NamedTuple, Optional
 from sqlalchemy import update as sql_update
 from sqlmodel import Session, func, select
 
@@ -798,6 +799,268 @@ async def _execute_crew_and_persist(
             _cleanup_persisted_agents(db_entry_id)
             raise
 
+@dataclass
+class _RunState:
+    """État d'UNE tentative d'exécution, lu par le chemin d'échec même quand le crew a planté en route :
+    SHA de la branche de travail AVANT le crew (None tant que non capturé) et métriques de la tentative."""
+    sha_before: Optional[str] = None
+    metrics: Optional[Any] = None
+
+
+def _repo_instructions(
+    has_repo_target: bool, data: "WorkflowExecutionInput", work_branch: str,
+    base_branch: Optional[str], branch_exists: bool,
+) -> str:
+    """Consignes de cible données aux agents (repository, branches, ou espace de travail local)."""
+    if not has_repo_target:
+        return (
+            "Aucun repository GitHub cible fourni : travaille uniquement dans l'espace de travail local de "
+            "cette conversation (chemins de fichiers relatifs, lus avec read_a_files_content). Cet espace est "
+            "VIDE au premier tour d'une conversation : ne présume jamais qu'un fichier non livré par un tour "
+            "précédent de cette même conversation existe déjà. N'utilise aucun outil github_* SAUF "
+            "github_commit_analyst_files et qa_verify_delivered_files, qui agissent alors sur cet espace."
+        )
+    header = (
+        f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
+        f"Branche de base : {base_branch}\n"
+        f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}\n"
+    )
+    # branch_exists vient d'un appel GitHub LIVE fait avant le crew, pas du statut d'un tour précédent (un
+    # tour « failed » peut avoir réellement poussé des commits). « Inconnu » est traité comme « n'existe
+    # pas » : lire la branche de base en attendant est le choix le moins risqué.
+    if branch_exists:
+        return header + (
+            "Cette branche de travail EXISTE DÉJÀ sur GitHub (réutilisée d'un tour précédent de cette "
+            f"conversation) : pour toute lecture, lis-la directement avec branch={work_branch}."
+        )
+    return header + (
+        "Cette branche de travail N'EXISTE PAS ENCORE sur GitHub (sera créée par la tâche de commit qui "
+        f"suit) : pour toute lecture, lis sur branch={base_branch} en attendant."
+    )
+
+
+def _crew_inputs(
+    data: "WorkflowExecutionInput", conversation_id: int, final_prompt: str, conversation_context: str,
+    work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool,
+) -> dict:
+    return {
+        'user_request': final_prompt,
+        'conversation_context': conversation_context,
+        'repo_owner': data.repo_owner or '',
+        'repo_name': data.repo_name or '',
+        # `or 'main'` : base_branch est None sans repository cible, et les tâches interpolent toujours {base_branch}.
+        'base_branch': base_branch or 'main',
+        'work_branch': work_branch,
+        # Isole l'espace de travail LOCAL de chaque conversation (mode sans repository cible).
+        'conversation_id': str(conversation_id),
+        'repo_instructions': _repo_instructions(has_repo_target, data, work_branch, base_branch, branch_exists),
+    }
+
+
+async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, should_verify: bool) -> Optional[str]:
+    """SHA de la branche de travail AVANT le crew : repère de verify_github_delivery pour distinguer « cette
+    exécution a poussé un commit » de « une branche/PR d'un tour précédent existe toujours ». None = branche
+    absente OU vérification indisponible : traité pareil (best-effort), une panne réseau n'empêche pas le crew."""
+    if not should_verify:
+        return None
+    try:
+        return await asyncio.to_thread(get_branch_head_sha, data.repo_owner, data.repo_name, work_branch)
+    except GitHubVerificationUnavailable:
+        return None
+
+
+async def _run_crew(
+    crew: Any, state: _RunState, execution_id: int, request_type: str, inputs: dict,
+    resume_outputs: Optional[dict[str, str]],
+) -> Any:
+    """Lance le crew avec ses métriques et son sondage mémoire périodique (toujours annulé, succès ou non)."""
+    memory_ticker = asyncio.create_task(_periodic_memory_logger(f"execution_id={execution_id}, sondage périodique"))
+    try:
+        with track_execution_metrics() as run_metrics:
+            state.metrics = run_metrics
+            return await crew.run_dynamic_crew(
+                inputs=inputs,
+                request_type=request_type,
+                on_step_change=lambda step_key: _persist_current_step(execution_id, step_key),
+                on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(
+                    execution_id, agent_name, output, duration),
+                resume_outputs=resume_outputs,
+            )
+    finally:
+        # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette attente, les derniers
+        # appels LLM pourraient manquer aux métriques lues ensuite.
+        await asyncio.to_thread(flush_events)
+        memory_ticker.cancel()
+        try:
+            await memory_ticker
+        except asyncio.CancelledError:
+            # Ne pas avaler l'annulation de CETTE tâche (indiscernable de celle du ticker sans cette
+            # vérification) : l'exécution devrait alors s'arrêter, pas poursuivre vers « success ».
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+
+
+def _delivery_failure_message(issue: Any, raw_result: str) -> str:
+    """Message d'une livraison non confirmée sur GitHub. `likely_access_problem` (champ structuré, pas un
+    texte à parser) distingue « branche introuvable / API injoignable » (vérifier GITHUB_TOKEN est juste) du
+    cas « branche et commits confirmés mais PR manquante » (l'agent n'a pas terminé : conseil de jeton faux).
+    Le rapport de l'agent est joint tel quel, non vérifié, pour juger s'il faut relancer ou reformuler."""
+    if issue.likely_access_problem:
+        remediation = (
+            "Vérifie la configuration GITHUB_TOKEN du backend (présence, permissions d'écriture sur ce "
+            "repository) puis relance."
+        )
+    else:
+        remediation = (
+            "Cela peut venir d'un manque de permissions d'écriture du GITHUB_TOKEN configuré sur ce "
+            "repository, ou du Développeur qui n'a pas terminé sa procédure GitHub : vérifie les deux, puis relance."
+        )
+    return (
+        "Un repository GitHub cible était configuré mais la vérification après coup "
+        f"a échoué : {issue.message} {remediation}\n\n"
+        "--- Rapport de l'agent (non vérifié sur GitHub) ---\n"
+        f"{raw_result[:3000]}"
+    )
+
+
+async def _verify_delivery(
+    data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], sha_before: Optional[str],
+    raw_result: str,
+) -> Any:
+    """Vérifie via l'API GitHub (jamais d'après le texte d'un agent : la QA n'a aucun outil pour ça) qu'une
+    branche et une PR à jour existent. Renvoie la PR confirmée ; lève RuntimeError sinon. Appel bloquant :
+    dans un thread."""
+    delivered_pr, issue = await asyncio.to_thread(
+        verify_github_delivery, data.repo_owner, data.repo_name, work_branch, base_branch, sha_before,
+    )
+    if issue:
+        raise RuntimeError(_delivery_failure_message(issue, raw_result))
+    return delivered_pr
+
+
+def _with_pull_request_line(raw_result: str, delivered_pr: Any) -> str:
+    """Ajoute l'URL de la PR réellement observée à la SUITE du résultat, sans nouveau séparateur de section :
+    le frontend ne découpe que sur « \\n\\n---\\n\\n## », donc la ligne reste dans la dernière section."""
+    if delivered_pr is None:
+        return raw_result
+    state_label = "fusionnée" if delivered_pr.merged else "ouverte"
+    return f"{raw_result}\n\n**Pull Request {state_label} :** {delivered_pr.html_url}"
+
+
+def _record_run_metrics(session: Session, db_entry: ExecutionHistory, state: _RunState) -> None:
+    if state.metrics is None:
+        return
+    db_entry.api_calls_count = state.metrics.api_calls_count
+    db_entry.rate_limit_hits = state.metrics.rate_limit_hits
+    db_entry.total_wait_time_seconds = state.metrics.total_wait_time
+    _persist_agent_runs(session, db_entry, state.metrics)
+
+
+def _commit_outcome(session: Session, db_entry: ExecutionHistory, conversation: Conversation) -> None:
+    now = datetime.now(timezone.utc)
+    db_entry.updated_at = now
+    conversation.updated_at = now
+    session.add(db_entry)
+    session.add(conversation)
+    session.commit()
+
+
+async def _persist_success(
+    session: Session, db_entry: ExecutionHistory, conversation: Conversation, raw_result: str, state: _RunState,
+) -> None:
+    _safe_refresh(session, db_entry, "succès")
+    db_entry.result = raw_result
+    db_entry.status = "success"
+    db_entry.current_step = None
+    _record_run_metrics(session, db_entry, state)
+    _commit_outcome(session, db_entry, conversation)
+    print(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).", flush=True)
+    # Après le commit du succès, dans sa propre Session et au mieux : purger une ressource optionnelle ne
+    # doit jamais faire échouer (ni être validée par) le chemin d'une exécution réussie.
+    await asyncio.to_thread(_delete_checkpoints_for, db_entry.id)
+    _cleanup_persisted_agents(db_entry.id)
+
+
+def _failure_detail(exc: BaseException, info: Any) -> str:
+    """Message d'échec : cause lisible (sinon texte d'origine) suivie du détail technique tronqué — sans lui,
+    ni l'utilisateur ni la base ne diraient POURQUOI (ce que reproche un garde-fou, délai « retry after »)."""
+    technical = str(exc).strip()[:500]
+    reason = f"{info.message} (détail : {technical})" if info.message and technical else (info.message or technical)
+    if isinstance(exc, CrewStepError):
+        return f"Échec à l'étape {exc.step_index}/{exc.total_steps} ({exc.agent_role}) : {reason}"
+    return reason
+
+
+async def _persist_failure(
+    session: Session, db_entry: ExecutionHistory, conversation: Conversation, exc: BaseException, info: Any,
+    data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], should_verify: bool,
+    state: _RunState,
+) -> None:
+    detail = _failure_detail(exc, info)
+    # Écritures GitHub partielles : l'échec peut venir après qu'une branche, des commits ou une PR ont DÉJÀ
+    # été créés. Constaté via l'API (jamais d'après un agent) pour que l'utilisateur sache quoi reprendre.
+    if should_verify and data.repo_owner and data.repo_name and work_branch:
+        detail += "\n\n" + await _partial_delivery_block(
+            data.repo_owner, data.repo_name, work_branch, base_branch or "main", state.sha_before,
+        )
+    _safe_refresh(session, db_entry, "échec")
+    # current_step : run_dynamic_crew l'efface sur l'échec de kickoff, mais pas sur un échec APRÈS lui
+    # (mise en forme, résumé) — d'où cet effacement ici.
+    db_entry.current_step = None
+    db_entry.status = "failed"
+    db_entry.result = detail
+    db_entry.error_code = info.code
+    db_entry.error_retryable = info.retryable
+    _record_run_metrics(session, db_entry, state)
+    _commit_outcome(session, db_entry, conversation)
+    _cleanup_persisted_agents(db_entry.id)
+
+
+async def _retry_outputs_if_transient(
+    exc: BaseException, info: Any, db_entry_id: int, data: "WorkflowExecutionInput", auto_retry_allowed: bool,
+) -> Optional[dict[str, str]]:
+    """Sorties à réutiliser pour la seconde tentative AUTOMATIQUE (une seule), ou None (échec définitif).
+    Seulement après un échec transitoire survenu AVANT l'écriture du code : rien n'a été poussé sur GitHub et
+    les étapes réussies sont reprises. Plus tard (développement, QA, vérification), l'utilisateur relance :
+    il faudrait réécrire sur GitHub et repayer ces étapes. Sans le point de reprise de CHAQUE étape déjà
+    réussie, relancer les repayerait pour rien. L'attente se fait chez l'appelant, hors sémaphore."""
+    if not (auto_retry_allowed and info.retryable and _failed_before_development(exc, data.target_workflow)):
+        return None
+    saved = await asyncio.to_thread(_load_checkpoints_for, db_entry_id)
+    prefix = resumable_prefix(workflow_step_keys(data.target_workflow), saved)
+    if len(prefix) < exc.step_index - 1:
+        return None
+    print(
+        f"execution_id={db_entry_id} : échec transitoire ({info.code}), nouvelle tentative "
+        f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
+    )
+    return {key: saved[key] for key in prefix}
+
+
+def _mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
+    """Dernier filet : l'ouverture de la Session ou les `get` initiaux ont échoué (pool épuisé, coupure base).
+    Sans lui la ligne resterait « running » pour toujours. Best-effort : si la base est injoignable, rien de
+    mieux n'est possible depuis ce process."""
+    print(f"AVERTISSEMENT : échec du démarrage de la tâche de fond pour db_entry={db_entry_id} : {exc}", flush=True)
+    try:
+        with Session(engine) as session:
+            db_entry = session.get(ExecutionHistory, db_entry_id)
+            if db_entry is not None and db_entry.status == "running":
+                db_entry.status = "failed"
+                db_entry.result = f"Erreur interne au démarrage de l'exécution en tâche de fond : {exc}"
+                db_entry.error_code = ErrorCode.INTERNAL_ERROR
+                db_entry.error_retryable = False
+                db_entry.current_step = None
+                db_entry.updated_at = datetime.now(timezone.utc)
+                session.add(db_entry)
+                session.commit()
+    except Exception:
+        pass
+    finally:
+        _cleanup_persisted_agents(db_entry_id)
+
+
 async def _run_crew_and_persist(
     db_entry_id: int,
     conversation_id: int,
@@ -811,408 +1074,72 @@ async def _run_crew_and_persist(
     resume_outputs: Optional[dict[str, str]] = None,
     auto_retry_allowed: bool = True,
 ) -> Optional[dict[str, str]]:
-    """Lance le crew et persiste son issue (succès ou échec) en base — voir execute_workflow, qui
-    ne fait plus qu'enregistrer db_entry (statut "running") puis lancer _execute_crew_and_persist
-    en tâche de fond (asyncio.create_task) avant de répondre immédiatement au client, au lieu
-    d'attendre l'exécution complète (potentiellement plusieurs minutes) avant de répondre.
+    """Lance le crew et persiste son issue (succès ou échec) en base ; tourne en tâche de fond (voir
+    execute_workflow, qui répond « running » tout de suite) avec sa PROPRE Session — celle de la requête est
+    fermée bien avant la fin d'une exécution de plusieurs minutes. Renvoie les sorties à reprendre quand une
+    seconde tentative automatique est demandée (voir _retry_outputs_if_transient), sinon None.
 
-    Sans ce découplage, verrouiller l'écran du téléphone ou fermer l'onglet pendant l'attente
-    suffisait à couper la connexion HTTP sous-jacente (comportement standard des navigateurs
-    mobiles sur un onglet mis en arrière-plan) — non pas que l'exécution s'arrêtait vraiment côté
-    serveur (rien, avant comme après ce changement, n'annule cette tâche juste parce que le client
-    se déconnecte), mais l'utilisateur n'avait alors plus AUCUN moyen de voir le résultat final
-    sans recharger manuellement la conversation depuis l'Historique. Désormais, le sondage de
-    progression déjà existant côté frontend (useConversation.ts) prend le relais dès que
-    l'exécution quitte "running", sans dépendre de cette connexion HTTP d'origine.
-
-    Ouvre sa PROPRE Session (comme _persist_current_step un peu plus haut, pour la même raison) :
-    la Session injectée dans execute_workflow via Depends(get_session) est fermée par FastAPI une
-    fois SA réponse envoyée, bien avant que cette tâche de fond n'ait eu la moindre chance de
-    s'exécuter.
+    Étapes : capturer le SHA de référence et instancier le crew → lancer (_run_crew) → vérifier la livraison
+    GitHub → persister le succès ; toute exception passe par le chemin d'échec (_persist_failure).
     """
-    # Initialisé avant tout (lu par le rapport d'échec ci-dessous) : None tant que le repère GitHub
-    # d'avant exécution n'a pas été capturé.
-    repo_branch_sha_before = None
+    state = _RunState()
     try:
         with Session(engine) as session:
             db_entry = session.get(ExecutionHistory, db_entry_id)
             conversation = session.get(Conversation, conversation_id)
             if db_entry is None or conversation is None:
-                # Ne devrait jamais arriver (db_entry_id/conversation_id viennent d'un enregistrement
-                # tout juste commité par execute_workflow) : print plutôt qu'une exception qui
-                # remonterait sans jamais être retrouvée (rien n'attend le résultat de cette tâche de
-                # fond) — voir la note sur le garbage collector des Task, _background_tasks plus haut.
+                # Ne devrait jamais arriver (enregistrements tout juste commités par execute_workflow) : un
+                # print plutôt qu'une exception que personne ne retrouverait (rien n'attend cette tâche).
                 print(
                     f"AVERTISSEMENT : db_entry={db_entry_id} ou conversation={conversation_id} "
                     "introuvable au lancement de la tâche de fond, exécution abandonnée.",
                     flush=True,
                 )
-                return
+                return None
 
-            # Une instance FRAÎCHE par exécution, pas le crew_instance partagé utilisé par
-            # /api/qualify : les méthodes décorées @task/@agent de AppDevelopmentCrew (design_task(),
-            # architecture_task()...) sont mémoïsées par CrewAI sur (nom de méthode, id(self)) — voir
-            # crewai/project/utils.py, `_make_hashable` traite `self` comme `("__instance__", id(self))`.
-            # Avec le singleton crew_instance (même `self` pour toutes les requêtes, pour toujours),
-            # deux exécutions qui partagent un rôle de tâche (ex: deux BUGFIX simultanés dans DEUX
-            # conversations différentes — le contrôle de concurrence dans execute_workflow n'empêche
-            # qu'une même conversation d'avoir deux exécutions en vol, pas deux conversations
-            # différentes en parallèle) recevraient LE MÊME objet Task pour ce rôle, et donc
-            # partageraient sa `.callback` et son `.output` en cours d'exécution : bien plus grave
-            # qu'un simple souci d'affichage de progression, cela mélangerait de vrais résultats
-            # d'agents entre deux exécutions concurrentes sans rapport. Une instance locale à CETTE
-            # tâche de fond (vivante le temps de l'await ci-dessous, donc jamais partagée avec une
-            # autre exécution en vol) donne un id(self) distinct et donc des objets Task/Agent
-            # distincts pour toute la durée de cette exécution.
-            #
-            # Compromis assumé : le cache de mémoïsation de CrewAI (crewai.project.utils.cache, un
-            # dict module-level SANS éviction native) grossirait alors d'une poignée d'entrées à CHAQUE
-            # exécution au lieu de rester borné à la taille du singleton précédent — une lente fuite
-            # mémoire, bornée par le nombre total d'exécutions depuis le démarrage du process. Depuis,
-            # purgé activement par run_dynamic_crew (crewquestion.py, voir _evict_memoized_cache_entries
-            # dans son propre finally) plutôt que simplement accepté : pas de moyen PUBLIC d'éviction
-            # côté CrewAI à ce jour, d'où un nettoyage best-effort de ce cache interne, avec un
-            # redémarrage périodique du service comme filet de sécurité résiduel si ce nettoyage
-            # venait à échouer.
-            #
             try:
-                # await asyncio.to_thread(...) et non un appel direct : AppDevelopmentCrew() (la
-                # métaclasse @CrewBase de crewai, voir crewai/project/crew_base.py) relit et reparse
-                # agentsquestion.yaml/tasksquestion.yaml depuis le disque et résout la config de TOUS
-                # les agents qui y sont définis à chaque construction — un appel direct bloquerait la
-                # boucle asyncio (donc toutes les autres requêtes concurrentes, y compris le sondage de
-                # progression d'autres conversations) le temps de ce travail, à CHAQUE exécution.
-                #
-                # À L'INTÉRIEUR de ce try (pas juste avant) : une erreur ici (ex: agentsquestion.yaml
-                # temporairement illisible) doit être rattrapée par le except plus bas comme tout autre
-                # échec d'exécution (db_entry marqué "failed", pas laissé bloqué pour toujours sur
-                # "running" — voir le contrôle de concurrence dans execute_workflow, et /api/history
-                # qui refuse désormais de supprimer une ligne "running").
-                async def _repo_branch_sha_before() -> str | None:
-                    # Capturé AVANT le lancement du crew (jamais après) : c'est le repère utilisé plus
-                    # bas par verify_github_delivery pour distinguer "cette exécution a réellement
-                    # poussé un nouveau commit" de "une branche/PR d'un tour précédent existe toujours"
-                    # sur un work_branch réutilisé entre tours d'une même conversation. None (branche
-                    # pas encore créée : cas normal au tout premier tour) reste distinct d'une erreur
-                    # transitoire de l'API GitHub (GitHubVerificationUnavailable) : les deux sont
-                    # volontairement traités pareil ici (repère indisponible, best-effort) plutôt que
-                    # de laisser un simple souci réseau empêcher le lancement du crew lui-même.
-                    if not should_verify_github_delivery:
-                        return None
-                    try:
-                        return await asyncio.to_thread(get_branch_head_sha, data.repo_owner, data.repo_name, work_branch)
-                    except GitHubVerificationUnavailable:
-                        return None
-
-                # asyncio.gather (pas deux `await` séquentiels) : AppDevelopmentCrew() (parsing des
-                # YAML, thread séparé) et la capture du SHA de référence (aller-retour réseau vers
-                # l'API GitHub) sont deux opérations indépendantes qui ne dépendent l'une de l'autre en
-                # rien, autant les laisser se chevaucher plutôt que d'ajouter inutilement leurs
-                # latences bout à bout.
-                crew_for_this_execution, repo_branch_sha_before = await asyncio.gather(
+                # Instance FRAÎCHE par exécution (jamais le crew_instance partagé de /api/qualify) : CrewAI
+                # mémoïse les tâches par id(self), un singleton ferait partager `.callback` et `.output` entre
+                # deux exécutions concurrentes. Construite dans un thread (relecture des YAML, bloquante), en
+                # parallèle de la capture du SHA ; DANS le try pour qu'une erreur ici marque l'exécution
+                # « failed » au lieu de la laisser « running ».
+                crew, state.sha_before = await asyncio.gather(
                     asyncio.to_thread(AppDevelopmentCrew),
-                    _repo_branch_sha_before(),
+                    _capture_branch_sha(data, work_branch, should_verify_github_delivery),
                 )
                 _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
-
-                # Tâche de fond dédiée : voir _periodic_memory_logger pour le raisonnement (les points
-                # [MEM] existants n'ont qu'une granularité par CHANGEMENT DE TÂCHE, insuffisante pour
-                # repérer une dérive mémoire PENDANT une tâche unique). Toujours annulée dans le finally
-                # ci-dessous, que le kickoff réussisse, lève une CrewStepError, ou toute autre exception —
-                # sans quoi cette tâche continuerait à s'exécuter (et donc à logger) indéfiniment après la
-                # fin de CETTE exécution, une fuite de tâche asyncio à chaque exécution.
-                memory_ticker = asyncio.create_task(
-                    _periodic_memory_logger(f"execution_id={db_entry.id}, sondage périodique")
+                inputs = _crew_inputs(
+                    data, conversation_id, final_prompt, conversation_context, work_branch,
+                    normalized_base_branch, has_repo_target, state.sha_before is not None,
                 )
-                try:
-                    with track_execution_metrics() as run_metrics:
-                        result = await crew_for_this_execution.run_dynamic_crew(
-                            inputs={
-                                'user_request': final_prompt,
-                                'conversation_context': conversation_context,
-                                'repo_owner': data.repo_owner or '',
-                                'repo_name': data.repo_name or '',
-                                # `or 'main'` : nécessaire ici (contrairement à db_entry.base_branch
-                                # plus haut) car normalized_base_branch est None sans repository cible,
-                                # et les tâches interpolent toujours {base_branch} même dans ce cas.
-                                'base_branch': normalized_base_branch or 'main',
-                                'work_branch': work_branch,
-                                # Isole l'espace de travail LOCAL de chaque conversation (mode sans
-                                # repository cible, où work_branch est vide) — voir _reset_execution_state.
-                                'conversation_id': str(conversation_id),
-                                'repo_instructions': (
-                                    f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
-                                    f"Branche de base : {normalized_base_branch}\n"
-                                    f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}\n"
-                                    + (
-                                        # Signal FIABLE pour diagnostic_task (sur quelle branche lire AVANT
-                                        # que development_task ne crée {work_branch}, voir tasksquestion.yaml,
-                                        # diagnostic_task) : repo_branch_sha_before vient d'un appel API
-                                        # GitHub LIVE (get_branch_head_sha, juste au-dessus), pas d'une
-                                        # déduction depuis le statut DB d'un tour précédent — un tour marqué
-                                        # "failed" alors que la branche ET ses commits étaient réels (ex:
-                                        # seule l'ouverture de la PR a échoué, voir verify_github_delivery)
-                                        # aurait fait dire à tort à une déduction DB que la branche n'existe
-                                        # pas encore. None ici couvre aussi bien "branche confirmée absente"
-                                        # que "vérification indisponible" (souci transitoire) : dans les deux
-                                        # cas, lire {base_branch} en attendant reste le choix le moins risqué
-                                        # (même compromis "best-effort" que verify_github_delivery accepte
-                                        # déjà pour ce même repère, voir sa docstring).
-                                        f"Cette branche de travail EXISTE DÉJÀ sur GitHub (réutilisée d'un "
-                                        f"tour précédent de cette conversation) : pour toute lecture, lis-la "
-                                        f"directement avec branch={work_branch}."
-                                        if repo_branch_sha_before is not None
-                                        else f"Cette branche de travail N'EXISTE PAS ENCORE sur GitHub (sera "
-                                        f"créée par la tâche de commit qui suit) : pour toute lecture, lis "
-                                        f"sur branch={normalized_base_branch} en attendant."
-                                    )
-                                    if has_repo_target
-                                    else (
-                                        "Aucun repository GitHub cible fourni : travaille uniquement dans "
-                                        "l'espace de travail local de cette conversation (chemins de fichiers "
-                                        "relatifs, lus avec read_a_files_content). Cet espace est VIDE au premier "
-                                        "tour d'une conversation : ne présume jamais qu'un fichier non livré par "
-                                        "un tour précédent de cette même conversation existe déjà. N'utilise "
-                                        "aucun outil github_* SAUF github_commit_analyst_files et "
-                                        "qa_verify_delivered_files, qui agissent alors sur cet espace de travail."
-                                    )
-                                ),
-                            },
-                            request_type=data.target_workflow,
-                            on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
-                            on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(db_entry.id, agent_name, output, duration),
-                            resume_outputs=resume_outputs,
-                        )
-                finally:
-                    # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette
-                    # attente, les derniers appels LLM pourraient manquer aux métriques lues plus bas.
-                    await asyncio.to_thread(flush_events)
-                    memory_ticker.cancel()
-                    try:
-                        await memory_ticker
-                    except asyncio.CancelledError:
-                        # Ne PAS avaler aveuglément : si CETTE tâche de fond (celle créée par
-                        # asyncio.create_task dans execute_workflow, voir _execute_crew_and_persist)
-                        # recevait un jour sa PROPRE annulation pendant qu'elle est suspendue ici sur
-                        # `await memory_ticker`, la CancelledError résultante serait indiscernable de
-                        # celle de memory_ticker — sans cette vérification (Task.cancelling(), Python
-                        # 3.11+), une telle annulation serait silencieusement perdue, laissant
-                        # l'exécution se poursuivre normalement (raw_result, commit "success"...) alors
-                        # qu'elle aurait dû s'arrêter. Inatteignable aujourd'hui en pratique (rien
-                        # n'appelle .cancel() sur cette tâche de fond — voir on_shutdown, qui se
-                        # contente d'un asyncio.wait avec timeout, JAMAIS une annulation, précisément
-                        # pour laisser une chance à une exécution en cours de se terminer) : gardé
-                        # malgré tout en défense, au cas où un futur mécanisme d'annulation serait
-                        # ajouté (ex: un endpoint d'arrêt explicite d'une exécution) sans repasser ici.
-                        current = asyncio.current_task()
-                        if current is not None and current.cancelling() > 0:
-                            raise
+                result = await _run_crew(crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs)
                 raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
-                # Un rapport d'agent "réussi" ne prouve rien de ce qui s'est réellement passé sur GitHub
-                # (voir qa_task dans tasksquestion.yaml : la QA elle-même n'a aucun outil pour confirmer
-                # qu'une PR a été ouverte) : un échec silencieux d'un outil github_* (erreur renvoyée
-                # comme simple texte à l'agent, jamais une exception qui ferait échouer ce try) ou un
-                # agent qui n'appelle tout simplement jamais ces outils produirait quand même ce même
-                # statut "success" sans qu'aucune modification n'ait été poussée sur GitHub. Vérifié
-                # uniquement quand un développement a effectivement eu lieu (ANALYSE_ONLY ne comprend que
-                # design_task/architecture_task, en lecture seule — voir run_dynamic_crew) : sans cela,
-                # cette vérification échouerait toujours à tort sur ce workflow, qui n'a jamais eu
-                # l'intention de créer de branche ou de PR.
-                # None tant que should_verify_github_delivery est False (ANALYSE_ONLY, ou pas de
-                # repository cible) : rien à ajouter au résumé dans ce cas, voir plus bas.
+                # Un rapport « réussi » ne prouve rien sur GitHub (un outil github_* en échec renvoie du texte à
+                # l'agent, jamais une exception). Vérifié seulement quand du code a été écrit (pas ANALYSE_ONLY).
                 delivered_pr = None
                 if should_verify_github_delivery:
-                    # await asyncio.to_thread(...) : verify_github_delivery fait des appels HTTP
-                    # bloquants (PyGithub) — comme pour crew_for_this_execution plus haut, un appel
-                    # direct bloquerait la boucle asyncio, donc toutes les autres requêtes concurrentes,
-                    # le temps de l'aller-retour réseau vers l'API GitHub.
-                    delivered_pr, delivery_issue = await asyncio.to_thread(
-                        verify_github_delivery, data.repo_owner, data.repo_name, work_branch,
-                        normalized_base_branch, repo_branch_sha_before,
-                    )
-                    if delivery_issue:
-                        # likely_access_problem (champ structuré de DeliveryIssue, pas un texte à parser
-                        # par préfixe) distingue les cas où recommander de vérifier GITHUB_TOKEN est un
-                        # diagnostic juste (branche introuvable, API injoignable) de ceux où la branche ET
-                        # ses nouveaux commits sont confirmés mais où il manque une PR à jour : l'écriture
-                        # a alors bien fonctionné, le problème est que l'agent développeur n'a pas terminé
-                        # sa procédure (ex: budget d'appels d'outils épuisé avant l'ouverture de la Pull
-                        # Request) — un conseil GITHUB_TOKEN y serait un diagnostic faux.
-                        if delivery_issue.likely_access_problem:
-                            remediation = (
-                                "Vérifie la configuration GITHUB_TOKEN du backend (présence, permissions "
-                                "d'écriture sur ce repository) puis relance."
-                            )
-                        else:
-                            # Deux causes possibles, indiscernables depuis ce seul constat (une lecture
-                            # GitHub a réussi, mais rien de neuf n'a été confirmé en écriture) : soit
-                            # GITHUB_TOKEN peut lire ce repository mais n'a pas les permissions d'écriture
-                            # nécessaires, soit le Développeur n'a pas terminé sa procédure GitHub (budget
-                            # d'appels d'outils épuisé, étape non atteinte). Volontairement pas plus
-                            # précis sur l'étape en cause (ex: "avant d'ouvrir la Pull Request") : ce même
-                            # DeliveryIssue est aussi renvoyé quand AUCUN commit n'a été poussé du tout,
-                            # pas seulement quand il ne manque que la Pull Request finale.
-                            remediation = (
-                                "Cela peut venir d'un manque de permissions d'écriture du GITHUB_TOKEN "
-                                "configuré sur ce repository, ou du Développeur qui n'a pas terminé sa "
-                                "procédure GitHub : vérifie les deux, puis relance."
-                            )
-                        # raw_result (plan et fichiers annoncés par le Développeur, rapport de la QA) est
-                        # inclus tel quel plutôt que perdu : bien qu'invérifié côté GitHub, il reste utile
-                        # à l'utilisateur pour comprendre ce que l'agent a effectivement tenté avant que
-                        # cette vérification n'échoue, notamment pour juger s'il faut relancer tel quel ou
-                        # reformuler la demande.
-                        raise RuntimeError(
-                            "Un repository GitHub cible était configuré mais la vérification après coup "
-                            f"a échoué : {delivery_issue.message} {remediation}\n\n"
-                            "--- Rapport de l'agent (non vérifié sur GitHub) ---\n"
-                            f"{raw_result[:3000]}"
-                        )
-
-                # Ajouté à la SUITE de raw_result (déjà terminé par la section "## Résumé", voir
-                # crewquestion.py/run_dynamic_crew et SUMMARY_SENTINEL) sans nouveau séparateur
-                # "\n\n---\n\n## " : parseCrewResult.ts (frontend) ne découpe que sur cette frontière
-                # précise, donc cette ligne reste rattachée à cette DERNIÈRE section — celle ouverte
-                # par défaut dans l'interface — plutôt que de finir dans une section à part qu'il
-                # faudrait déplier. URL/statut de fusion réellement observés sur GitHub par
-                # verify_github_delivery ci-dessus, pas une affirmation non vérifiée du Développeur
-                # (voir tasksquestion.yaml, qa_task : la QA elle-même n'a aucun outil pour ça).
-                if delivered_pr is not None:
-                    pr_line = "fusionnée" if delivered_pr.merged else "ouverte"
-                    raw_result = f"{raw_result}\n\n**Pull Request {pr_line} :** {delivered_pr.html_url}"
-
-                _safe_refresh(session, db_entry, "succès")
-
-                db_entry.result = raw_result
-                db_entry.status = "success"
-                # Plus rien à afficher une fois l'exécution terminée avec succès (voir current_step sur
-                # ExecutionHistory) : remis à None plutôt que laissé sur la dernière étape annoncée. Le
-                # cas de l'échec (except plus bas) n'a pas besoin du même traitement ici : run_dynamic_crew
-                # (crewquestion.py) l'a déjà fait lui-même, dès l'échec, via ce même on_step_change(None) —
-                # avant même que cette tâche ne sache si retry_on_rate_limit_async va la rejouer ou non.
-                db_entry.current_step = None
-                db_entry.api_calls_count = run_metrics.api_calls_count
-                db_entry.rate_limit_hits = run_metrics.rate_limit_hits
-                db_entry.total_wait_time_seconds = run_metrics.total_wait_time
-                _persist_agent_runs(session, db_entry, run_metrics)
-                db_entry.updated_at = datetime.now(timezone.utc)
-                conversation.updated_at = datetime.now(timezone.utc)
-                session.add(db_entry)
-                session.add(conversation)
-                session.commit()
-                print(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).", flush=True)
-                # Après le commit du succès, dans sa propre Session et au mieux : purger une ressource
-                # optionnelle ne doit jamais faire échouer (ni être validé par) le chemin d'une exécution réussie.
-                await asyncio.to_thread(_delete_checkpoints_for, db_entry.id)
-                _cleanup_persisted_agents(db_entry.id)
+                    delivered_pr = await _verify_delivery(
+                        data, work_branch, normalized_base_branch, state.sha_before, raw_result)
+                raw_result = _with_pull_request_line(raw_result, delivered_pr)
+                await _persist_success(session, db_entry, conversation, raw_result, state)
             except Exception as e:
                 _log_memory(f"execution_id={db_entry.id}, exception attrapée")
                 print("--- ERREUR CREWAI EXECUTION DETECTEE ---", flush=True)
                 print(traceback.format_exc(), flush=True)
-
                 info = classify_exception(e)
-
-                # Seconde tentative AUTOMATIQUE (une seule) après un échec transitoire (quota, modèle
-                # indisponible, délai) survenu AVANT l'écriture du code (design, architecture ou diagnostic) :
-                # rien n'a encore été poussé sur GitHub, et les étapes déjà réussies sont reprises (points de
-                # reprise). Un échec plus tard (développement, QA, vérification de livraison) n'est PAS relancé
-                # tout seul : il aurait fallu réécrire sur GitHub et repayer ces étapes — l'utilisateur
-                # relance explicitement. La ligne reste « running » ; l'attente se fait dans l'appelant
-                # (_execute_crew_and_persist), hors sémaphore et hors Session. Les mesures de cette tentative
-                # avortée ne sont pas enregistrées : la tentative suivante écrit les siennes.
-                if auto_retry_allowed and info.retryable and _failed_before_development(e, data.target_workflow):
-                    saved = await asyncio.to_thread(_load_checkpoints_for, db_entry.id)
-                    prefix = resumable_prefix(workflow_step_keys(data.target_workflow), saved)
-                    # Sans le point de reprise de CHAQUE étape déjà réussie (sauvegarde ratée), relancer
-                    # repayerait ces étapes pour rien : échec définitif, l'utilisateur décide.
-                    if len(prefix) >= e.step_index - 1:
-                        print(
-                            f"execution_id={db_entry.id} : échec transitoire ({info.code}), nouvelle tentative "
-                            f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
-                        )
-                        return {key: saved[key] for key in prefix}
-
-                # Message lisible pour une cause reconnue ; sinon le texte d'origine (déjà ce qu'affichait
-                # l'historique avant le typage des erreurs).
-                # Le texte technique d'origine est conservé (tronqué) : sans lui, ni l'utilisateur ni la
-                # base ne diraient POURQUOI (ex: ce que le garde-fou reproche, délai « retry after »).
-                technical = str(e).strip()[:500]
-                reason = f"{info.message} (détail : {technical})" if info.message and technical else (info.message or technical)
-                if isinstance(e, CrewStepError):
-                    detail = f"Échec à l'étape {e.step_index}/{e.total_steps} ({e.agent_role}) : {reason}"
-                else:
-                    detail = reason
-
-                # Écritures GitHub partielles : l'échec peut survenir après qu'une branche, des commits ou
-                # une PR ont DÉJÀ été créés. On le constate via l'API (jamais d'après le texte d'un agent)
-                # et on l'ajoute au message, pour que l'utilisateur sache quoi reprendre ou nettoyer.
-                if should_verify_github_delivery and data.repo_owner and data.repo_name and work_branch:
-                    detail += "\n\n" + await _partial_delivery_block(
-                        data.repo_owner, data.repo_name, work_branch, normalized_base_branch or "main",
-                        repo_branch_sha_before,
-                    )
-
-                # Couvre le cas (rare) où l'échec survient APRÈS un kickoff_async par ailleurs réussi
-                # (ex: _format_crew_result/_generate_summary, appelés dans crewquestion.py hors du
-                # try/except qui entoure kickoff_async) : run_dynamic_crew n'a alors PAS pu faire son
-                # propre nettoyage via on_step_change(None) (voir son except, qui ne couvre que
-                # kickoff_async), laissant current_step sur la dernière étape connue malgré status
-                # devenant "failed" ici.
-                _safe_refresh(session, db_entry, "échec")
-                db_entry.current_step = None
-
-                db_entry.status = "failed"
-                db_entry.result = detail
-                db_entry.error_code = info.code
-                db_entry.error_retryable = info.retryable
-                if 'run_metrics' in locals():
-                    db_entry.api_calls_count = run_metrics.api_calls_count
-                    db_entry.rate_limit_hits = run_metrics.rate_limit_hits
-                    db_entry.total_wait_time_seconds = run_metrics.total_wait_time
-                    _persist_agent_runs(session, db_entry, run_metrics)
-                db_entry.updated_at = datetime.now(timezone.utc)
-                conversation.updated_at = datetime.now(timezone.utc)
-                session.add(db_entry)
-                session.add(conversation)
-                session.commit()
-                # Pas de HTTPException ici : cette fonction tourne en tâche de fond, sans requête HTTP
-                # à qui répondre (execute_workflow a déjà répondu "running" avant même que cette tâche
-                # ne démarre). L'échec est entièrement porté par db_entry.status="failed" ci-dessus,
-                # que le sondage de progression côté frontend (useConversation.ts) ira lire.
-                _cleanup_persisted_agents(db_entry.id)
+                retry_outputs = await _retry_outputs_if_transient(e, info, db_entry.id, data, auto_retry_allowed)
+                if retry_outputs is not None:
+                    return retry_outputs
+                await _persist_failure(
+                    session, db_entry, conversation, e, info, data, work_branch, normalized_base_branch,
+                    should_verify_github_delivery, state,
+                )
+        return None
     except Exception as e:
-        # Ce except EXTERNE ne couvre que l'ouverture de la Session elle-même et les deux
-        # session.get() qui suivent (ex : pool de connexions épuisé, coupure réseau vers la DB
-        # au moment précis où cette tâche de fond démarre) : tout le reste (exécution du crew,
-        # échecs applicatifs) est déjà couvert par le except interne ci-dessus, qui persiste
-        # lui-même l'échec avec la Session déjà ouverte. Sans ce filet supplémentaire, une
-        # telle erreur laisserait db_entry bloqué sur "running" pour toujours (la même limite
-        # déjà documentée dans execute_workflow plus bas, ici atteinte sans même un crash
-        # serveur) — best-effort seulement : si la DB est elle-même injoignable, cette tentative
-        # de marquage "failed" échouera aussi, et rien ne peut alors être fait de mieux depuis
-        # ce process.
-        print(
-            f"AVERTISSEMENT : échec du démarrage de la tâche de fond pour db_entry={db_entry_id} : {e}",
-            flush=True,
-        )
-        try:
-            with Session(engine) as session:
-                db_entry = session.get(ExecutionHistory, db_entry_id)
-                if db_entry is not None and db_entry.status == "running":
-                    db_entry.status = "failed"
-                    db_entry.result = f"Erreur interne au démarrage de l'exécution en tâche de fond : {e}"
-                    db_entry.error_code = ErrorCode.INTERNAL_ERROR
-                    db_entry.error_retryable = False
-                    db_entry.current_step = None
-                    db_entry.updated_at = datetime.now(timezone.utc)
-                    session.add(db_entry)
-                    session.commit()
-        except Exception:
-            pass
-        finally:
-            # Nettoyer le tracker d'agents même en cas d'erreur sévère
-            _cleanup_persisted_agents(db_entry_id)
+        _mark_startup_failure(db_entry_id, e)
+        return None
+
 
 # 4. ENDPOINTS API
 @app.get("/")

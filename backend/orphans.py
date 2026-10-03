@@ -8,7 +8,7 @@ chaque nouveau message, et suppression refusée (409 aussi). Elle est désormais
 from datetime import datetime, timedelta, timezone
 from typing import Collection, List, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from database import ExecutionHistory
 from errors import ErrorCode
@@ -56,7 +56,7 @@ def sweep_stale_executions(
     # dépend du fuseau de session Postgres et pourrait masquer de vraies orphelines.
     statement = select(ExecutionHistory.id, ExecutionHistory.updated_at).where(ExecutionHistory.status == "running")
     if ids is not None:
-        statement = statement.where(ExecutionHistory.id.in_(list(ids)))
+        statement = statement.where(col(ExecutionHistory.id).in_(list(ids)))
     if conversation_id is not None:
         statement = statement.where(ExecutionHistory.conversation_id == conversation_id)
     if user_id is not None:
@@ -69,7 +69,7 @@ def sweep_stale_executions(
     swept: List[int] = []
     if not stale_ids:
         return swept
-    for entry in session.exec(select(ExecutionHistory).where(ExecutionHistory.id.in_(stale_ids))).all():
+    for entry in session.exec(select(ExecutionHistory).where(col(ExecutionHistory.id).in_(stale_ids))).all():
         # Garde le texte déjà produit (sections des agents terminés) : utile pour comprendre où ça
         # s'est arrêté ; le message d'interruption est ajouté à la suite.
         previous = (entry.result or "").strip()
@@ -80,7 +80,8 @@ def sweep_stale_executions(
         entry.error_retryable = True
         entry.updated_at = now
         session.add(entry)
-        swept.append(entry.id)
+        if entry.id is not None:
+            swept.append(entry.id)
     if swept:
         session.commit()
     return swept

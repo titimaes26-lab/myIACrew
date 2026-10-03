@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.11 — Mise à jour le 2026-10-03
+> Version : 1.12 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants · 1.12 (2026-10-04) qualité du code : CI, lint, types, tests frontend, exécution découpée en étapes.
 
 ---
 
@@ -272,6 +272,16 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : mise en page simple, pas de layout mobile dédié.
 - **Accessibilité** : non ciblée spécifiquement (pas d'audit WCAG).
+
+---
+
+### 6.1 Qualité du code et intégration continue
+
+- **CI** (`.github/workflows/ci.yml`, sur `main`, `test` et chaque pull request) : backend (`ruff check`, `mypy`, `pytest`) et frontend (`eslint`, `tsc -b`, `vitest`, build). Dépendances de développement : `backend/requirements-dev.txt`. En local, `pre-commit` (`.pre-commit-config.yaml`) lance ruff et eslint + tsc avant chaque commit.
+- **Lint backend** (`backend/ruff.toml`) : erreurs réelles seulement (imports et variables inutilisés, noms indéfinis, erreurs de syntaxe, arguments mutables par défaut) ; pas de règles de style, qui réécriraient l'historique sans corriger de bug.
+- **Types backend** (`backend/mypy.ini`) : vérifiés sur les modules récents et purs (`errors`, `validation`, `orphans`, `delivery`, `qa_report`, `agent_metrics`) ; les gros modules historiques y entreront par étapes.
+- **Tests frontend** (Vitest + Testing Library, `frontend/vitest.config.ts`, fichiers `*.test.ts(x)` à côté du code) : fonctions pures (échecs, tons, formats, parseurs), hooks (`useHistorySelection`, `useConnectionStatus`) et composants (`HistoryPanel` : sélection multiple, lot partiel, erreurs ; `FailureBlock`, `StepIndicator`).
+- **Exécution d'une demande** (`_run_crew_and_persist`, `backend/main.py`) : une suite d'étapes nommées — `_capture_branch_sha`, `_crew_inputs` / `_repo_instructions`, `_run_crew`, `_verify_delivery`, `_persist_success`, `_persist_failure` (`_failure_detail`), `_retry_outputs_if_transient`, `_mark_startup_failure` — au lieu d'une fonction unique de plus de 400 lignes. L'état d'une tentative (SHA de référence, métriques) vit dans `_RunState`, lu par le chemin d'échec même si le crew a planté en route.
 
 ---
 

@@ -99,8 +99,8 @@ def _matches(markers, text: str) -> bool:
     return any(re.search(rf"\b{re.escape(marker)}\b", text) for marker in markers)
 
 
-def _exception_chain(exc: BaseException):
-    seen = set()
+def _exception_chain(exc: Optional[BaseException]):
+    seen: set[int] = set()
     while exc is not None and id(exc) not in seen and len(seen) < 8:
         seen.add(id(exc))
         yield exc
