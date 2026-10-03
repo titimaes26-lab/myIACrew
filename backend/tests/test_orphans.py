@@ -110,7 +110,7 @@ def test_block_for_a_branch_with_new_commits_and_a_pr():
     )
     assert "3 commit(s) d'avance sur `main`" in block and "nouveaux commits de cette tentative" in block
     assert "Pull Request ouverte : https://github.com/o/r/pull/7" in block
-    assert "« Réessayer » continue sur cette même branche" in block and "supprimez la branche `crewai/x`" in block
+    assert "« Relancer » continue sur cette même branche" in block and "supprimez la branche `crewai/x`" in block
 
 
 def test_block_when_nothing_was_pushed_or_github_is_unreachable():

@@ -22,10 +22,14 @@ export function failureCause(code: string | null | undefined): FailureCause {
   return (code && CAUSES[code]) || UNKNOWN_CAUSE;
 }
 
-// « Panne temporaire » = le serveur dit qu'un nouvel essai tel quel a une chance de réussir (retryable) ;
-// tout le reste est un vrai échec, présenté en rouge.
-export function isTransientFailure(retryable: boolean | null | undefined): boolean {
-  return retryable === true;
+const TRANSIENT_CODES = new Set(['QUOTA_EXHAUSTED', 'LLM_UNAVAILABLE', 'LLM_TIMEOUT', 'GITHUB_UNAVAILABLE', 'INTERRUPTED']);
+
+// « Panne temporaire » = un nouvel essai tel quel a une chance de réussir ; tout le reste est un vrai échec
+// (rouge). `retryable` (dit par le serveur) fait foi ; à défaut (ligne ancienne, valeur absente), le code de
+// la cause décide — une seule source, que le conseil affiché partage : couleur et texte ne divergent jamais.
+export function isTransientFailure(retryable: boolean | null | undefined, code?: string | null): boolean {
+  if (retryable != null) return retryable;
+  return code != null && TRANSIENT_CODES.has(code);
 }
 
 const GITHUB_MARKER = '--- Travail déjà présent sur GitHub ---';
@@ -39,11 +43,15 @@ export interface SplitFailureMessage {
 export function splitGithubWork(message: string): SplitFailureMessage {
   const index = message.indexOf(GITHUB_MARKER);
   if (index === -1) return { main: message, githubLines: null };
-  const lines = message
-    .slice(index + GITHUB_MARKER.length)
-    .split('\n')
-    .map((line) => line.replace(/^\s*-\s*/, '').trim())
-    .filter(Boolean);
+  // Une ligne commence par « - » ; une ligne qui n'en a pas prolonge la précédente (message d'erreur sur
+  // plusieurs lignes) au lieu de devenir une puce à part.
+  const lines: string[] = [];
+  for (const raw of message.slice(index + GITHUB_MARKER.length).split('\n')) {
+    const text = raw.trim();
+    if (!text) continue;
+    if (/^-\s+/.test(text) || lines.length === 0) lines.push(text.replace(/^-\s+/, ''));
+    else lines[lines.length - 1] += ` ${text}`;
+  }
   return { main: message.slice(0, index).trim(), githubLines: lines };
 }
 
@@ -58,8 +66,14 @@ export function parseInline(line: string): InlinePart[] {
   for (const match of line.matchAll(pattern)) {
     const start = match.index ?? 0;
     if (start > last) parts.push({ kind: 'text', value: line.slice(last, start) });
-    if (match[1] !== undefined) parts.push({ kind: 'code', value: match[1] });
-    else parts.push({ kind: 'link', value: match[2] });
+    if (match[1] !== undefined) {
+      parts.push({ kind: 'code', value: match[1] });
+    } else {
+      // La ponctuation de fin de phrase appartient au texte, pas à l'adresse (« …/pull/12. »).
+      const url = match[2].replace(/[.,;:!?]+$/, '');
+      parts.push({ kind: 'link', value: url });
+      if (url.length < match[2].length) parts.push({ kind: 'text', value: match[2].slice(url.length) });
+    }
     last = start + match[0].length;
   }
   if (last < line.length) parts.push({ kind: 'text', value: line.slice(last) });

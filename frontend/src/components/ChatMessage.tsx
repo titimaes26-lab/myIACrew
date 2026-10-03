@@ -5,7 +5,7 @@ import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult'
 import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { isTransientFailure } from '../utils/failureView';
 import FailureBlock from './FailureBlock';
-import { WORKFLOW_STEPS } from '../constants/workflowSteps';
+import { stepShortLabelForKey } from '../constants/workflowSteps';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
 import AgentSummary from './AgentSummary';
@@ -63,8 +63,9 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
-  const resumedLabel = turn.resumedSteps?.length
-    ? turn.resumedSteps.map((key) => WORKFLOW_STEPS.DESIGN_AND_DEV.find((step) => step.key === key)?.label.split(' (')[0] ?? key).join(', ')
+  // Pendant l'exécution, la frise (StepIndicator) montre déjà les étapes reprises : la note ne sert qu'après.
+  const resumedLabel = turn.resumedSteps?.length && turn.status !== 'running'
+    ? turn.resumedSteps.map(stepShortLabelForKey).join(', ')
     : null;
   // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
   // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
@@ -149,11 +150,11 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           </p>
         )}
 
-        {turn.result && turn.status === 'failed' && <FailureBlock turn={turn} detail={failure} />}
+        {turn.status === 'failed' && <FailureBlock turn={turn} detail={failure} />}
 
         {turn.status === 'failed' && onRetry && (
           <Button
-            variant={isTransientFailure(turn.errorRetryable) ? 'primary' : 'danger'}
+            variant={isTransientFailure(turn.errorRetryable, turn.errorCode) ? 'primary' : 'danger'}
             size="sm"
             className="retry-btn"
             onClick={() => onRetry(turn)}

@@ -3,7 +3,7 @@
 
 Sans ce balayage, une telle ligne bloquait la conversation pour toujours : 409 « déjà en cours » à
 chaque nouveau message, et suppression refusée (409 aussi). Elle est désormais marquée `failed` /
-`INTERRUPTED`, ce qui libère la conversation et propose « Réessayer ».
+`INTERRUPTED`, ce qui libère la conversation et propose « Relancer ».
 """
 from datetime import datetime, timedelta, timezone
 from typing import Collection, List, Optional

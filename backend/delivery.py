@@ -239,7 +239,7 @@ def render_partial_delivery_block(
     else:
         lines.append("- Pull Request : non vérifiée (GitHub n'a pas répondu) — vérifiez-la avant de réessayer")
     lines.append(
-        "- Reprise : « Réessayer » continue sur cette même branche. "
+        "- Reprise : « Relancer » continue sur cette même branche. "
         f"Pour abandonner, fermez la PR éventuelle et supprimez la branche `{branch}`."
     )
     return "\n".join(lines)

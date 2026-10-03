@@ -25,3 +25,12 @@ export const WORKFLOW_STEPS: Record<string, WorkflowStep[]> = {
 };
 
 export const DEFAULT_STEPS = WORKFLOW_STEPS.DESIGN_AND_DEV;
+
+// « Conception (specs produit / jeu) » -> « Conception » : le détail reste dans l'infobulle.
+export const stepShortLabel = (label: string): string => label.split(' (')[0];
+
+// Libellé court d'une étape par sa clé, quel que soit le workflow (les libellés sont communs).
+export function stepShortLabelForKey(key: string): string {
+  const step = WORKFLOW_STEPS.DESIGN_AND_DEV.find((candidate) => candidate.key === key);
+  return step ? stepShortLabel(step.label) : key;
+}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { WORKFLOW_STEPS, DEFAULT_STEPS } from '../constants/workflowSteps';
+import { WORKFLOW_STEPS, DEFAULT_STEPS, stepShortLabel } from '../constants/workflowSteps';
 import { formatSeconds } from '../utils/formatDuration';
 import { toServerDate } from '../utils/serverDate';
 
@@ -24,9 +24,6 @@ interface StepIndicatorProps {
   // Étapes réutilisées d'une exécution précédente (reprise) : affichées comme terminées, à part.
   reusedSteps?: string[];
 }
-
-// « Conception (specs produit / jeu) » -> « Conception » : le détail reste dans l'infobulle (title).
-const shortLabel = (label: string) => label.split(' (')[0];
 
 export default function StepIndicator({ workflow, since, currentStepKey, reusedSteps }: StepIndicatorProps) {
   const steps = (workflow && WORKFLOW_STEPS[workflow]) || DEFAULT_STEPS;
@@ -81,9 +78,12 @@ export default function StepIndicator({ workflow, since, currentStepKey, reusedS
   // afficher 0 ici est donc FIDÈLE à ce qui va se passer, pas une régression à masquer.
   // isQueued : -1 (aucune étape "courante"), pour que toutes s'affichent comme pas encore
   // commencées (⏳) — fidèle elle aussi, puisque le crew n'a justement pas encore été instancié.
-  const activeIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : isQueued ? -1 : estimatedIndex;
-
   const reused = new Set(reusedSteps ?? []);
+  // Les étapes reprises d'une exécution précédente sont déjà terminées : l'étape « courante » ne peut pas
+  // être l'une d'elles (sinon aucune pastille ne serait en cours pendant l'estimation par temps).
+  const firstOpenIndex = Math.max(0, steps.findIndex((step) => !reused.has(step.key)));
+  const baseIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : isQueued ? -1 : estimatedIndex;
+  const activeIndex = baseIndex < 0 ? baseIndex : Math.max(baseIndex, firstOpenIndex);
 
   return (
     <div className="steps">
@@ -109,7 +109,7 @@ export default function StepIndicator({ workflow, since, currentStepKey, reusedS
                 <span className="stepper__node" aria-hidden="true">
                   {isReused ? '↻' : done ? '✓' : current ? step.icon : i + 1}
                 </span>
-                <span className="stepper__label">{shortLabel(step.label)}</span>
+                <span className="stepper__label">{stepShortLabel(step.label)}</span>
                 <span className="sr-only">
                   {isReused ? ' (réutilisée de la tentative précédente)' : done ? ' (terminée)' : current ? ' (en cours)' : ' (à venir)'}
                 </span>
@@ -127,7 +127,7 @@ export default function StepIndicator({ workflow, since, currentStepKey, reusedS
             // pas encore fini d'être enregistré côté serveur — pas seulement à une pause avant
             // une nouvelle tentative sur limite de quota (voir crewquestion.py, qui efface
             // current_step sur TOUTE exception, retentée ou non).
-            ? "En pause — nouvelle tentative éventuelle en cours. Si l'exécution reprend, ce sera depuis la toute première étape."
+            ? `En pause — nouvelle tentative éventuelle en cours. Si l'exécution reprend, ce sera depuis ${reused.size > 0 ? 'la première étape non reprise' : 'la toute première étape'}.`
             : isQueued
               ? "En file d'attente — d'autres exécutions occupent déjà ce service. Celle-ci démarrera automatiquement dès qu'un emplacement se libère."
               : `En cours depuis ${formatSeconds(elapsed)} — progression estimée, l'étape réellement en cours côté serveur peut différer.`}

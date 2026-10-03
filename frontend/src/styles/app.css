@@ -138,6 +138,7 @@ h3 { color: var(--fg); }
 .stepper__item--reused + .stepper__item::before,
 .stepper__item--done + .stepper__item--current::before { background: var(--success-text); }
 .stepper__node {
+  flex: none;
   position: relative;
   z-index: 1;
   display: grid;
@@ -151,8 +152,8 @@ h3 { color: var(--fg); }
   background: var(--surface);
   border: 2px solid var(--line-strong);
 }
-.stepper__label { line-height: 1.25; overflow-wrap: anywhere; }
-.stepper__item--done .stepper__node { color: #fff; background: var(--success-text); border-color: var(--success-text); }
+.stepper__label { line-height: 1.25; overflow-wrap: break-word; hyphens: auto; }
+.stepper__item--done .stepper__node { color: var(--on-success); background: var(--success-text); border-color: var(--success-text); }
 .stepper__item--reused .stepper__node { color: var(--success-text); background: var(--surface); border-color: var(--success-text); border-style: dashed; }
 .stepper__item--done, .stepper__item--reused { color: var(--success-text); }
 .stepper__item--current { color: var(--primary-text); font-weight: 600; }

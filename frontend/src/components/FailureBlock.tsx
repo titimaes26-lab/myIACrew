@@ -9,8 +9,8 @@ function GithubWorkCard({ lines }: { lines: string[] }) {
     <div className="github-work">
       <p className="github-work__title">🐙 Travail déjà présent sur GitHub</p>
       <ul>
-        {lines.map((line) => (
-          <li key={line}>
+        {lines.map((line, index) => (
+          <li key={index}>
             {parseInline(line).map((part, i) => {
               if (part.kind === 'code') return <code key={i}>{part.value}</code>;
               if (part.kind === 'link') {
@@ -33,7 +33,7 @@ interface FailureBlockProps {
 // Un échec d'exécution : panne temporaire (ambre : réessayer suffit sans doute) ou vrai échec (rouge), avec la
 // cause en titre, l'étape touchée et, quand le message le contient, la carte de ce qui est déjà sur GitHub.
 export default function FailureBlock({ turn, detail }: FailureBlockProps) {
-  const transient = isTransientFailure(turn.errorRetryable);
+  const transient = isTransientFailure(turn.errorRetryable, turn.errorCode);
   const cause = failureCause(turn.errorCode);
   const hint = failureHint(turn.errorCode);
   const { main, githubLines } = splitGithubWork(detail ? detail.message : (turn.result ?? ''));
