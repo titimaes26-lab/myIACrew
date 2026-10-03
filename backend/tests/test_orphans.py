@@ -183,3 +183,68 @@ def test_github_unreachable_during_failure_report_is_stated_not_hidden(monkeypat
     monkeypatch.setattr(main, "describe_partial_delivery", unavailable)
     block = asyncio.run(main._partial_delivery_block("o", "r", "b", "main", None))
     assert "Impossible de vérifier GitHub (api down)" in block
+
+
+def test_pr_lookup_failure_is_reported_as_unverified_not_as_absent(monkeypatch):
+    import github_tools
+
+    class Repo:
+        def compare(self, base, head):
+            return type("C", (), {"ahead_by": 1})()
+
+        def get_pulls(self, **kwargs):
+            raise RuntimeError("rate limit")
+
+    monkeypatch.setattr(github_tools, "get_branch_head_sha", lambda *a: "sha")
+    monkeypatch.setattr(github_tools, "_get_repo", lambda *a: Repo())
+    partial = describe_partial_delivery("o", "r", "b", "main", "sha")
+    assert partial.pr_checked is False
+    block = render_partial_delivery_block("o", "r", "b", "main", partial)
+    assert "non vérifiée" in block and "aucune ouverte" not in block
+
+
+def test_timeout_while_checking_github_is_readable(monkeypatch):
+    def slow(*args):
+        raise asyncio.TimeoutError()
+    monkeypatch.setattr(main, "describe_partial_delivery", slow)
+    block = asyncio.run(main._partial_delivery_block("o", "r", "b", "main", None))
+    assert "délai dépassé" in block and "TimeoutError" not in block
+
+
+def test_sweep_by_ids_leaves_other_stale_rows_alone(session):
+    wanted, other = _running(session), _running(session)
+    assert sweep_stale_executions(session, ids=[wanted.id]) == [wanted.id]
+    session.refresh(other)
+    assert other.status == "running"
+
+
+def test_tracked_task_registers_active_id_and_releases_everything_when_done():
+    async def scenario():
+        async def work():
+            await asyncio.sleep(0.01)
+        task = asyncio.create_task(work())
+        main._track_execution_task(task, 4242)
+        assert 4242 in main._active_execution_ids and task in main._background_tasks
+        await task
+        await asyncio.sleep(0)
+        return 4242 in main._active_execution_ids, task in main._background_tasks
+    assert asyncio.run(scenario()) == (False, False)
+
+
+def test_heartbeat_touches_only_running_rows(monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(main, "engine", engine)
+    with Session(engine) as db:
+        alive = _running(db)
+        done = _running(db)
+        done.status = "success"
+        db.add(done)
+        db.commit()
+        ids = (alive.id, done.id)
+        before = alive.updated_at.replace(tzinfo=None)
+    main._touch_execution(ids[0])
+    main._touch_execution(ids[1])
+    with Session(engine) as db:
+        assert db.get(ExecutionHistory, ids[0]).updated_at.replace(tzinfo=None) > before + timedelta(seconds=60)
+        assert db.get(ExecutionHistory, ids[1]).updated_at.replace(tzinfo=None) <= before + timedelta(seconds=1)

@@ -23,7 +23,7 @@ from agent_metrics import (
     agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize,
 )
 from auth import get_current_user, close_http_client
-from orphans import sweep_stale_executions
+from orphans import HEARTBEAT_SECONDS, sweep_stale_executions
 from errors import (
     AppError, ErrorCode, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
@@ -504,8 +504,41 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
         )
         return render_partial_delivery_block(owner, repo, branch, base_branch, partial)
     except Exception as e:
-        reason = str(e) or type(e).__name__
+        reason = "délai dépassé" if isinstance(e, (asyncio.TimeoutError, TimeoutError)) else (str(e) or type(e).__name__)
         return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
+
+def _touch_execution(execution_id: int) -> None:
+    """Signe de vie (updated_at) d'une exécution en cours. Best-effort."""
+    try:
+        with Session(engine) as heartbeat_session:
+            entry = heartbeat_session.get(ExecutionHistory, execution_id)
+            if entry is not None and entry.status == "running":
+                entry.updated_at = datetime.now(timezone.utc)
+                heartbeat_session.add(entry)
+                heartbeat_session.commit()
+    except Exception as e:
+        print(f"AVERTISSEMENT : battement de l'exécution {execution_id} impossible : {type(e).__name__}: {e}", flush=True)
+
+async def _heartbeat(execution_id: int) -> None:
+    """Écrit un signe de vie toutes les HEARTBEAT_SECONDS tant que l'exécution tourne, même pendant
+    une longue étape ou une pause de quota (sinon une instance voisine la croirait morte)."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_SECONDS)
+        await asyncio.to_thread(_touch_execution, execution_id)
+
+def _track_execution_task(task: asyncio.Task, execution_id: int) -> None:
+    """Un seul endroit pour tout le suivi d'une tâche de fond : référence forte (anti-GC, voir
+    _background_tasks), identifiant actif (jamais balayé comme orphelin) et battement de cœur."""
+    heartbeat = asyncio.create_task(_heartbeat(execution_id))
+    _background_tasks.add(task)
+    _active_execution_ids.add(execution_id)
+
+    def _done(_task: asyncio.Task) -> None:
+        heartbeat.cancel()
+        _background_tasks.discard(_task)
+        _active_execution_ids.discard(execution_id)
+
+    task.add_done_callback(_done)
 
 def _persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics) -> None:
     """Une ligne AgentRun par agent mesuré (voir agent_metrics). Best-effort : une mesure qui ne
@@ -650,6 +683,9 @@ async def _run_crew_and_persist(
     fois SA réponse envoyée, bien avant que cette tâche de fond n'ait eu la moindre chance de
     s'exécuter.
     """
+    # Initialisé avant tout (lu par le rapport d'échec ci-dessous) : None tant que le repère GitHub
+    # d'avant exécution n'a pas été capturé.
+    repo_branch_sha_before = None
     try:
         with Session(engine) as session:
             db_entry = session.get(ExecutionHistory, db_entry_id)
@@ -942,7 +978,7 @@ async def _run_crew_and_persist(
                 if should_verify_github_delivery and data.repo_owner and data.repo_name and work_branch:
                     detail += "\n\n" + await _partial_delivery_block(
                         data.repo_owner, data.repo_name, work_branch, normalized_base_branch or "main",
-                        locals().get("repo_branch_sha_before"),
+                        repo_branch_sha_before,
                     )
 
                 # Couvre le cas (rare) où l'échec survient APRÈS un kickoff_async par ailleurs réussi
@@ -1193,10 +1229,7 @@ async def execute_workflow(
         db_entry.id, conversation.id, data, has_repo_target, should_verify_github_delivery,
         work_branch, normalized_base_branch, final_prompt, conversation_context,
     ))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-    _active_execution_ids.add(db_entry.id)
-    task.add_done_callback(lambda _t, _id=db_entry.id: _active_execution_ids.discard(_id))
+    _track_execution_task(task, db_entry.id)
 
     return {"status": "running", "id": db_entry.id, "conversation_id": conversation.id}
 
@@ -1489,7 +1522,7 @@ async def delete_history_entry(
     """Supprime une exécution de l'historique de l'utilisateur courant."""
     print(f"DELETE /api/history/{execution_id} appelé par {user.get('id')}", flush=True)
     # Une exécution orpheline (plus de signe de vie) devient « failed » donc supprimable.
-    sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"))
+    sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"), ids=[execution_id])
     session.expire_all()
     entry = session.get(ExecutionHistory, execution_id)
     if not entry:
@@ -1499,18 +1532,16 @@ async def delete_history_entry(
         print(f"  → Accès refusé : entry.user_id={entry.user_id}, user.id={user.get('id')}", flush=True)
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
 
-    # Bloqué sur status="running" : rien ici ne permet de distinguer une exécution VRAIMENT
-    # bloquée pour toujours (ex: crash/redémarrage du serveur en plein milieu — voir le
-    # commentaire sur le contrôle de concurrence de /api/execute plus haut, qui documente cette
-    # limite connue) d'une exécution simplement lente mais toujours bien vivante. Autoriser la
+    # Bloqué sur status="running" : une exécution orpheline (plus de signe de vie, voir orphans.py)
+    # vient d'être balayée ci-dessus et n'est donc plus "running" ; ce qui reste "running" est une
+    # exécution vivante (ou récemment vivante). Autoriser la
     # suppression dans ce second cas romprait le contrôle de concurrence d'/api/execute (qui ne
     # regarde plus que les lignes encore en base pour décider si la conversation est libre) sans
     # rien faire pour arrêter le crew qui tourne encore réellement en tâche de fond : une nouvelle
     # exécution démarrerait alors EN PARALLÈLE de celle "supprimée" sur la même conversation
     # (potentiellement la même work_branch), et le résultat de cette dernière, une fois terminé,
     # ne pourrait plus être persisté (sa ligne n'existe plus) — silencieusement perdu, PR GitHub
-    # potentiellement déjà ouverte comprise. Un cas vraiment bloqué reste, lui, un correctif
-    # manuel en base (limite acceptée, voir le commentaire cité plus haut).
+    # potentiellement déjà ouverte comprise.
     if entry.status == "running":
         print("  → Suppression refusée : status=running", flush=True)
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
@@ -1533,12 +1564,11 @@ async def bulk_delete_history(
     if len(ids) > BULK_DELETE_MAX:
         raise HTTPException(status_code=422, detail=f"{BULK_DELETE_MAX} exécutions au plus par suppression.")
     entries = {}
-    if ids:
-        sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"))
-        session.expire_all()
     # Hors plage d'un entier SQL : forcément inconnu (et fatal pour la requête IN sous Postgres/SQLite).
     valid_ids = [i for i in ids if 0 < i <= _SQL_INT_MAX]
     if valid_ids:
+        sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"), ids=valid_ids)
+        session.expire_all()
         rows = session.exec(
             select(ExecutionHistory).where(
                 ExecutionHistory.id.in_(valid_ids), ExecutionHistory.user_id == user.get("id")

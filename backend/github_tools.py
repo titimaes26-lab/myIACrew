@@ -919,6 +919,9 @@ class PartialDelivery(NamedTuple):
     ahead_by: int | None
     pr_url: str | None
     pr_state: str | None  # "open" | "merged" | None
+    # False quand la recherche de PR a elle-même échoué : « aucune PR » serait alors une affirmation
+    # non vérifiée (pr_url=None ne veut rien dire).
+    pr_checked: bool = True
 
 
 def describe_partial_delivery(
@@ -937,6 +940,7 @@ def describe_partial_delivery(
     ahead_by = None
     pr_url = None
     pr_state = None
+    pr_checked = True
     try:
         gh_repo = _get_repo(owner, repo)
         try:
@@ -949,5 +953,5 @@ def describe_partial_delivery(
                 pr_state = "merged" if pull.merged_at is not None else "open"
                 break
     except Exception:
-        pass
-    return PartialDelivery(branch, True, new_commits, ahead_by, pr_url, pr_state)
+        pr_checked = False
+    return PartialDelivery(branch, True, new_commits, ahead_by, pr_url, pr_state, pr_checked)

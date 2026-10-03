@@ -13,9 +13,12 @@ from sqlmodel import Session, select
 from database import ExecutionHistory
 from errors import ErrorCode
 
-# Une exécution vivante écrit updated_at à CHAQUE changement d'étape (voir _persist_current_step) :
-# sans aucun signe de vie depuis ce délai, et sans tâche active dans CE process, elle est morte.
-# Marge large : une étape peut durer plusieurs minutes (pauses de quota comprises).
+# Une exécution vivante écrit updated_at toutes les HEARTBEAT_SECONDS (voir main._heartbeat, indépendant
+# des étapes, donc aussi pendant une longue pause de quota) et à chaque changement d'étape : sans aucun
+# signe de vie depuis ce délai, et sans tâche active dans CE process, elle est morte. Le délai vaut
+# plusieurs battements : une instance voisine (déploiement en continu) ne voit jamais une exécution
+# vivante comme morte.
+HEARTBEAT_SECONDS = 60
 ORPHAN_AFTER_SECONDS = 600
 
 INTERRUPTED_MESSAGE = (
@@ -35,17 +38,24 @@ def sweep_stale_executions(
     active_ids: Collection[int] = (),
     conversation_id: Optional[int] = None,
     user_id: Optional[str] = None,
+    ids: Optional[Collection[int]] = None,
     max_age_seconds: int = ORPHAN_AFTER_SECONDS,
     now: Optional[datetime] = None,
 ) -> List[int]:
     """Marque `failed` les exécutions `running` sans signe de vie. Renvoie leurs identifiants.
 
     `active_ids` : exécutions réellement en cours dans CE process (jamais touchées, quel que soit
-    leur âge). `conversation_id` / `user_id` restreignent le balayage (rien n'est balayé hors du
+    leur âge). `conversation_id` / `user_id` / `ids` restreignent le balayage (rien n'est balayé hors du
     périmètre demandé : pas de requête sur toute la table à chaque sondage de progression)."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=max_age_seconds)
-    statement = select(ExecutionHistory).where(ExecutionHistory.status == "running")
+    # Le filtre d'âge est posé dans la requête : seules les lignes réellement périmées sont chargées
+    # (le sondage de progression appelle ceci toutes les quelques secondes).
+    statement = select(ExecutionHistory).where(
+        ExecutionHistory.status == "running", ExecutionHistory.updated_at < cutoff
+    )
+    if ids is not None:
+        statement = statement.where(ExecutionHistory.id.in_(list(ids)))
     if conversation_id is not None:
         statement = statement.where(ExecutionHistory.conversation_id == conversation_id)
     if user_id is not None:
