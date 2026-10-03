@@ -1609,34 +1609,40 @@ class AppDevelopmentCrew():
         # Reprise d'une exécution précédente : les étapes déjà réussies (préfixe, voir resumable_prefix)
         # sont posées comme TERMINÉES, exactement comme si on_task_complete les avait vues passer — leur
         # sortie reste donc le contexte des étapes suivantes sans être recalculée (ni repayée en quota).
-        for key in resumable_prefix(step_keys, resume_outputs or {}):
-            task_obj = tasks_by_key[key]
-            raw = resume_outputs[key]
-            role = (task_obj.agent.role or "Agent").strip()
-            reused = TaskOutput(description=task_obj.description, raw=raw, agent=role)
-            task_obj.output = reused
-            if key == 'diagnostic':
-                # L'état de l'Analyste (fichiers committables, lacunes) est dérivé de sa sortie par son
-                # guardrail : on le rejoue sur la sortie sauvegardée (aucun appel LLM). Au premier refus
-                # le guardrail a déjà fusionné l'état ; le second appel applique la règle « accepter ».
-                try:
-                    accepted, _ = self._diagnostic_guardrail(reused)
-                    if not accepted:
-                        self._diagnostic_guardrail(reused)
-                except Exception as e:
-                    print(f"AVERTISSEMENT : reprise du diagnostic impossible, étape rejouée : {type(e).__name__}: {e}", flush=True)
-                    task_obj.output = None
-                    self._reset_execution_state(inputs)
-                    self._request_type = request_type
-                    self._architecture_task_ref = tasks_by_key.get('architecture')
-                    break
-            completed_keys.append(key)
-            completed_outputs[key] = reused
-            if on_task_output_complete is not None:
-                try:
-                    on_task_output_complete(role, raw, None)
-                except Exception as e:
-                    print(f"AVERTISSEMENT : échec du callback de reprise pour '{role}' : {type(e).__name__}: {e}", flush=True)
+        def _apply_resume() -> None:
+            for key in resumable_prefix(step_keys, resume_outputs or {}):
+                task_obj = tasks_by_key[key]
+                raw = resume_outputs[key]
+                role = (task_obj.agent.role or "Agent").strip()
+                reused = TaskOutput(description=task_obj.description, raw=raw, agent=role)
+                task_obj.output = reused
+                if key == 'diagnostic':
+                    # L'état de l'Analyste (fichiers committables, lacunes) est dérivé de sa sortie par son
+                    # guardrail : on le rejoue sur la sortie sauvegardée (aucun appel LLM). Au premier refus
+                    # le guardrail a déjà fusionné l'état ; le second appel applique la règle « accepter ».
+                    try:
+                        accepted, _ = self._diagnostic_guardrail(reused)
+                        if not accepted:
+                            self._diagnostic_guardrail(reused)
+                    except Exception as e:
+                        print(f"AVERTISSEMENT : reprise du diagnostic impossible, étape rejouée : {type(e).__name__}: {e}", flush=True)
+                        task_obj.output = None
+                        self._reset_execution_state(inputs)
+                        self._request_type = request_type
+                        self._architecture_task_ref = tasks_by_key.get('architecture')
+                        break
+                completed_keys.append(key)
+                completed_outputs[key] = reused
+                if on_task_output_complete is not None:
+                    try:
+                        on_task_output_complete(role, raw, None)
+                    except Exception as e:
+                        print(f"AVERTISSEMENT : échec du callback de reprise pour '{role}' : {type(e).__name__}: {e}", flush=True)
+
+        # Hors boucle asyncio : le rejeu du contrôle de l'Analyste lit le dépôt (appels GitHub bloquants) et
+        # chaque étape reprise écrit en base — comme pour on_step_change, jamais directement sur la boucle.
+        if resume_outputs:
+            await asyncio.to_thread(_apply_resume)
 
         try:
             while True:

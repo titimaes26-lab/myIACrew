@@ -204,7 +204,14 @@ def test_deleting_an_execution_deletes_its_checkpoints(engine):
 
 # --- Seconde tentative automatique ----------------------------------------------------------------
 
-def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV"):
+DESIGNER = "Lead Product / Game Designer"
+
+
+def _step_error(index, role, message="503 UNAVAILABLE: high demand", total=5):
+    return cq.CrewStepError(index, total, role, RuntimeError(message))
+
+
+def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV", resume_outputs=None):
     class FakeCrew:
         run_dynamic_crew = fake_run
 
@@ -220,26 +227,30 @@ def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV"):
         db.refresh(entry)
         ids = (entry.id, conversation.id)
     data = main.WorkflowExecutionInput(user_request="x", target_workflow=request_type)
-    asyncio.run(main._run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "ctx"))
+    asyncio.run(main._execute_crew_and_persist(
+        ids[0], ids[1], data, False, False, "", None, "prompt", "ctx", resume_outputs))
     return ids[0]
 
 
-def test_transient_failure_is_retried_once_automatically_reusing_saved_steps(engine, monkeypatch):
+def _saved(engine, execution_id):
+    with Session(engine) as db:
+        return db.get(ExecutionHistory, execution_id)
+
+
+def test_transient_failure_in_an_early_step_is_retried_once_reusing_saved_steps(engine, monkeypatch):
     calls = []
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         calls.append(dict(resume_outputs or {}))
         if len(calls) == 1:
-            on_task_output_complete("Lead Product / Game Designer", "conception", 1.0)
-            raise RuntimeError("503 UNAVAILABLE: high demand")
+            on_task_output_complete(DESIGNER, "conception", 1.0)
+            raise _step_error(2, "Architecte Logiciel React / TypeScript")
         return type("R", (), {"raw": "résultat final"})()
 
-    execution_id = _launch_with(engine, monkeypatch, fake_run)
-    with Session(engine) as db:
-        saved = db.get(ExecutionHistory, execution_id)
+    saved = _saved(engine, _launch_with(engine, monkeypatch, fake_run))
     assert len(calls) == 2
-    assert calls[0] == {}                                   # 1re tentative : tout depuis le début
-    assert calls[1] == {"design": "conception"}             # 2e : l'étape déjà réussie est reprise, pas rejouée
+    assert calls[0] == {}
+    assert calls[1] == {"design": "conception"}  # l'étape réussie est reprise, pas rejouée
     assert saved.status == "success" and saved.error_code is None
 
 
@@ -248,12 +259,27 @@ def test_second_failure_is_final_and_never_retried_again(engine, monkeypatch):
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         calls.append(1)
-        raise RuntimeError("503 UNAVAILABLE")
+        raise _step_error(1, DESIGNER)
 
-    execution_id = _launch_with(engine, monkeypatch, fake_run)
-    with Session(engine) as db:
-        saved = db.get(ExecutionHistory, execution_id)
+    saved = _saved(engine, _launch_with(engine, monkeypatch, fake_run))
     assert len(calls) == 2 and saved.status == "failed" and saved.error_code == "LLM_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("error", [
+    _step_error(4, "Développeur Fullstack React / TypeScript"),        # développement : écrit sur GitHub
+    _step_error(5, "QA Engineer / Automated Tester"),                  # QA : dépend du développement
+    _step_error(5, "finalisation du résultat"),                        # après toutes les étapes
+    RuntimeError("503 UNAVAILABLE après le crew (vérification GitHub)"),  # hors étape
+])
+def test_failures_from_development_on_are_never_retried_automatically(engine, monkeypatch, error):
+    calls = []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        calls.append(1)
+        raise error
+
+    saved = _saved(engine, _launch_with(engine, monkeypatch, fake_run))
+    assert len(calls) == 1 and saved.status == "failed"
 
 
 def test_non_transient_failure_is_not_retried(engine, monkeypatch):
@@ -261,9 +287,49 @@ def test_non_transient_failure_is_not_retried(engine, monkeypatch):
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         calls.append(1)
-        raise RuntimeError("bug interne inattendu")
+        raise _step_error(1, DESIGNER, "bug interne inattendu")
+
+    saved = _saved(engine, _launch_with(engine, monkeypatch, fake_run))
+    assert len(calls) == 1 and saved.status == "failed" and saved.error_code == "INTERNAL_ERROR"
+
+
+def test_the_wait_before_the_second_attempt_does_not_hold_an_execution_slot(engine, monkeypatch):
+    seen = []
+    original = main._persist_current_step
+
+    def spy(execution_id, step_key):
+        if step_key == "queued":
+            seen.append(main._execution_semaphore._value)
+        return original(execution_id, step_key)
+
+    monkeypatch.setattr(main, "_persist_current_step", spy)
+    calls = []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _step_error(1, DESIGNER)
+        return type("R", (), {"raw": "ok"})()
+
+    _launch_with(engine, monkeypatch, fake_run)
+    assert len(calls) == 2
+    # "queued" est écrit avant la 1re acquisition ET avant la 2de : à ces deux instants, aucun emplacement pris.
+    assert seen == [main._MAX_CONCURRENT_EXECUTIONS, main._MAX_CONCURRENT_EXECUTIONS]
+
+
+def test_checkpoints_are_deleted_when_the_execution_succeeds(engine, monkeypatch):
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        on_task_output_complete(DESIGNER, "conception", 1.0)
+        return type("R", (), {"raw": "ok"})()
 
     execution_id = _launch_with(engine, monkeypatch, fake_run)
     with Session(engine) as db:
-        saved = db.get(ExecutionHistory, execution_id)
-    assert len(calls) == 1 and saved.status == "failed" and saved.error_code == "INTERNAL_ERROR"
+        assert db.get(ExecutionHistory, execution_id).status == "success"
+        assert not db.exec(select(ExecutionCheckpoint)).all()
+
+
+def test_resume_is_refused_when_the_request_text_differs(engine):
+    with Session(engine) as db:
+        conversation, entry = _failed_with_checkpoints(db)
+        assert main._resumable_outputs(db, _data(entry, user_request="une AUTRE demande"), "u1", conversation.id) == {}
+        assert main._resumable_outputs(db, _data(entry, user_request="  x  "), "u1", conversation.id) != {}

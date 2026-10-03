@@ -667,6 +667,20 @@ def _load_checkpoints(session: Session, execution_id: int) -> dict[str, str]:
     ).all()
     return {row.step: row.raw for row in rows}
 
+def _load_checkpoints_for(execution_id: int) -> dict[str, str]:
+    """_load_checkpoints avec sa propre Session (appelable depuis un thread, hors boucle asyncio)."""
+    with Session(engine) as checkpoint_session:
+        return _load_checkpoints(checkpoint_session, execution_id)
+
+def _failed_before_development(exc: BaseException, request_type: str) -> bool:
+    """Vrai si l'échec est celui d'une étape reprenable (design, architecture, diagnostic) : seul cas où
+    une relance automatique ne réécrit rien sur GitHub. Faux pour tout échec hors étape (création du crew,
+    vérification de livraison) ou à partir du développement."""
+    if not isinstance(exc, CrewStepError):
+        return False
+    keys = workflow_step_keys(request_type)
+    return 1 <= exc.step_index <= len(keys) and keys[exc.step_index - 1] in RESUMABLE_STEPS and exc.agent_role != "finalisation du résultat"
+
 def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id, conversation_id: int) -> dict[str, str]:
     """Sorties réutilisables pour `data.resume_from_execution_id`, ou {} si cette exécution n'est pas
     reprenable : elle doit être en échec, de CETTE conversation et de CET utilisateur, avec le même
@@ -677,6 +691,9 @@ def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id
     if (
         previous is None or previous.user_id != user_id or previous.conversation_id != conversation_id
         or previous.status != "failed" or previous.workflow != data.target_workflow
+        # Même demande : réutiliser design/architecture/code d'une AUTRE demande ferait committer du code pour
+        # la mauvaise demande.
+        or (previous.user_request or "").strip() != data.user_request.strip()
         or (previous.repo_owner or None) != data.repo_owner or (previous.repo_name or None) != data.repo_name
         or (previous.base_branch or None) != ((data.base_branch or "main") if data.repo_owner and data.repo_name else None)
     ):
@@ -703,7 +720,6 @@ async def _execute_crew_and_persist(
     final_prompt: str,
     conversation_context: str,
     resume_outputs: Optional[dict[str, str]] = None,
-    auto_retry_allowed: bool = True,
 ) -> None:
     """Acquiert _execution_semaphore (voir sa définition : borne le nombre d'exécutions de crew
     simultanées, TOUTES conversations confondues) avant de lancer _run_crew_and_persist, qui porte
@@ -724,11 +740,22 @@ async def _execute_crew_and_persist(
     """
     await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
     async with _execution_semaphore:
-        await _run_crew_and_persist(
+        retry_outputs = await _run_crew_and_persist(
             db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
             work_branch, normalized_base_branch, final_prompt, conversation_context,
             resume_outputs=resume_outputs,
         )
+    if retry_outputs is not None:
+        # Seconde tentative automatique : l'attente se fait HORS du sémaphore (et hors de toute Session
+        # de base) pour ne bloquer ni un emplacement d'exécution ni une connexion pendant 90 s.
+        await asyncio.sleep(AUTO_RETRY_DELAY_S)
+        await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
+        async with _execution_semaphore:
+            await _run_crew_and_persist(
+                db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
+                work_branch, normalized_base_branch, final_prompt, conversation_context,
+                resume_outputs=retry_outputs, auto_retry_allowed=False,
+            )
 
 async def _run_crew_and_persist(
     db_entry_id: int,
@@ -742,7 +769,7 @@ async def _run_crew_and_persist(
     conversation_context: str,
     resume_outputs: Optional[dict[str, str]] = None,
     auto_retry_allowed: bool = True,
-) -> None:
+) -> Optional[dict[str, str]]:
     """Lance le crew et persiste son issue (succès ou échec) en base — voir execute_workflow, qui
     ne fait plus qu'enregistrer db_entry (statut "running") puis lancer _execute_crew_and_persist
     en tâche de fond (asyncio.create_task) avant de répondre immédiatement au client, au lieu
@@ -1017,6 +1044,12 @@ async def _run_crew_and_persist(
                 _safe_refresh(session, db_entry, "succès")
 
                 db_entry.result = raw_result
+                # Les points de reprise ne servent qu'à une exécution en échec : inutiles (et volumineux,
+                # le code complet de l'Analyste y figure) une fois celle-ci réussie.
+                for checkpoint in session.exec(
+                    select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == db_entry.id)
+                ).all():
+                    session.delete(checkpoint)
                 db_entry.status = "success"
                 # Plus rien à afficher une fois l'exécution terminée avec succès (voir current_step sur
                 # ExecutionHistory) : remis à None plutôt que laissé sur la dernière étape annoncée. Le
@@ -1042,28 +1075,22 @@ async def _run_crew_and_persist(
 
                 info = classify_exception(e)
 
-                # Seconde tentative AUTOMATIQUE (une seule) après un échec transitoire (quota, modèle ou
-                # GitHub indisponible, délai) : la ligne reste « running » pendant l'attente, puis le crew
-                # repart en réutilisant les étapes déjà réussies (points de reprise). Les mesures de cette
-                # tentative avortée ne sont pas enregistrées : la tentative suivante écrit les siennes.
-                if auto_retry_allowed and info.retryable:
+                # Seconde tentative AUTOMATIQUE (une seule) après un échec transitoire (quota, modèle
+                # indisponible, délai) survenu AVANT l'écriture du code (design, architecture ou diagnostic) :
+                # rien n'a encore été poussé sur GitHub, et les étapes déjà réussies sont reprises (points de
+                # reprise). Un échec plus tard (développement, QA, vérification de livraison) n'est PAS relancé
+                # tout seul : il aurait fallu réécrire sur GitHub et repayer ces étapes — l'utilisateur
+                # relance explicitement. La ligne reste « running » ; l'attente se fait dans l'appelant
+                # (_execute_crew_and_persist), hors sémaphore et hors Session. Les mesures de cette tentative
+                # avortée ne sont pas enregistrées : la tentative suivante écrit les siennes.
+                if auto_retry_allowed and info.retryable and _failed_before_development(e, data.target_workflow):
                     print(
                         f"execution_id={db_entry.id} : échec transitoire ({info.code}), nouvelle tentative "
                         f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
                     )
                     await asyncio.to_thread(_persist_current_step, db_entry.id, None)
-                    await asyncio.sleep(AUTO_RETRY_DELAY_S)
-                    with Session(engine) as checkpoint_session:
-                        saved = _load_checkpoints(checkpoint_session, db_entry.id)
-                    retry_outputs = {
-                        key: saved[key] for key in resumable_prefix(workflow_step_keys(data.target_workflow), saved)
-                    }
-                    await _run_crew_and_persist(
-                        db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
-                        work_branch, normalized_base_branch, final_prompt, conversation_context,
-                        resume_outputs=retry_outputs, auto_retry_allowed=False,
-                    )
-                    return
+                    saved = await asyncio.to_thread(_load_checkpoints_for, db_entry.id)
+                    return {key: saved[key] for key in resumable_prefix(workflow_step_keys(data.target_workflow), saved)}
 
                 # Message lisible pour une cause reconnue ; sinon le texte d'origine (déjà ce qu'affichait
                 # l'historique avant le typage des erreurs).
