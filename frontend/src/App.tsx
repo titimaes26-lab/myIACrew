@@ -27,7 +27,7 @@ export default function App() {
   }, []);
 
   if (authLoading) {
-    return <div style={{ textAlign: 'center', marginTop: '80px', fontFamily: 'system-ui, sans-serif' }}>Chargement...</div>;
+    return <div className="centered-message">Chargement...</div>;
   }
 
   if (!session) {

@@ -1,4 +1,5 @@
 import ErrorBanner from './components/ErrorBanner';
+import Button from './components/ui/Button';
 import ConnectionLostBanner from './components/ConnectionLostBanner';
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { useConversation } from './hooks/useConversation';
@@ -73,7 +74,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
     // max-content de son contenu (en-tête, bulle de message longue…), l'empêchant de
     // rétrécir sous cette largeur et forçant la page entière à déborder sur mobile.
     <MetricsApiContext.Provider value={metricsApi}>
-    <div style={{ maxWidth: '850px', width: '100%', minWidth: 0, margin: '40px auto', fontFamily: 'system-ui, sans-serif', padding: '20px', boxSizing: 'border-box', color: '#333' }}>
+    <div className="studio">
       <StudioHeader
         userEmail={userEmail}
         historyOpen={showHistory}
@@ -83,19 +84,13 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
       />
 
       {showMetrics && (
-        <Suspense fallback={<p style={{ color: '#666' }}>Chargement du tableau de bord…</p>}>
+        <Suspense fallback={<p className="muted">Chargement du tableau de bord…</p>}>
           <MetricsPanel apiUrl={API_URL} accessToken={accessToken} />
         </Suspense>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
-        <button
-          type="button"
-          onClick={startNewConversation}
-          style={{ padding: '6px 12px', backgroundColor: '#f3f4f6', color: '#333', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}
-        >
-          ✨ Nouvelle conversation
-        </button>
+      <div className="toolbar-end">
+        <Button onClick={startNewConversation}>✨ Nouvelle conversation</Button>
       </div>
 
       {showHistory && (
@@ -110,7 +105,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
 
       <ChatThread turns={turns} onRetry={handleRetry} retryDisabled={retryDisabled} />
 
-      <div style={{ marginTop: '20px' }}>
+      <div className="stack--section">
         <ChatInput
           // Voir la définition de conversationResetSignal (useConversation.ts) : un remontage
           // via key réinitialise tout l'état local pertinent de ChatInput (repo cible

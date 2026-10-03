@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
+import Button from './components/ui/Button';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -23,37 +24,33 @@ export default function Login() {
   };
 
   return (
-    <div style={{ maxWidth: '380px', margin: '80px auto', fontFamily: 'system-ui, sans-serif', padding: '30px', border: '1px solid #e1e4e8', borderRadius: '8px', color: '#333' }}>
-      <h2 style={{ marginTop: 0, textAlign: 'center' }}>🔐 Studio CrewAI</h2>
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+    <div className="login">
+      <h2>🔐 Studio CrewAI</h2>
+      <form onSubmit={handleSubmit}>
         <input
           type="email"
           required
           placeholder="Email"
+          aria-label="Email"
+          className="field"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={{ padding: '10px', borderRadius: '6px', border: '1px solid #ccc', boxSizing: 'border-box' }}
         />
         <input
           type="password"
           required
           placeholder="Mot de passe"
+          aria-label="Mot de passe"
+          className="field"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          style={{ padding: '10px', borderRadius: '6px', border: '1px solid #ccc', boxSizing: 'border-box' }}
         />
-        {error && <div style={{ color: '#991b1b', fontSize: '14px' }}>❌ {error}</div>}
-        <button
-          type="submit"
-          disabled={loading}
-          style={{ padding: '12px', backgroundColor: '#0070f3', color: '#fff', border: 'none', borderRadius: '6px', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}
-        >
+        {error && <div role="alert" className="login__error">❌ {error}</div>}
+        <Button type="submit" variant="primary" disabled={loading}>
           {loading ? 'Patientez...' : 'Se connecter'}
-        </button>
+        </Button>
       </form>
-      <p style={{ textAlign: 'center', marginTop: '15px', fontSize: '13px', color: '#666' }}>
-        Les comptes sont créés depuis le dashboard Supabase.
-      </p>
+      <p className="login__note">Les comptes sont créés depuis le dashboard Supabase.</p>
     </div>
   );
 }

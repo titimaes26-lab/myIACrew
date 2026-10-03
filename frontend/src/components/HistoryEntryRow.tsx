@@ -1,4 +1,5 @@
 import type { MouseEvent } from 'react';
+import Button from './ui/Button';
 import type { ExecutionHistoryEntry } from '../types';
 import { toServerDate } from '../utils/serverDate';
 
@@ -26,9 +27,7 @@ export default function HistoryEntryRow({ entry, checked, busy, deleting, onTogg
   const handleClick = (event: MouseEvent<HTMLInputElement>) => onToggle(entry.id, event.shiftKey);
 
   return (
-    <li
-      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', padding: '10px', border: '1px solid #e1e4e8', borderRadius: '6px', backgroundColor: checked ? '#eff6ff' : undefined }}
-    >
+    <li className={checked ? 'history-row history-row--selected' : 'history-row'}>
       <input
         type="checkbox"
         checked={checked}
@@ -39,36 +38,26 @@ export default function HistoryEntryRow({ entry, checked, busy, deleting, onTogg
         // Maj+clic ne doit pas aussi sélectionner le texte entre les deux lignes.
         onMouseDown={(event) => { if (event.shiftKey) event.preventDefault(); }}
         onChange={() => undefined}
-        style={{ marginTop: '3px', flexShrink: 0 }}
       />
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: '13px', color: '#666' }}>
+      <div className="grow">
+        <div className="history-row__meta">
           {date} · {entry.workflow} · {STATUS_LABEL[entry.status]}
           {entry.repo_owner && entry.repo_name && ` · ${entry.repo_owner}/${entry.repo_name}`}
         </div>
-        <div style={{ fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div className="history-row__text">
           {entry.user_request}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+      <div className="history-row__actions">
         {entry.conversation_id !== null && (
-          <button
-            type="button"
-            onClick={() => onResume(entry.conversation_id!)}
-            style={{ padding: '6px 10px', backgroundColor: '#e0f2fe', color: '#075985', border: '1px solid #7dd3fc', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}
-          >
+          <Button variant="info" onClick={() => onResume(entry.conversation_id!)}>
             Reprendre
-          </button>
+          </Button>
         )}
         {!running && (
-          <button
-            type="button"
-            onClick={() => onDelete(entry.id)}
-            disabled={busy}
-            style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer', fontSize: '13px' }}
-          >
+          <Button variant="danger" onClick={() => onDelete(entry.id)} disabled={busy}>
             {deleting ? '...' : 'Supprimer'}
-          </button>
+          </Button>
         )}
       </div>
     </li>

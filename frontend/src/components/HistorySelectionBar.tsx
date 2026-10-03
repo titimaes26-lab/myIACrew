@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import Button from './ui/Button';
 
 interface HistorySelectionBarProps {
   selectableCount: number;
@@ -22,8 +23,8 @@ export default function HistorySelectionBar({
   if (selectableCount === 0) return null;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '10px', fontSize: '13px' }}>
-      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+    <div className="selection-bar">
+      <label>
         <input
           ref={checkboxRef}
           type="checkbox"
@@ -35,25 +36,15 @@ export default function HistorySelectionBar({
       </label>
       {selectedCount > 0 && (
         <>
-          <span aria-live="polite" style={{ color: '#666' }}>
+          <span aria-live="polite" className="muted">
             {selectedCount} sélectionnée{selectedCount > 1 ? 's' : ''}
           </span>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={busy}
-            style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer', fontSize: '13px' }}
-          >
+          <Button variant="danger" onClick={onDelete} disabled={busy}>
             {busy ? '...' : `Supprimer la sélection (${selectedCount})`}
-          </button>
-          <button
-            type="button"
-            onClick={onClear}
-            disabled={busy}
-            style={{ padding: '6px 10px', backgroundColor: '#f6f8fa', color: '#24292f', border: '1px solid #d0d7de', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer', fontSize: '13px' }}
-          >
+          </Button>
+          <Button onClick={onClear} disabled={busy}>
             Annuler la sélection
-          </button>
+          </Button>
         </>
       )}
     </div>

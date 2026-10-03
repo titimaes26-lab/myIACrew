@@ -79,28 +79,19 @@ export default function StepIndicator({ workflow, since, currentStepKey }: StepI
   const activeIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : isQueued ? -1 : estimatedIndex;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px 0' }}>
+    <div className="steps">
       {/* role="status"/aria-live seulement ici, PAS sur le conteneur entier : le chrono ci-
           dessous change chaque seconde (TICK_MS), et un lecteur d'écran annoncerait sinon ce
           texte à chaque tick pendant toute la durée d'une exécution (plusieurs minutes). Ce
           bloc-ci ne change, lui, qu'à chaque transition d'étape réelle. */}
-      <div role="status" aria-live="polite" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div role="status" aria-live="polite" className="stack stack--tight">
         {steps.map((step, i) => {
           const done = i < activeIndex;
           const current = i === activeIndex;
           return (
-            <div
-              key={step.key}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                fontSize: '13px',
-                color: done ? '#16a34a' : current ? '#0070f3' : '#999',
-              }}
-            >
+            <div key={step.key} className={`step${done ? ' step--done' : current ? ' step--current' : ''}`}>
               <span aria-hidden="true">{done ? '✅' : current ? step.icon : '⏳'}</span>
-              <span style={{ fontWeight: current ? 600 : 400 }}>
+              <span>
                 {step.label}
                 {current ? '…' : ''}
                 {done ? ' (terminé)' : ''}
@@ -109,7 +100,7 @@ export default function StepIndicator({ workflow, since, currentStepKey }: StepI
           );
         })}
       </div>
-      <p style={{ fontSize: '11px', color: '#999', margin: '4px 0 0 0', fontStyle: 'italic' }}>
+      <p className="steps__caption">
         {hasRealProgress
           ? `En cours depuis ${formatSeconds(elapsed)} — progression suivie en direct.`
           : isPausedForRetry

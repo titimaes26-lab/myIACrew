@@ -106,14 +106,14 @@ export default function ChatThread({ turns, onRetry, retryDisabled }: ChatThread
 
   if (turns.length === 0) {
     return (
-      <p style={{ color: '#666', textAlign: 'center', marginTop: '40px' }}>
+      <p className="empty-hint">
         Décrivez votre besoin ci-dessous pour démarrer la conversation.
       </p>
     );
   }
 
   return (
-    <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column' }}>
+    <div ref={containerRef} className="stack stack--flush">
       {turns.map((turn) => (
         // key={turn.createdAt} (pas turn.id) : voir identityKey plus haut, même raisonnement,
         // même conséquence si turn.id était utilisé ici (démontage/remontage de ce <ChatMessage>,

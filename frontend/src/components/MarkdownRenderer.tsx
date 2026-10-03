@@ -2,6 +2,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light';
+import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark';
+import { useColorScheme } from '../hooks/useColorScheme';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
@@ -19,6 +21,7 @@ SyntaxHighlighter.registerLanguage('yaml', yaml);
 SyntaxHighlighter.registerLanguage('markdown', markdown);
 
 export default function MarkdownRenderer({ content }: { content: string }) {
+  const scheme = useColorScheme();
   return (
     <div className="markdown-body">
       <ReactMarkdown
@@ -28,18 +31,13 @@ export default function MarkdownRenderer({ content }: { content: string }) {
             const match = /language-(\w+)/.exec(className || '');
             if (!match) {
               return (
-                <code
-                  style={{ backgroundColor: '#eef0f2', padding: '2px 5px', borderRadius: '4px', fontSize: '13px' }}
-                  {...props}
-                >
-                  {children}
-                </code>
+                <code {...props}>{children}</code>
               );
             }
             return (
               <SyntaxHighlighter
                 language={match[1]}
-                style={oneLight}
+                style={scheme === 'dark' ? oneDark : oneLight}
                 customStyle={{ borderRadius: '6px', fontSize: '13px', margin: '8px 0', padding: '12px' }}
                 codeTagProps={{ style: { display: 'block', background: 'transparent', padding: 0 } }}
               >

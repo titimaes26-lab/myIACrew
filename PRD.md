@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.9 — Mise à jour le 2026-10-03
+> Version : 1.10 — Mise à jour le 2026-10-03
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface.
 
 ---
 
@@ -250,6 +250,8 @@ L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le t
 | Studio | `Studio.tsx` | session active | Tableau de bord de performance (`MetricsPanel`, ouvert par le bouton « 📊 Performance » de `StudioHeader`), fil de conversation (`ChatThread`, `ChatMessage` qui affiche l'indicateur d'étapes `StepIndicator` et le résumé par agent `AgentSummary`), saisie (`ChatInput`, qui contient le choix du workflow et le formulaire du repo cible `RepoTargetFields`), historique des exécutions (`HistoryPanel` : lignes `HistoryEntryRow`, barre `HistorySelectionBar`, état de sélection `hooks/useHistorySelection.ts`), en-tête (`StudioHeader`). Chaque message terminé peut déplier sa performance par agent (`ExecutionBreakdown`) |
 
 ### 5.2 Navigation
+
+**Système de design** (`frontend/src/styles/`, `components/ui/`) : `tokens.css` définit les jetons sémantiques (surface, ligne, texte, primaire, danger, succès, avertissement, information, rayons, espacements), en clair par défaut et en sombre selon le thème de l'OS (`prefers-color-scheme`) ; aucune couleur d'interface n'est écrite en dur dans les composants. `ui.css` porte l'apparence des composants de base avec leurs états (`:hover`, `:active`, `:disabled`, `:focus-visible`, mouvement réduit) : `Button` (variantes primaire, secondaire, danger, information, discret ; tailles md, sm, pastille), `Card`, `Badge`, `Alert` (rôle `alert` pour une erreur, `status` sinon) et les champs de formulaire. `app.css` contient la mise en page par classes (Studio, fil, historique, connexion). La coloration syntaxique suit le thème (`useColorScheme`). Le tableau de bord conserve ses jetons `--viz-*` propres, déjà validés en clair et en sombre. Seuls restent en style en ligne les styles calculés (hauteurs de la zone de saisie, largeurs de graphiques).
 
 Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'état de session Supabase (`onAuthStateChange`). Dans le Studio, l'historique est un panneau ; reprendre une conversation recharge ses tours.
 

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import Card from './ui/Card';
+import Alert from './ui/Alert';
 import { apiClient } from '../api';
 import type { ExecutionHistoryEntry } from '../types';
 import { useHistorySelection } from '../hooks/useHistorySelection';
@@ -108,10 +110,10 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
   };
 
   return (
-    <div style={{ marginTop: '20px', backgroundColor: '#fff', padding: '15px', borderRadius: '6px', border: '1px solid #e1e4e8' }}>
-      <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>📜 Historique des exécutions</p>
+    <Card className="stack--section">
+      <p className="history-title">📜 Historique des exécutions</p>
 
-      {loading && <p style={{ color: '#666', fontSize: '14px' }}>Chargement...</p>}
+      {loading && <p className="muted">Chargement...</p>}
       {error && (
         <ErrorBanner
           message={error.message}
@@ -120,9 +122,9 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
           onRetry={error.kind === 'load' ? () => { setError(null); setLoading(true); setReloadKey((k) => k + 1); } : undefined}
         />
       )}
-      {notice && <p role="status" style={{ color: '#92400e', fontSize: '14px' }}>ℹ️ {notice}</p>}
+      {notice && <Alert tone="warning">ℹ️ {notice}</Alert>}
       {!loading && !error && entries.length === 0 && (
-        <p style={{ color: '#666', fontSize: '14px' }}>Aucune exécution pour l'instant.</p>
+        <p className="muted">Aucune exécution pour l'instant.</p>
       )}
 
       <HistorySelectionBar
@@ -134,7 +136,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
         onDelete={handleBulkDelete}
       />
 
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <ul className="history-list">
         {entries.map((entry) => (
           <HistoryEntryRow
             key={entry.id}
@@ -148,6 +150,6 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
           />
         ))}
       </ul>
-    </div>
+    </Card>
   );
 }

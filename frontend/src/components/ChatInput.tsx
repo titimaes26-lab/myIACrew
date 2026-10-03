@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import Button from './ui/Button';
 import { apiClient } from '../api';
 import type { RepoTarget, RepoTargetSuggestion } from '../types';
 import RepoTargetFields from './RepoTargetFields';
@@ -14,7 +15,6 @@ const MAX_TEXTAREA_HEIGHT = 200;
 // pouvoir s'arrêter sur ces deux repères comme il le ferait pour n'importe quel autre titre de
 // section, index.css ne stylant que h1/h2 donc sans effet de cascade indésirable à neutraliser
 // ici pour h3.
-const SECTION_LABEL_STYLE = { margin: 0, fontSize: '11px', fontWeight: 600, color: '#999', textTransform: 'uppercase' as const, letterSpacing: '0.04em' };
 
 interface ChatInputProps {
   disabled: boolean;
@@ -192,16 +192,16 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
   }, []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+    <div className="stack">
       {/* Regroupe le type de demande et le repo cible sous un même repère visuel "① Contexte",
           distinct du "② Votre message" plus bas (séparés par une ligne) : rend explicite la
           séquence déjà suivie par l'ordre du DOM (configurer le contexte avant d'écrire le
           message) plutôt que de laisser ces deux zones se lire comme des blocs sans rapport. */}
-      <h3 style={SECTION_LABEL_STYLE}>
+      <h3 className="section-label">
         ① Contexte de la demande
       </h3>
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-        <label style={{ fontSize: '13px', color: '#666', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <div className="row">
+        <label className="field-label">
           Type de demande :
           <select
             value={workflowType}
@@ -213,16 +213,7 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
             // n'est pas 'AUTO' est donc nécessaire : sans lui, un choix manuel oublié depuis
             // un message précédent resterait actif en silence pour une demande sans rapport,
             // qui contournerait alors /api/qualify sans que rien ne le signale à l'écran.
-            style={{
-              padding: '4px 8px',
-              fontSize: '13px',
-              borderRadius: '6px',
-              border: workflowType === 'AUTO' ? '1px solid #ccc' : '1px solid #0070f3',
-              backgroundColor: workflowType === 'AUTO' ? '#fff' : '#eff6ff',
-              color: workflowType === 'AUTO' ? '#333' : '#0070f3',
-              fontWeight: workflowType === 'AUTO' ? 'normal' : 600,
-              cursor: disabled ? 'not-allowed' : 'pointer',
-            }}
+            className={workflowType === 'AUTO' ? 'field field--sm' : 'field field--sm field--accent'}
           >
             {WORKFLOW_TYPE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -232,32 +223,32 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
           </select>
         </label>
 
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-expanded={showRepoFields}
           onClick={() => {
             repoUiTouchedRef.current = true;
             setShowRepoFields((v) => !v);
           }}
-          style={{ padding: '4px 10px', fontSize: '13px', backgroundColor: 'transparent', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer', color: '#666' }}
         >
           🔗 {repoOwner && repoName ? `${repoOwner}/${repoName}` : 'Repository GitHub cible (optionnel)'}
-        </button>
+        </Button>
       </div>
 
       {showRepoFields && (
         <>
           {repoSuggestions.length > 0 && (
-            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <div className="row">
               {repoSuggestions.map((s) => (
-                <button
+                <Button
                   key={`${s.repo_owner}/${s.repo_name}@${s.base_branch}`}
-                  type="button"
+                  size="chip"
                   onClick={() => applySuggestion(s)}
                   disabled={disabled}
-                  style={{ fontSize: '12px', padding: '4px 10px', borderRadius: '999px', border: '1px solid #ccc', backgroundColor: '#f3f4f6', color: '#333', cursor: disabled ? 'not-allowed' : 'pointer' }}
                 >
                   {s.repo_owner}/{s.repo_name}{s.base_branch ? `@${s.base_branch}` : ''}
-                </button>
+                </Button>
               ))}
             </div>
           )}
@@ -273,11 +264,11 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
         </>
       )}
 
-      <div style={{ borderTop: '1px solid #eee', margin: '2px 0' }} />
-      <h3 style={SECTION_LABEL_STYLE}>
+      <hr className="divider" />
+      <h3 className="section-label">
         ② Votre message
       </h3>
-      <div style={{ display: 'flex', gap: '10px' }}>
+      <div className="composer">
         {/* Masquée (pas seulement désactivée) pendant une exécution en cours : sur demande
             explicite, pour laisser toute la place au bouton "Annuler" plutôt que d'afficher une
             zone de texte grisée et inutilisable à côté. `text` reste en state local le temps du
@@ -293,49 +284,25 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
             onKeyDown={handleKeyDown}
             placeholder="Décrivez votre besoin ou répondez à l'agent..."
             aria-label="Votre message"
-            style={{
-              flex: 1,
-              padding: '12px',
-              borderRadius: '6px',
-              border: '1px solid #ccc',
-              fontSize: '15px',
-              boxSizing: 'border-box',
-              resize: 'none',
-              overflowY: 'auto',
-              minHeight: `${MIN_TEXTAREA_HEIGHT}px`,
-              maxHeight: `${MAX_TEXTAREA_HEIGHT}px`,
-              fontFamily: 'inherit',
-            }}
+            className="field"
+            style={{ minHeight: `${MIN_TEXTAREA_HEIGHT}px`, maxHeight: `${MAX_TEXTAREA_HEIGHT}px` }}
           />
         )}
         {disabled && cancellable ? (
-          <button
-            type="button"
-            onClick={onCancel}
-            style={{ padding: '0 20px', backgroundColor: '#fff', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
-          >
+          <Button variant="danger" block onClick={onCancel}>
             🚫 Annuler
-          </button>
+          </Button>
         ) : disabled ? (
           // Rien à annuler dans ce cas (voir cancellable ci-dessus) : un bouton visuellement
           // désactivé plutôt que le "Annuler" fonctionnel ci-dessus, pour ne pas laisser croire
           // qu'un clic aurait un effet.
-          <button
-            type="button"
-            disabled
-            style={{ padding: '0 20px', backgroundColor: '#f3f4f6', color: '#666', border: '1px solid #ccc', borderRadius: '6px', cursor: 'not-allowed', fontWeight: 'bold' }}
-          >
+          <Button block disabled>
             🔄 En attente...
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!text.trim()}
-            style={{ padding: '0 20px', backgroundColor: '#0070f3', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
-          >
+          <Button variant="primary" block onClick={submit} disabled={!text.trim()}>
             Envoyer
-          </button>
+          </Button>
         )}
       </div>
     </div>
