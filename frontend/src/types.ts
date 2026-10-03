@@ -39,7 +39,6 @@ export interface ExecutionHistoryEntry {
   // Cause d'un échec (voir backend/errors.py) ; null hors statut 'failed' ou pour les anciennes lignes.
   error_code: string | null;
   error_retryable: boolean | null;
-  error_step: string | null;
 }
 
 export interface RepoTarget {

@@ -115,6 +115,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Format d'erreur UNIQUE de l'API (voir errors.error_body) : {"detail", "code", "retryable"}.
+# `detail` reste la clé historique lue par le frontend ; `code` permet d'agir selon la cause.
+@app.exception_handler(AppError)
+async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_body(exc.message, exc.code, exc.retryable),
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def _handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    # Couvre aussi les HTTPException levées par FastAPI/Starlette elles-mêmes (404 de route,
+    # 405...) et par auth.py : même format partout, en-têtes d'origine conservés (ex: WWW-Authenticate).
+    structured = {} if isinstance(exc.detail, str) else {"errors": exc.detail}
+    message = exc.detail if isinstance(exc.detail, str) else "Requête refusée."
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_body(message, code_for_status(exc.status_code), is_retryable_status(exc.status_code), **structured),
+        headers=getattr(exc, "headers", None),
+    )
+
+@app.exception_handler(RequestValidationError)
+async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # FastAPI renvoie par défaut `detail` = liste d'objets : illisible tel quel dans l'interface
+    # (qui attend une chaîne). On le ramène à une phrase, la liste détaillée restant dans `errors`.
+    problems = [
+        {"field": ".".join(str(part) for part in err.get("loc", ()) if part != "body"), "message": str(err.get("msg", ""))}
+        for err in exc.errors()
+    ]
+    summary = "; ".join(f"{p['field']} : {p['message']}" if p["field"] else p["message"] for p in problems[:3])
+    return JSONResponse(
+        status_code=422,
+        content=error_body(f"Requête invalide — {summary}" if summary else "Requête invalide.", ErrorCode.VALIDATION_ERROR, errors=problems),
+    )
+
 # Filet de sécurité global : ne remplace PAS les try/except explicites des endpoints (ex:
 # execute_workflow imprime déjà sa propre trace détaillée et marque db_entry "failed" avant de
 # lever HTTPException — Starlette route un HTTPException vers le handler dédié que FastAPI
@@ -134,40 +169,6 @@ app.add_middleware(
 # symptôme observé (log Render confirmant un 500, mais l'interface n'affiche qu'une erreur
 # générique). allow_credentials=True interdit le littéral "*" : il faut réfléchir l'Origin exacte
 # de la requête, comme le ferait CORSMiddleware lui-même.
-# Format d'erreur UNIQUE de l'API (voir errors.error_body) : {"detail", "code", "retryable"}.
-# `detail` reste la clé historique lue par le frontend ; `code` permet d'agir selon la cause.
-@app.exception_handler(AppError)
-async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_body(exc.message, exc.code, exc.retryable),
-    )
-
-@app.exception_handler(StarletteHTTPException)
-async def _handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    # Couvre aussi les HTTPException levées par FastAPI/Starlette elles-mêmes (404 de route,
-    # 405...) et par auth.py : même format partout, en-têtes d'origine conservés (ex: WWW-Authenticate).
-    message = exc.detail if isinstance(exc.detail, str) else "Requête refusée."
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_body(message, code_for_status(exc.status_code), is_retryable_status(exc.status_code)),
-        headers=getattr(exc, "headers", None),
-    )
-
-@app.exception_handler(RequestValidationError)
-async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-    # FastAPI renvoie par défaut `detail` = liste d'objets : illisible tel quel dans l'interface
-    # (qui attend une chaîne). On le ramène à une phrase, la liste détaillée restant dans `errors`.
-    problems = [
-        {"field": ".".join(str(part) for part in err.get("loc", ()) if part != "body"), "message": str(err.get("msg", ""))}
-        for err in exc.errors()
-    ]
-    summary = "; ".join(f"{p['field']} : {p['message']}" if p["field"] else p["message"] for p in problems[:3])
-    return JSONResponse(
-        status_code=422,
-        content=error_body(f"Requête invalide — {summary}" if summary else "Requête invalide.", ErrorCode.VALIDATION_ERROR, errors=problems),
-    )
-
 @app.exception_handler(Exception)
 async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     # Ce diagnostic (print/lecture mémoire) ne doit JAMAIS empêcher de renvoyer une réponse :
@@ -895,7 +896,10 @@ async def _run_crew_and_persist(
                 info = classify_exception(e)
                 # Message lisible pour une cause reconnue ; sinon le texte d'origine (déjà ce qu'affichait
                 # l'historique avant le typage des erreurs).
-                reason = info.message or str(e)
+                # Le texte technique d'origine est conservé (tronqué) : sans lui, ni l'utilisateur ni la
+                # base ne diraient POURQUOI (ex: ce que le garde-fou reproche, délai « retry after »).
+                technical = str(e).strip()[:500]
+                reason = f"{info.message} (détail : {technical})" if info.message and technical else (info.message or technical)
                 if isinstance(e, CrewStepError):
                     detail = f"Échec à l'étape {e.step_index}/{e.total_steps} ({e.agent_role}) : {reason}"
                 else:
@@ -914,7 +918,6 @@ async def _run_crew_and_persist(
                 db_entry.result = detail
                 db_entry.error_code = info.code
                 db_entry.error_retryable = info.retryable
-                db_entry.error_step = e.agent_role if isinstance(e, CrewStepError) else None
                 if 'run_metrics' in locals():
                     db_entry.api_calls_count = run_metrics.api_calls_count
                     db_entry.rate_limit_hits = run_metrics.rate_limit_hits
@@ -952,7 +955,7 @@ async def _run_crew_and_persist(
                     db_entry.status = "failed"
                     db_entry.result = f"Erreur interne au démarrage de l'exécution en tâche de fond : {e}"
                     db_entry.error_code = ErrorCode.INTERNAL_ERROR
-                    db_entry.error_retryable = True
+                    db_entry.error_retryable = False
                     db_entry.current_step = None
                     db_entry.updated_at = datetime.now(timezone.utc)
                     session.add(db_entry)

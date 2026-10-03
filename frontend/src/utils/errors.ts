@@ -15,7 +15,7 @@ export function toDisplayedError(err: unknown, fallback: string): DisplayedError
 }
 
 // Conseil affiché sous un échec d'exécution selon son code (voir backend/errors.py).
-export function failureHint(code: string | null | undefined, retryable: boolean | null | undefined): string | null {
+export function failureHint(code: string | null | undefined): string | null {
   switch (code) {
     case 'QUOTA_EXHAUSTED':
     case 'LLM_UNAVAILABLE':
@@ -24,8 +24,6 @@ export function failureHint(code: string | null | undefined, retryable: boolean 
       return 'Panne temporaire : « Réessayer » relance la demande telle quelle, idéalement dans quelques minutes.';
     case 'GUARDRAIL_FAILED':
       return 'Le résultat n\'a pas passé les contrôles de qualité : reformulez ou précisez la demande avant de réessayer.';
-    case 'INTERNAL_ERROR':
-      return retryable ? 'Erreur interne : réessayer peut suffire.' : null;
     default:
       return null;
   }

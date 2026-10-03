@@ -542,9 +542,10 @@ export function useConversation(accessToken: string, apiUrl: string) {
           : turn)));
         return;
       }
-      const message = toDisplayedError(err, 'Une erreur est survenue.').message;
+      const shown = toDisplayedError(err, 'Une erreur est survenue.');
+      const message = shown.message;
       setTurns((t) => t.map((turn) => (turn.id === tempId
-        ? { ...turn, status: 'failed', result: message, updatedAt: new Date().toISOString() }
+        ? { ...turn, status: 'failed', result: message, errorCode: shown.code, errorRetryable: shown.retryable, updatedAt: new Date().toISOString() }
         : turn)));
       setError(message);
     } finally {

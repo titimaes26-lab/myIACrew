@@ -60,7 +60,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
-  const hint = turn.status === 'failed' ? failureHint(turn.errorCode, turn.errorRetryable) : null;
+  const hint = turn.status === 'failed' ? failureHint(turn.errorCode) : null;
   // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
   // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
   // l'un est modifié sans l'autre (ex: JSX étendu à un autre statut sans mettre à jour

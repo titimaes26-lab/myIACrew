@@ -105,7 +105,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 - **Format unique** : toute erreur de l'API est `{"detail": message, "code": CODE, "retryable": bool}` (`detail` reste la clé lue par le frontend). Les gestionnaires de `main.py` couvrent `AppError` (erreur volontaire d'un endpoint), `HTTPException` (y compris les 404/405 de routes et `auth.py`), les erreurs de validation (422, `detail` = phrase lisible, liste détaillée dans `errors`) et toute exception non prévue (500 générique, détail dans les logs seulement).
 - **Codes** (`backend/errors.py`) : `QUOTA_EXHAUSTED`, `LLM_UNAVAILABLE`, `LLM_TIMEOUT`, `GITHUB_UNAVAILABLE`, `GUARDRAIL_FAILED`, `INTERNAL_ERROR`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `SERVICE_UNAVAILABLE`. `classify_exception` range un échec du crew dans un code ; les mots-clés de quota/indisponibilité sont partagés avec les retries de `crewquestion.py`.
 - **Aucune fuite** : `/api/qualify` ne renvoie plus `str(e)` mais un message lisible lié au code (429/503/504/500).
-- **Échecs d'exécution** : `executionhistory` stocke `error_code`, `error_retryable` et `error_step` (rôle de l'agent en échec). `result` contient un message lisible pour une cause reconnue, le texte d'origine sinon.
+- **Échecs d'exécution** : `executionhistory` stocke `error_code` et `error_retryable` ; l'étape en échec reste dans `result` (« Échec à l'étape N/M »). `result` contient un message lisible pour une cause reconnue, suivi du texte technique d'origine tronqué (« détail : … »). La classification remonte la chaîne `__cause__` (un timeout ou une panne GitHub dans une étape est reconnu) et compare des mots entiers (« 429 » ne reconnaît pas `page_4290.tsx`).
 - **Interface** : `ApiError` porte `status`, `code`, `retryable` ; un serveur injoignable donne `NETWORK_ERROR` (« Impossible de joindre le serveur »). `ErrorBanner` affiche l'erreur avec « Réessayer » quand elle est transitoire (rechargement de l'historique). Sous un échec d'exécution, un conseil adapté au code est affiché (réessayer plus tard, ou reformuler la demande).
 
 ---
@@ -210,7 +210,7 @@ POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [
 | `result` | text (nullable) | sortie du crew, une section par agent avec sa durée |
 | `status` | text | `running` \| `success` \| `failed` |
 | `current_step` | text (nullable) | étape en cours (`design`, `architecture`, `diagnostic`, `development`, `qa`), vidée à la fin |
-| `error_code` / `error_retryable` / `error_step` | text / bool / text (nullables) | cause d'un échec (voir 2.9), uniquement si `status = failed` |
+| `error_code` / `error_retryable` | text / bool (nullables) | cause d'un échec (voir 2.9), uniquement si `status = failed` |
 | `user_id` | text (indexé) | auteur (id Supabase) |
 | `conversation_id` | int (indexé) | fil de conversation |
 | `repo_owner`, `repo_name`, `base_branch`, `work_branch` | text (nullable) | cible GitHub et branche de travail |

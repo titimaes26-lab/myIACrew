@@ -9,6 +9,7 @@ Deux usages :
   `ExecutionHistory.error_code` pour que l'interface propose l'action adaptée.
 """
 import asyncio
+import re
 from typing import NamedTuple, Optional
 
 
@@ -43,8 +44,11 @@ _STATUS_CODES = {
     409: ErrorCode.CONFLICT,
     422: ErrorCode.VALIDATION_ERROR,
     429: ErrorCode.QUOTA_EXHAUSTED,
+    400: ErrorCode.VALIDATION_ERROR,
     500: ErrorCode.INTERNAL_ERROR,
+    502: ErrorCode.SERVICE_UNAVAILABLE,
     503: ErrorCode.SERVICE_UNAVAILABLE,
+    504: ErrorCode.SERVICE_UNAVAILABLE,
 }
 _RETRYABLE_STATUSES = {429, 502, 503, 504}
 
@@ -89,8 +93,32 @@ def error_body(message: str, code: str, retryable: bool = False, **extra) -> dic
     return {"detail": message, "code": code, "retryable": retryable, **extra}
 
 
+def _matches(markers, text: str) -> bool:
+    # Mots entiers (\b) : « 429 » ne doit pas reconnaître « page_4290.tsx », ni « unavailable » le
+    # nom d'une classe. Les retries de crewquestion.py gardent, eux, la recherche par sous-chaîne.
+    return any(re.search(rf"\b{re.escape(marker)}\b", text) for marker in markers)
+
+
+def _exception_chain(exc: BaseException):
+    seen = set()
+    while exc is not None and id(exc) not in seen and len(seen) < 8:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
 def classify_exception(exc: BaseException) -> ErrorInfo:
-    """Range un échec d'exécution/appel LLM dans un code stable (jamais d'exception)."""
+    """Range un échec d'exécution/appel LLM dans un code stable (jamais d'exception).
+    CrewStepError ne garde que le texte de l'erreur d'origine : on remonte donc la chaîne
+    `__cause__`/`__context__` pour retrouver son type (timeout, GitHub indisponible)."""
+    for err in _exception_chain(exc):
+        info = _classify_single(err)
+        if info.code != ErrorCode.INTERNAL_ERROR:
+            return info
+    return ErrorInfo(ErrorCode.INTERNAL_ERROR, False, None)
+
+
+def _classify_single(exc: BaseException) -> ErrorInfo:
     # GitHubVerificationUnavailable est importée ici pour ne pas lier ce module à github_tools
     # à l'import (github_tools importe beaucoup de dépendances).
     try:
@@ -108,7 +136,7 @@ def classify_exception(exc: BaseException) -> ErrorInfo:
         (TIMEOUT_MARKERS, ErrorCode.LLM_TIMEOUT, True),
         (GUARDRAIL_MARKERS, ErrorCode.GUARDRAIL_FAILED, False),
     ):
-        if any(marker in text for marker in markers):
+        if _matches(markers, text):
             return ErrorInfo(code, retryable, _USER_MESSAGES[code])
     return ErrorInfo(ErrorCode.INTERNAL_ERROR, False, None)
 

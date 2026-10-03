@@ -130,5 +130,37 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, ids[0])
     assert saved.status == "failed"
-    assert (saved.error_code, saved.error_retryable, saved.error_step) == ("QUOTA_EXHAUSTED", True, "Architecte")
+    assert (saved.error_code, saved.error_retryable) == ("QUOTA_EXHAUSTED", True)
     assert saved.result.startswith("Échec à l'étape 2/5 (Architecte) : Le quota du modèle IA")
+    assert "détail : 429 RESOURCE_EXHAUSTED" in saved.result  # le texte d'origine n'est pas perdu
+
+
+def test_classify_follows_the_cause_chain_of_a_step_error():
+    from crewquestion import CrewStepError
+    try:
+        try:
+            raise asyncio.TimeoutError()
+        except Exception as original:
+            raise CrewStepError(1, 5, "Designer", original) from original
+    except CrewStepError as step_error:
+        assert classify_exception(step_error).code == ErrorCode.LLM_TIMEOUT
+
+
+@pytest.mark.parametrize("text", [
+    "FileNotFoundError: src/page_4290.tsx", "ModuleNotFoundError: GitHubVerificationUnavailable_x", "ligne 15031",
+])
+def test_markers_match_whole_words_only(text):
+    assert classify_exception(RuntimeError(text)).code == ErrorCode.INTERNAL_ERROR
+
+
+def test_structured_http_detail_is_preserved_and_gateway_statuses_have_codes(client):
+    from fastapi import HTTPException
+
+    @main.app.get("/_test/structured")
+    async def _structured():
+        raise HTTPException(status_code=502, detail={"upstream": "x"})
+
+    res = client.get("/_test/structured")
+    assert res.status_code == 502
+    assert res.json()["code"] == "SERVICE_UNAVAILABLE" and res.json()["retryable"] is True
+    assert res.json()["errors"] == {"upstream": "x"}

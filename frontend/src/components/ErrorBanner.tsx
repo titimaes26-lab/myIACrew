@@ -1,11 +1,11 @@
 interface ErrorBannerProps {
   message: string;
-  // Affiche « Réessayer » quand l'erreur est transitoire et que l'appelant sait relancer l'action.
+  // « Réessayer » n'apparaît que si l'erreur est transitoire (retryable) ET que l'appelant sait relancer l'action.
   onRetry?: () => void;
   retryable?: boolean;
 }
 
-export default function ErrorBanner({ message, onRetry, retryable = true }: ErrorBannerProps) {
+export default function ErrorBanner({ message, onRetry, retryable = false }: ErrorBannerProps) {
   return (
     <div
       role="alert"

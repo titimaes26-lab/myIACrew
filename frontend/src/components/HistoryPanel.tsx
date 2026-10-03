@@ -22,7 +22,7 @@ function plural(count: number, singular: string, pluralForm: string): string {
 export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation }: HistoryPanelProps) {
   const [entries, setEntries] = useState<ExecutionHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<DisplayedError | null>(null);
+  const [error, setError] = useState<(DisplayedError & { kind: 'load' | 'action' }) | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,7 +43,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
         if (!cancelled) setEntries(data);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(toDisplayedError(err, "Impossible de charger l'historique."));
+        if (!cancelled) setError({ ...toDisplayedError(err, "Impossible de charger l'historique."), kind: 'load' });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -65,7 +65,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
       await apiClient(apiUrl, accessToken).deleteHistoryEntry(id);
       setEntries((current) => current.filter((entry) => entry.id !== id));
     } catch (err: unknown) {
-      setError(toDisplayedError(err, 'Suppression impossible.'));
+      setError({ ...toDisplayedError(err, 'Suppression impossible.'), kind: 'action' });
     } finally {
       setBusy(false);
       setDeletingId(null);
@@ -101,7 +101,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
         );
       }
     } catch (err: unknown) {
-      setError(toDisplayedError(err, 'Suppression impossible.'));
+      setError({ ...toDisplayedError(err, 'Suppression impossible.'), kind: 'action' });
     } finally {
       setBusy(false);
     }
@@ -116,8 +116,8 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
         <ErrorBanner
           message={error.message}
           retryable={error.retryable}
-          // Seul le chargement de la liste se relance d'un clic : une suppression se refait depuis la ligne.
-          onRetry={entries.length === 0 ? () => { setError(null); setLoading(true); setReloadKey((k) => k + 1); } : undefined}
+          // Seul l'échec de chargement de la liste se relance d'un clic : une suppression se refait depuis la ligne.
+          onRetry={error.kind === 'load' ? () => { setError(null); setLoading(true); setReloadKey((k) => k + 1); } : undefined}
         />
       )}
       {notice && <p role="status" style={{ color: '#92400e', fontSize: '14px' }}>ℹ️ {notice}</p>}
