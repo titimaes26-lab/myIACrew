@@ -69,7 +69,11 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
   const handleBulkDelete = async () => {
     const ids = [...selected];
     if (ids.length === 0) return;
-    if (!window.confirm(`Supprimer ${plural(ids.length, 'cette exécution', 'ces exécutions')} de l'historique ?`)) return;
+    if (!window.confirm(
+      ids.length > 1
+        ? `Supprimer ces ${ids.length} exécutions de l'historique ?`
+        : 'Supprimer cette exécution de l\'historique ?',
+    )) return;
 
     setBusy(true);
     setError(null);
