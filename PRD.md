@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.8 — Mise à jour le 2026-10-03
+> Version : 1.9 — Mise à jour le 2026-10-03
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique.
 
 ---
 
@@ -115,6 +115,10 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 - **Contrôle préalable GitHub** (`check_github_access`, lecture seule) : pour un workflow qui écrit sur un repository cible (pas `ANALYSE_ONLY`), `/api/execute` vérifie avant toute ligne en base et tout appel LLM que le jeton est présent, que le repository est lisible, que le jeton a le droit d'écriture et que la branche de base existe. Contrôle exécuté après la vérification de la conversation et borné à 15 s. Refus : 404 `NOT_FOUND`, 403 `FORBIDDEN`, 503 réessayable pour la limite de débit GitHub, 502 `GITHUB_UNAVAILABLE` (jeton invalide, non réessayable), 503 `GITHUB_UNAVAILABLE` (panne, réessayable), 500 (jeton absent), avec un message qui dit quoi corriger. Il ajoute un aller-retour GitHub au lancement.
 - **Perte de connexion visible** : après 3 pannes consécutives (réseau coupé, 5xx, délai) du sondage de progression — une erreur permanente comme 401 ou 404 ne compte pas —, le Studio affiche « Connexion au serveur perdue — nouvelle tentative automatique » (ton ambre : l'exécution continue côté serveur) ; le message disparaît dès qu'une réponse arrive.
 
+- **Points de reprise** : la sortie de chaque étape *design*, *architecture* et *diagnostic* terminée est sauvegardée (table `executioncheckpoint`, supprimée avec l'exécution). Ces étapes produisent du texte sans effet de bord ; *development* (écrit sur GitHub) et *qa* sont toujours rejouées. Seul un **préfixe continu** d'étapes est réutilisable (jamais une étape après un trou).
+- **Reprise à l'étape en échec** : « Relancer » sur un tour en échec envoie `resume_from_execution_id`. Le serveur ne reprend que si l'exécution précédente est en échec, de la même conversation et du même utilisateur, avec le même workflow et le même repository cible ; sinon il repart de zéro, sans erreur. Les étapes réutilisées sont posées comme terminées (leur sortie reste le contexte des suivantes, l'état de l'Analyste est reconstruit en rejouant son contrôle, sans appel LLM) et la progression repart à la première étape restante. La réponse de `/api/execute` porte `resumed_steps` et le message affiche « Reprise : … déjà réussies ». La reprise ne s'applique que si la demande renvoyée est identique à celle du tour en échec.
+- **Seconde tentative automatique** : après un échec transitoire (`retryable` : quota, modèle ou GitHub indisponible, délai), la même exécution attend 90 s puis repart une seule fois en réutilisant ses étapes déjà réussies ; elle reste « en cours » pendant l'attente. Un deuxième échec est définitif. Les mesures par agent de la tentative avortée ne sont pas enregistrées (celles de la tentative suivante le sont). S'ajoute au réessai interne sur quota de `run_dynamic_crew`, qui lui ne couvre ni les délais ni GitHub.
+
 ---
 
 ## 3. Architecture Logique vs Vue
@@ -201,6 +205,7 @@ Response { period_days: number; workflow: string | null;
 Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_seconds, llm_calls, llm_errors,
            tokens_known, prompt_tokens, completion_tokens, total_tokens, tool_calls, tool_errors }[]
 GET  /api/history?limit&offset → ExecutionHistory[] · DELETE /api/history/{id}
+POST /api/execute { …, resume_from_execution_id?: number }  → { status, id, conversation_id, resumed_steps: string[] }  (reprise : voir 2.9)
 POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [{id, reason: "running"|"not_found"}]}  (un seul commit ; supprime aussi les `agentrun` ; id étranger/inconnu → not_found ; en cours → running)
 ```
 
@@ -227,6 +232,8 @@ POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [
 | `created_at`, `updated_at` | datetime | horodatages |
 
 **Table `agentrun`** : une ligne par agent mesuré et par exécution — `execution_id`, `conversation_id`, `user_id` (indexés), `workflow`, `agent` (`design`, `architecture`, `diagnostic`, `development`, `qa`, `system`), `status` (`completed`, `incomplete`, `n/a`), `duration_seconds` (nullable), `llm_calls`, `llm_errors`, `usage_calls` (appels dont les tokens sont connus), `prompt_tokens`, `completion_tokens`, `total_tokens`, `tool_calls`, `tool_errors`, `created_at`. Table nouvelle : créée automatiquement, sans migration.
+
+**Table `executioncheckpoint`** : sortie d'une étape reprenable terminée — `execution_id` (indexé), `step` (`design`, `architecture`, `diagnostic`), `raw`, `created_at`. Supprimée avec l'exécution. Table nouvelle : créée automatiquement, sans migration.
 
 L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le texte du résultat (bloc « Livraison constatée par les outils »). Le schéma `auth` est géré entièrement par Supabase. Les colonnes ajoutées après coup sont rattrapées par des migrations légères au démarrage.
 

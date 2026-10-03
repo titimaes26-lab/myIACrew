@@ -16,12 +16,14 @@ from sqlmodel import Session, func, select
 
 from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
-    build_conversation_context, track_execution_metrics,
+    build_conversation_context, track_execution_metrics, workflow_step_keys, resumable_prefix, RESUMABLE_STEPS,
     AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
 )
-from database import create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun
+from database import (
+    create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
+)
 from agent_metrics import (
-    agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize,
+    agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
 )
 from auth import get_current_user, close_http_client
 import validation
@@ -260,6 +262,10 @@ class WorkflowExecutionInput(BaseModel):
     repo_name: Optional[str] = None
     base_branch: Optional[str] = "main"
     conversation_id: Optional[int] = None
+    # Reprise : id d'une exécution en échec de CETTE conversation dont les étapes déjà réussies
+    # (design, architecture, diagnostic) sont réutilisées au lieu d'être recalculées. Ignoré, sans
+    # erreur, si cette exécution n'est pas reprenable (voir _resumable_outputs).
+    resume_from_execution_id: Optional[int] = None
 
     # Refus immédiat (422, un message par champ) plutôt qu'une erreur découverte en pleine exécution.
     _check_request = field_validator("user_request")(validation.validate_user_request)
@@ -283,6 +289,8 @@ _GITHUB_ACCESS_ERRORS = {
 }
 
 _GITHUB_PRECHECK_TIMEOUT_S = 15
+# Seconde tentative automatique (une seule) après un échec transitoire : délai avant de relancer.
+AUTO_RETRY_DELAY_S = 90
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
 
@@ -638,6 +646,11 @@ def _persist_completed_agent(
 
                 entry.result = new_result
                 agent_session.add(entry)
+                # Point de reprise : la sortie des étapes reprenables survit à un échec de l'exécution
+                # (entry.result, lui, est remplacé par le message d'échec).
+                step = step_for_role(agent_name)
+                if step in RESUMABLE_STEPS:
+                    agent_session.add(ExecutionCheckpoint(execution_id=execution_id, step=step, raw=agent_output))
                 agent_session.commit()
 
                 # Marquer l'agent comme persisté pour l'idempotence
@@ -646,6 +659,31 @@ def _persist_completed_agent(
                 print(f"execution_id={execution_id}: agent '{agent_name}' persisté ({output_size} bytes).", flush=True)
     except Exception as e:
         print(f"AVERTISSEMENT : échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}", flush=True)
+
+def _load_checkpoints(session: Session, execution_id: int) -> dict[str, str]:
+    """{étape: sortie} sauvegardées pour une exécution (la plus récente gagne en cas de doublon)."""
+    rows = session.exec(
+        select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id).order_by(ExecutionCheckpoint.id)
+    ).all()
+    return {row.step: row.raw for row in rows}
+
+def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id, conversation_id: int) -> dict[str, str]:
+    """Sorties réutilisables pour `data.resume_from_execution_id`, ou {} si cette exécution n'est pas
+    reprenable : elle doit être en échec, de CETTE conversation et de CET utilisateur, avec le même
+    workflow et le même repository cible (sinon ses étapes ne correspondent pas à celles de la nouvelle)."""
+    if data.resume_from_execution_id is None:
+        return {}
+    previous = session.get(ExecutionHistory, data.resume_from_execution_id)
+    if (
+        previous is None or previous.user_id != user_id or previous.conversation_id != conversation_id
+        or previous.status != "failed" or previous.workflow != data.target_workflow
+        or (previous.repo_owner or None) != data.repo_owner or (previous.repo_name or None) != data.repo_name
+        or (previous.base_branch or None) != ((data.base_branch or "main") if data.repo_owner and data.repo_name else None)
+    ):
+        return {}
+    saved = _load_checkpoints(session, previous.id)
+    prefix = resumable_prefix(workflow_step_keys(data.target_workflow), saved)
+    return {key: saved[key] for key in prefix}
 
 def _cleanup_persisted_agents(execution_id: int) -> None:
     """Nettoie le tracker d'agents persistés après que l'exécution soit terminée.
@@ -664,6 +702,8 @@ async def _execute_crew_and_persist(
     normalized_base_branch: Optional[str],
     final_prompt: str,
     conversation_context: str,
+    resume_outputs: Optional[dict[str, str]] = None,
+    auto_retry_allowed: bool = True,
 ) -> None:
     """Acquiert _execution_semaphore (voir sa définition : borne le nombre d'exécutions de crew
     simultanées, TOUTES conversations confondues) avant de lancer _run_crew_and_persist, qui porte
@@ -687,6 +727,7 @@ async def _execute_crew_and_persist(
         await _run_crew_and_persist(
             db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
             work_branch, normalized_base_branch, final_prompt, conversation_context,
+            resume_outputs=resume_outputs,
         )
 
 async def _run_crew_and_persist(
@@ -699,6 +740,8 @@ async def _run_crew_and_persist(
     normalized_base_branch: Optional[str],
     final_prompt: str,
     conversation_context: str,
+    resume_outputs: Optional[dict[str, str]] = None,
+    auto_retry_allowed: bool = True,
 ) -> None:
     """Lance le crew et persiste son issue (succès ou échec) en base — voir execute_workflow, qui
     ne fait plus qu'enregistrer db_entry (statut "running") puis lancer _execute_crew_and_persist
@@ -870,6 +913,7 @@ async def _run_crew_and_persist(
                             request_type=data.target_workflow,
                             on_step_change=lambda step_key: _persist_current_step(db_entry.id, step_key),
                             on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(db_entry.id, agent_name, output, duration),
+                            resume_outputs=resume_outputs,
                         )
                 finally:
                     # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette
@@ -997,6 +1041,30 @@ async def _run_crew_and_persist(
                 print(traceback.format_exc(), flush=True)
 
                 info = classify_exception(e)
+
+                # Seconde tentative AUTOMATIQUE (une seule) après un échec transitoire (quota, modèle ou
+                # GitHub indisponible, délai) : la ligne reste « running » pendant l'attente, puis le crew
+                # repart en réutilisant les étapes déjà réussies (points de reprise). Les mesures de cette
+                # tentative avortée ne sont pas enregistrées : la tentative suivante écrit les siennes.
+                if auto_retry_allowed and info.retryable:
+                    print(
+                        f"execution_id={db_entry.id} : échec transitoire ({info.code}), nouvelle tentative "
+                        f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
+                    )
+                    await asyncio.to_thread(_persist_current_step, db_entry.id, None)
+                    await asyncio.sleep(AUTO_RETRY_DELAY_S)
+                    with Session(engine) as checkpoint_session:
+                        saved = _load_checkpoints(checkpoint_session, db_entry.id)
+                    retry_outputs = {
+                        key: saved[key] for key in resumable_prefix(workflow_step_keys(data.target_workflow), saved)
+                    }
+                    await _run_crew_and_persist(
+                        db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
+                        work_branch, normalized_base_branch, final_prompt, conversation_context,
+                        resume_outputs=retry_outputs, auto_retry_allowed=False,
+                    )
+                    return
+
                 # Message lisible pour une cause reconnue ; sinon le texte d'origine (déjà ce qu'affichait
                 # l'historique avant le typage des erreurs).
                 # Le texte technique d'origine est conservé (tronqué) : sans lui, ni l'utilisateur ni la
@@ -1223,6 +1291,9 @@ async def execute_workflow(
             detail="Une exécution est déjà en cours pour cette conversation. Attends qu'elle se termine avant d'envoyer un nouveau message.",
         )
 
+    # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
+    resume_outputs = _resumable_outputs(session, data, user.get("id"), conversation.id)
+
     # Normalisé une seule fois : utilisé à la fois pour comparer aux tours précédents et
     # pour ce qui est stocké sur ce tour, afin que les deux restent cohérents (sinon un
     # base_branch vide explicitement envoyé empêcherait à tort la réutilisation de
@@ -1286,11 +1357,15 @@ async def execute_workflow(
     # pour ne pas risquer que le garbage collector ne l'interrompe en cours de route.
     task = asyncio.create_task(_execute_crew_and_persist(
         db_entry.id, conversation.id, data, has_repo_target, should_verify_github_delivery,
-        work_branch, normalized_base_branch, final_prompt, conversation_context,
+        work_branch, normalized_base_branch, final_prompt, conversation_context, resume_outputs,
     ))
     _track_execution_task(task, db_entry.id)
 
-    return {"status": "running", "id": db_entry.id, "conversation_id": conversation.id}
+    return {
+        "status": "running", "id": db_entry.id, "conversation_id": conversation.id,
+        # Étapes réutilisées d'une exécution précédente (vide hors reprise) : l'interface l'indique.
+        "resumed_steps": list(resume_outputs),
+    }
 
 @app.post("/api/conversations", response_model=Conversation)
 async def create_conversation(
@@ -1575,6 +1650,8 @@ def _delete_executions(session: Session, entries: List[ExecutionHistory]) -> Non
     ids = [entry.id for entry in entries]
     for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id.in_(ids))).all():
         session.delete(agent_run)
+    for checkpoint in session.exec(select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id.in_(ids))).all():
+        session.delete(checkpoint)
     for entry in entries:
         session.delete(entry)
 

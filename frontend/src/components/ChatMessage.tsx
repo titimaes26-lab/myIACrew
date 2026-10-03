@@ -4,6 +4,7 @@ import StepIndicator from './StepIndicator';
 import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { failureHint } from '../utils/errors';
+import { WORKFLOW_STEPS } from '../constants/workflowSteps';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
 import AgentSummary from './AgentSummary';
@@ -60,6 +61,9 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
+  const resumedLabel = turn.resumedSteps?.length
+    ? turn.resumedSteps.map((key) => WORKFLOW_STEPS.DESIGN_AND_DEV.find((step) => step.key === key)?.label.split(' (')[0] ?? key).join(', ')
+    : null;
   const hint = turn.status === 'failed' ? failureHint(turn.errorCode) : null;
   // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
   // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
@@ -114,6 +118,12 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           {duration ? ` · ${duration}` : ''}
           {metricsLabel ? ` · ${metricsLabel}` : ''}
         </div>
+
+        {resumedLabel && (
+          <p style={{ margin: 0, fontSize: '12px', color: '#666', fontStyle: 'italic' }}>
+            ↻ Reprise : {resumedLabel} déjà réussie{turn.resumedSteps && turn.resumedSteps.length > 1 ? 's' : ''} lors de la tentative précédente, réutilisée{turn.resumedSteps && turn.resumedSteps.length > 1 ? 's' : ''}.
+          </p>
+        )}
 
         {typeof turn.id === 'number' && (turn.status === 'success' || turn.status === 'failed') && (
           <ExecutionBreakdown executionId={turn.id} />

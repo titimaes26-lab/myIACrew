@@ -31,6 +31,7 @@ MAX_AGENT_NAME_LENGTH = 200
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, task
 from crewai.project.utils import cache as _crewai_memoize_cache
+from crewai.tasks.task_output import TaskOutput
 from crewai.tools import tool
 from tools import check_syntax
 from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
@@ -139,6 +140,38 @@ class QuotaManager:
         self.last_execution_time = time.time()
 
 quota_mgr = QuotaManager()
+
+# Étapes de chaque workflow, dans l'ordre (clés alignées sur WORKFLOW_STEPS côté frontend) : source
+# unique, utilisée par run_dynamic_crew ET par main.py (reprise d'une exécution en échec).
+WORKFLOW_STEP_KEYS = {
+    "ANALYSE_ONLY": ["design", "architecture"],
+    "BUGFIX": ["diagnostic", "development", "qa"],
+    "FEATURE": ["architecture", "diagnostic", "development", "qa"],
+    "DESIGN_AND_DEV": ["design", "architecture", "diagnostic", "development", "qa"],
+}
+
+# Seules ces étapes peuvent être reprises d'une exécution précédente : leur sortie est un TEXTE sans
+# effet de bord. development écrit sur GitHub et qa en dépend : on les rejoue toujours.
+RESUMABLE_STEPS = ("design", "architecture", "diagnostic")
+
+
+def workflow_step_keys(request_type: str) -> list[str]:
+    # Tout type inconnu retombe sur le workflow complet, comme run_dynamic_crew l'a toujours fait.
+    return list(WORKFLOW_STEP_KEYS.get(request_type, WORKFLOW_STEP_KEYS["DESIGN_AND_DEV"]))
+
+
+def resumable_prefix(step_keys: list[str], saved_outputs: dict[str, str]) -> list[str]:
+    """Étapes réutilisables d'une exécution précédente : le PRÉFIXE continu des étapes du workflow qui
+    sont reprenables ET sauvegardées. Jamais une étape isolée après un trou : chaque étape lit les
+    précédentes en contexte, sauter l'une d'elles puis en réutiliser une suivante serait incohérent."""
+    prefix: list[str] = []
+    for key in step_keys:
+        if key in RESUMABLE_STEPS and (saved_outputs.get(key) or "").strip():
+            prefix.append(key)
+        else:
+            break
+    return prefix
+
 
 class CrewStepError(Exception):
     """Erreur levée quand le crew échoue à une étape précise (voir run_dynamic_crew).
@@ -1518,7 +1551,7 @@ class AppDevelopmentCrew():
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None, resume_outputs: Optional[dict[str, str]] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
@@ -1528,14 +1561,11 @@ class AppDevelopmentCrew():
         # (écriture seule, voir developer_agent) committe ensuite tel quel — process séquentiel
         # CrewAI, donc development_task reçoit automatiquement la sortie de diagnostic_task en
         # contexte sans câblage explicite supplémentaire ici.
-        if request_type == "ANALYSE_ONLY":
-            selected = [('design', self.design_task()), ('architecture', self.architecture_task())]
-        elif request_type == "BUGFIX":
-            selected = [('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
-        elif request_type == "FEATURE":
-            selected = [('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
-        else:
-            selected = [('design', self.design_task()), ('architecture', self.architecture_task()), ('diagnostic', self.diagnostic_task()), ('development', self.development_task()), ('qa', self.qa_task())]
+        factories = {
+            'design': self.design_task, 'architecture': self.architecture_task,
+            'diagnostic': self.diagnostic_task, 'development': self.development_task, 'qa': self.qa_task,
+        }
+        selected = [(key, factories[key]()) for key in workflow_step_keys(request_type)]
 
         # Contexte EXPLICITE par tâche au lieu du défaut CrewAI (toutes les sorties précédentes) :
         # chaque agent reçoit ce dont il a besoin pour raisonner, et pas plus. Le Développeur ne
@@ -1575,6 +1605,38 @@ class AppDevelopmentCrew():
         completed_outputs: dict[str, Any] = {}
         max_retries, base_delay = 5, 15.0
         retries = 0
+
+        # Reprise d'une exécution précédente : les étapes déjà réussies (préfixe, voir resumable_prefix)
+        # sont posées comme TERMINÉES, exactement comme si on_task_complete les avait vues passer — leur
+        # sortie reste donc le contexte des étapes suivantes sans être recalculée (ni repayée en quota).
+        for key in resumable_prefix(step_keys, resume_outputs or {}):
+            task_obj = tasks_by_key[key]
+            raw = resume_outputs[key]
+            role = (task_obj.agent.role or "Agent").strip()
+            reused = TaskOutput(description=task_obj.description, raw=raw, agent=role)
+            task_obj.output = reused
+            if key == 'diagnostic':
+                # L'état de l'Analyste (fichiers committables, lacunes) est dérivé de sa sortie par son
+                # guardrail : on le rejoue sur la sortie sauvegardée (aucun appel LLM). Au premier refus
+                # le guardrail a déjà fusionné l'état ; le second appel applique la règle « accepter ».
+                try:
+                    accepted, _ = self._diagnostic_guardrail(reused)
+                    if not accepted:
+                        self._diagnostic_guardrail(reused)
+                except Exception as e:
+                    print(f"AVERTISSEMENT : reprise du diagnostic impossible, étape rejouée : {type(e).__name__}: {e}", flush=True)
+                    task_obj.output = None
+                    self._reset_execution_state(inputs)
+                    self._request_type = request_type
+                    self._architecture_task_ref = tasks_by_key.get('architecture')
+                    break
+            completed_keys.append(key)
+            completed_outputs[key] = reused
+            if on_task_output_complete is not None:
+                try:
+                    on_task_output_complete(role, raw, None)
+                except Exception as e:
+                    print(f"AVERTISSEMENT : échec du callback de reprise pour '{role}' : {type(e).__name__}: {e}", flush=True)
 
         try:
             while True:

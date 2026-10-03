@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient, type ExecuteAcceptedResponse } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, QualificationReport, RepoTarget } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
@@ -61,6 +61,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // silencieusement actif pour une demande sans rapport avec celle où il avait été choisi.
   const [workflowType, setWorkflowType] = useState<WorkflowType>('AUTO');
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Exécution en échec que le prochain envoi reprend (voir prepareRetry) : consommée par sendMessage.
+  const resumeFromRef = useRef<{ id: number; userMessage: string } | null>(null);
   // Incrémenté à chaque changement de conversation (nouvelle ou reprise d'une différente),
   // jamais pour un simple envoi de message. Sert à repérer, après un await, si l'opération en
   // cours est toujours la plus récente avant d'appliquer son résultat sur l'état : contrairement
@@ -323,6 +325,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // Chaque ouverture de l'interface démarre sur un fil vide ; une conversation passée peut
   // être reprise explicitement depuis le panneau Historique via loadConversation.
   const startNewConversation = () => {
+    resumeFromRef.current = null;
     // Sans ça, une requête encore en vol pourrait se résoudre après coup et rattacher
     // ce nouveau fil (vide) au conversationId de l'ancienne requête via son propre
     // setConversationId(data.conversation_id) dans sendMessage.
@@ -386,9 +389,18 @@ export function useConversation(accessToken: string, apiUrl: string) {
   const applyExecuteAccepted = (tempId: string, data: ExecuteAcceptedResponse) => {
     setConversationId(data.conversation_id);
     setTurns((t) => t.map((turn) => (turn.id === tempId
-      ? { ...turn, id: data.id }
+      ? { ...turn, id: data.id, resumedSteps: data.resumed_steps?.length ? data.resumed_steps : undefined }
       : turn)));
   };
+
+  // « Relancer » : le prochain envoi, s'il reprend EXACTEMENT la demande de ce tour en échec, demande au
+  // serveur de réutiliser ses étapes déjà réussies. Une demande modifiée repart de zéro (le serveur
+  // refuse de toute façon une reprise incohérente avec le workflow ou le repository).
+  const prepareRetry = useCallback((turn: ChatTurn) => {
+    resumeFromRef.current = typeof turn.id === 'number' && turn.status === 'failed'
+      ? { id: turn.id, userMessage: turn.userMessage }
+      : null;
+  }, []);
 
   const sendMessage = async (text: string, repoTarget: RepoTarget) => {
     const tempId = `temp-${Date.now()}`;
@@ -396,8 +408,11 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // exécution doivent s'accorder sur l'existence d'un repository cible.
     const repoOwner = repoTarget.owner?.trim() ?? '';
     const repoName = repoTarget.name?.trim() ?? '';
+    const resume = resumeFromRef.current;
+    resumeFromRef.current = null;
     const executePayload = {
       conversation_id: conversationId ?? undefined,
+      resume_from_execution_id: resume && resume.userMessage.trim() === text.trim() ? resume.id : undefined,
       repo_owner: repoOwner || undefined,
       repo_name: repoName || undefined,
       base_branch: repoTarget.branch?.trim() || undefined,
@@ -574,5 +589,5 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  return { turns, sending, hasRunningTurn, error, connectionLost, conversationId, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
+  return { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, conversationId, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
 }

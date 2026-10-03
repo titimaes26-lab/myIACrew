@@ -85,6 +85,16 @@ class AgentRun(SQLModel, table=True):
     tool_errors: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+# Sortie d'une étape TERMINÉE (design, architecture, diagnostic) d'une exécution : permet de reprendre
+# une exécution en échec à l'étape qui a échoué, sans repayer les étapes déjà réussies (voir
+# crewquestion.resumable_prefix). Table NEUVE : create_all la crée sur une base existante.
+class ExecutionCheckpoint(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    execution_id: int = Field(index=True)
+    step: str  # clé d'étape : design | architecture | diagnostic
+    raw: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 # SQLModel.metadata.create_all() ne modifie jamais le schéma d'une table déjà existante.
 # Ces instructions rattrapent les colonnes ajoutées après la création initiale de la table
 # sur une base déjà en place (ex: Supabase en production). Sans effet sur une base neuve

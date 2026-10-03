@@ -57,6 +57,8 @@ export interface ChatTurn {
   id: number | string;
   errorCode?: string | null;
   errorRetryable?: boolean | null;
+  // Étapes déjà réussies d'une exécution précédente, réutilisées par cette reprise (voir « Relancer »).
+  resumedSteps?: string[];
   userMessage: string;
   // 'cancelled' est un état frontend uniquement : annuler n'interrompt que l'attente
   // côté navigateur, pas forcément l'exécution côté serveur (voir useConversation.ts).

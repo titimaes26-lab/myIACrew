@@ -19,7 +19,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   const [retryDraft, setRetryDraft] = useState<{ text: string; nonce: number } | null>(null);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const metricsApi = useMemo(() => ({ apiUrl: API_URL, accessToken }), [API_URL, accessToken]);
-  const { turns, sending, hasRunningTurn, error, connectionLost, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
+  const { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
   // `sending` seul (envoi en vol DANS cette session) ne suffit pas : un tour repris depuis
   // l'Historique peut encore être "running" côté serveur sans que CETTE session l'ait
   // elle-même envoyé (sending resterait alors false). Sans bloquer la saisie dans ce cas
@@ -55,6 +55,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   // de progression de useConversation.ts) casserait cette comparaison superficielle et
   // re-rendrait TOUS les tours à chaque sondage, pas seulement celui en cours.
   const handleRetry = useCallback((turn: ChatTurn) => {
+    prepareRetry(turn);
     setRetryDraft({ text: turn.userMessage, nonce: Date.now() });
     // Reprend le même type de workflow que le tour en échec (déjà connu, pas besoin de
     // repasser par /api/qualify) uniquement s'il s'agit d'une des 4 catégories reconnues :
@@ -64,7 +65,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
     if (turn.workflow && isWorkflowType(turn.workflow)) {
       setWorkflowType(turn.workflow);
     }
-  }, [setWorkflowType]);
+  }, [setWorkflowType, prepareRetry]);
 
   return (
     // #root (index.css) est display:flex ; ce div en est le seul enfant, donc un flex

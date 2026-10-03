@@ -108,7 +108,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(main, "engine", engine)
 
-    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None):
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         raise CrewStepError(2, 5, "Architecte ", RuntimeError("429 RESOURCE_EXHAUSTED"))
 
     class FakeCrew:

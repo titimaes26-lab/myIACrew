@@ -395,7 +395,7 @@ def test_successful_run_persists_agent_runs_and_real_llm_call_count(run_engine, 
     from types import SimpleNamespace
     from crewai.events.event_bus import crewai_event_bus
 
-    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None):
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         crewai_event_bus.emit(None, _llm_event(usage={"prompt_tokens": 30, "completion_tokens": 10}, call_id="a"))
         crewai_event_bus.emit(None, _llm_event(usage={"prompt_tokens": 20, "completion_tokens": 5}, call_id="b"))
         crewai_event_bus.emit(None, _llm_event(role="QA Engineer / Automated Tester", call_id="c"))
@@ -417,7 +417,7 @@ def test_successful_run_persists_agent_runs_and_real_llm_call_count(run_engine, 
 def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents(run_engine, monkeypatch):
     from crewai.events.event_bus import crewai_event_bus
 
-    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None):
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         crewai_event_bus.emit(None, _llm_event(usage={"total_tokens": 12}, call_id="x"))
         _current_metrics.get().record_agent_done(DESIGNER, 2.0)
         crewai_event_bus.emit(None, _llm_event(role="Analyste Diagnostic Technique", usage={"total_tokens": 8}, call_id="y"))

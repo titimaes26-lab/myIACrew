@@ -147,7 +147,7 @@ def test_failed_execution_reports_what_github_already_has(monkeypatch):
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(main, "engine", engine)
 
-    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None):
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         raise RuntimeError("boom")
 
     class FakeCrew:

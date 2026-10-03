@@ -11,6 +11,8 @@ export interface ExecuteAcceptedResponse {
   status: string;
   id: number;
   conversation_id: number;
+  // Étapes réutilisées d'une exécution en échec reprise (vide hors reprise).
+  resumed_steps?: string[];
 }
 
 // code/retryable viennent du backend (voir backend/errors.py) ; NETWORK_ERROR est produit ici quand
