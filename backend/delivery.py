@@ -203,3 +203,41 @@ def render_delivery_block(
             + ", ".join(unconfirmed) + " (à ne pas considérer comme une PR réelle)"
         )
     return "\n".join(lines)
+
+
+def render_partial_delivery_block(
+    owner: str, repo: str, branch: str, base_branch: str, partial=None, unavailable_reason: str | None = None
+) -> str:
+    """Bloc ajouté à un échec d'exécution : ce qui est DÉJÀ sur GitHub (constaté par l'API, jamais
+    déduit du texte d'un agent) et comment reprendre ou nettoyer. `partial` = PartialDelivery ;
+    None + `unavailable_reason` quand GitHub n'a pas pu être interrogé."""
+    lines = ["--- Travail déjà présent sur GitHub ---"]
+    repo_url = f"https://github.com/{owner}/{repo}"
+    if partial is None:
+        lines.append(
+            f"- Impossible de vérifier GitHub ({unavailable_reason or 'erreur inconnue'}) : la branche "
+            f"`{branch}` de {owner}/{repo} peut contenir des modifications déjà poussées."
+        )
+        return "\n".join(lines)
+    if not partial.branch_exists:
+        lines.append(f"- Rien n'a été poussé : la branche `{branch}` n'existe pas sur {owner}/{repo}.")
+        return "\n".join(lines)
+    detail = []
+    if partial.ahead_by is not None:
+        detail.append(f"{partial.ahead_by} commit(s) d'avance sur `{base_branch}`")
+    if partial.new_commits is True:
+        detail.append("dont de nouveaux commits de cette tentative")
+    elif partial.new_commits is False:
+        detail.append("aucun nouveau commit de cette tentative")
+    lines.append(
+        f"- Branche `{branch}` : {', '.join(detail) if detail else 'existe'} — {repo_url}/tree/{branch}"
+    )
+    if partial.pr_url:
+        lines.append(f"- Pull Request {'fusionnée' if partial.pr_state == 'merged' else 'ouverte'} : {partial.pr_url}")
+    else:
+        lines.append("- Pull Request : aucune ouverte pour cette branche")
+    lines.append(
+        "- Reprise : « Réessayer » continue sur cette même branche. "
+        f"Pour abandonner, fermez la PR éventuelle et supprimez la branche `{branch}`."
+    )
+    return "\n".join(lines)

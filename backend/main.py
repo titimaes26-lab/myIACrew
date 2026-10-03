@@ -23,10 +23,14 @@ from agent_metrics import (
     agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize,
 )
 from auth import get_current_user, close_http_client
+from orphans import sweep_stale_executions
 from errors import (
     AppError, ErrorCode, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
-from github_tools import verify_github_delivery, get_branch_head_sha, GitHubVerificationUnavailable
+from github_tools import (
+    verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
+)
+from delivery import render_partial_delivery_block
 
 # 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
 app = FastAPI(title="CrewAI App Development API")
@@ -40,6 +44,9 @@ app = FastAPI(title="CrewAI App Development API")
 # fois la tâche terminée, pour que cet ensemble ne grossisse pas indéfiniment sur la durée de vie
 # du process.
 _background_tasks: set[asyncio.Task] = set()
+# Identifiants des exécutions réellement en cours dans CE process : le balayage des orphelines
+# (orphans.py) ne les touche jamais, même après un long silence.
+_active_execution_ids: set[int] = set()
 
 # Limite le nombre d'exécutions de crew simultanées, TOUTES conversations confondues (le
 # garde-fou par conversation dans execute_workflow n'empêche qu'UNE MÊME conversation d'avoir
@@ -73,6 +80,15 @@ def on_startup():
     # (_log_memory) — utile pour juger d'emblée si le plan actuel a une marge suffisante pour ce
     # type de charge (CrewAI + plusieurs agents Gemini), avant même de lancer quoi que ce soit.
     _log_memory("démarrage du service")
+    # Libère les conversations bloquées par une exécution morte avec l'ancien process (crash, OOM,
+    # redéploiement). Best-effort : ne doit jamais empêcher le service de démarrer.
+    try:
+        with Session(engine) as session:
+            swept = sweep_stale_executions(session, active_ids=_active_execution_ids)
+        if swept:
+            print(f"Démarrage : {len(swept)} exécution(s) orpheline(s) marquée(s) interrompue(s) : {swept}", flush=True)
+    except Exception as e:
+        print(f"AVERTISSEMENT : balayage des exécutions orphelines impossible : {type(e).__name__}: {e}", flush=True)
 
 # Ferme proprement le client HTTP partagé de auth.py (voir sa docstring) plutôt que de
 # laisser ses connexions ouvertes à l'arrêt du process.
@@ -471,10 +487,25 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
             entry = step_session.get(ExecutionHistory, execution_id)
             if entry is not None:
                 entry.current_step = step_key
+                # Signe de vie : c'est ce qui distingue une exécution lente d'une exécution orpheline
+                # (voir orphans.sweep_stale_executions).
+                entry.updated_at = datetime.now(timezone.utc)
                 step_session.add(entry)
                 step_session.commit()
     except Exception as e:
         print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}", flush=True)
+
+async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branch: str, sha_before) -> str:
+    """Bloc « Travail déjà présent sur GitHub » d'un échec. Ne lève jamais et reste borné dans le
+    temps : constater l'état de GitHub ne doit ni masquer l'échec d'origine ni le retarder."""
+    try:
+        partial = await asyncio.wait_for(
+            asyncio.to_thread(describe_partial_delivery, owner, repo, branch, base_branch, sha_before), timeout=20,
+        )
+        return render_partial_delivery_block(owner, repo, branch, base_branch, partial)
+    except Exception as e:
+        reason = str(e) or type(e).__name__
+        return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
 
 def _persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics) -> None:
     """Une ligne AgentRun par agent mesuré (voir agent_metrics). Best-effort : une mesure qui ne
@@ -905,6 +936,15 @@ async def _run_crew_and_persist(
                 else:
                     detail = reason
 
+                # Écritures GitHub partielles : l'échec peut survenir après qu'une branche, des commits ou
+                # une PR ont DÉJÀ été créés. On le constate via l'API (jamais d'après le texte d'un agent)
+                # et on l'ajoute au message, pour que l'utilisateur sache quoi reprendre ou nettoyer.
+                if should_verify_github_delivery and data.repo_owner and data.repo_name and work_branch:
+                    detail += "\n\n" + await _partial_delivery_block(
+                        data.repo_owner, data.repo_name, work_branch, normalized_base_branch or "main",
+                        locals().get("repo_branch_sha_before"),
+                    )
+
                 # Couvre le cas (rare) où l'échec survient APRÈS un kickoff_async par ailleurs réussi
                 # (ex: _format_crew_result/_generate_summary, appelés dans crewquestion.py hors du
                 # try/except qui entoure kickoff_async) : run_dynamic_crew n'a alors PAS pu faire son
@@ -1070,9 +1110,18 @@ async def execute_workflow(
     # écriraient toutes les deux sur la même branche via github_write_file/github_edit_file,
     # qui se basent sur le SHA du fichier pour détecter les conflits (optimistic concurrency) —
     # l'une des deux échouerait alors avec un SHA obsolète au lieu d'une erreur claire.
-    # Limite connue : un tour resté bloqué à "running" (ex: crash serveur en cours d'exécution,
-    # qui saute le bloc except ci-dessous) bloquerait la conversation jusqu'à correction manuelle
-    # de son statut en base ; accepté ici plutôt que d'ajouter un mécanisme d'expiration.
+    # Un tour resté bloqué à "running" (crash serveur en cours d'exécution, qui saute le bloc except)
+    # est balayé ci-dessous (orphans.sweep_stale_executions) s'il n'a plus donné signe de vie.
+    if any(entry.status == "running" for entry in prior_entries):
+        # Une exécution morte (crash, redéploiement) ne doit pas bloquer la conversation pour toujours.
+        if sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation.id):
+            session.expire_all()
+            prior_entries = session.exec(
+                select(ExecutionHistory)
+                .where(ExecutionHistory.conversation_id == conversation.id)
+                .order_by(ExecutionHistory.created_at.asc())
+            ).all()
+            conversation_context = build_conversation_context(prior_entries)
     if any(entry.status == "running" for entry in prior_entries):
         raise HTTPException(
             status_code=409,
@@ -1146,6 +1195,8 @@ async def execute_workflow(
     ))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+    _active_execution_ids.add(db_entry.id)
+    task.add_done_callback(lambda _t, _id=db_entry.id: _active_execution_ids.discard(_id))
 
     return {"status": "running", "id": db_entry.id, "conversation_id": conversation.id}
 
@@ -1276,6 +1327,10 @@ async def get_conversation_progress(
     conversation = session.get(Conversation, conversation_id)
     if not conversation or conversation.user_id != user.get("id"):
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
+
+    # Libère une exécution morte : le frontend voit alors « plus rien en cours » et resynchronise le tour
+    # (désormais « failed »/INTERRUPTED) au lieu de sonder indéfiniment.
+    sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation_id)
 
     statement = (
         select(ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.current_step, ExecutionHistory.result)
@@ -1433,6 +1488,9 @@ async def delete_history_entry(
 ):
     """Supprime une exécution de l'historique de l'utilisateur courant."""
     print(f"DELETE /api/history/{execution_id} appelé par {user.get('id')}", flush=True)
+    # Une exécution orpheline (plus de signe de vie) devient « failed » donc supprimable.
+    sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"))
+    session.expire_all()
     entry = session.get(ExecutionHistory, execution_id)
     if not entry:
         print(f"  → Entrée {execution_id} introuvable en base", flush=True)
@@ -1475,6 +1533,9 @@ async def bulk_delete_history(
     if len(ids) > BULK_DELETE_MAX:
         raise HTTPException(status_code=422, detail=f"{BULK_DELETE_MAX} exécutions au plus par suppression.")
     entries = {}
+    if ids:
+        sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"))
+        session.expire_all()
     # Hors plage d'un entier SQL : forcément inconnu (et fatal pour la requête IN sous Postgres/SQLite).
     valid_ids = [i for i in ids if 0 < i <= _SQL_INT_MAX]
     if valid_ids:

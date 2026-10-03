@@ -907,3 +907,47 @@ def open_or_update_pull_request(
         return None, _github_error(e)
     except Exception as e:
         return None, f"ERREUR : {str(e)}"
+
+
+class PartialDelivery(NamedTuple):
+    """Ce qui existe RÉELLEMENT sur GitHub après une exécution en échec (voir
+    describe_partial_delivery). `new_commits` : True/False si l'on sait comparer au SHA d'avant
+    l'exécution, None sinon. `ahead_by` : commits d'avance sur la branche de base (None si inconnu)."""
+    branch: str
+    branch_exists: bool
+    new_commits: bool | None
+    ahead_by: int | None
+    pr_url: str | None
+    pr_state: str | None  # "open" | "merged" | None
+
+
+def describe_partial_delivery(
+    owner: str, repo: str, branch: str, base_branch: str, sha_before: str | None
+) -> PartialDelivery:
+    """Constate (lecture seule) ce qu'une exécution ÉCHOUÉE a déjà écrit sur GitHub : branche,
+    commits d'avance, Pull Request. Lève GitHubVerificationUnavailable si GitHub ne répond pas
+    (l'appelant l'indique alors à l'utilisateur au lieu d'affirmer « rien n'a été poussé »).
+    Les détails secondaires (comparaison, PR) sont best-effort : leur échec laisse None, il
+    n'invalide pas ce qui a été constaté sur la branche."""
+    sha_after = get_branch_head_sha(owner, repo, branch)
+    if sha_after is None:
+        return PartialDelivery(branch, False, None, None, None, None)
+
+    new_commits = (sha_after != sha_before) if sha_before is not None else None
+    ahead_by = None
+    pr_url = None
+    pr_state = None
+    try:
+        gh_repo = _get_repo(owner, repo)
+        try:
+            ahead_by = gh_repo.compare(base_branch, branch).ahead_by
+        except Exception:
+            ahead_by = None
+        for pull in gh_repo.get_pulls(state="all", head=f"{owner}:{branch}", base=base_branch):
+            if pull.state == "open" or pull.merged_at is not None:
+                pr_url = pull.html_url
+                pr_state = "merged" if pull.merged_at is not None else "open"
+                break
+    except Exception:
+        pass
+    return PartialDelivery(branch, True, new_commits, ahead_by, pr_url, pr_state)

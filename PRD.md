@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.5 — Mise à jour le 2026-10-03
+> Version : 1.6 — Mise à jour le 2026-10-03
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles.
 
 ---
 
@@ -103,10 +103,13 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 ### 2.9 Gestion des erreurs
 
 - **Format unique** : toute erreur de l'API est `{"detail": message, "code": CODE, "retryable": bool}` (`detail` reste la clé lue par le frontend). Les gestionnaires de `main.py` couvrent `AppError` (erreur volontaire d'un endpoint), `HTTPException` (y compris les 404/405 de routes et `auth.py`), les erreurs de validation (422, `detail` = phrase lisible, liste détaillée dans `errors`) et toute exception non prévue (500 générique, détail dans les logs seulement).
-- **Codes** (`backend/errors.py`) : `QUOTA_EXHAUSTED`, `LLM_UNAVAILABLE`, `LLM_TIMEOUT`, `GITHUB_UNAVAILABLE`, `GUARDRAIL_FAILED`, `INTERNAL_ERROR`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `SERVICE_UNAVAILABLE`. `classify_exception` range un échec du crew dans un code ; les mots-clés de quota/indisponibilité sont partagés avec les retries de `crewquestion.py`.
+- **Codes** (`backend/errors.py`) : `QUOTA_EXHAUSTED`, `LLM_UNAVAILABLE`, `LLM_TIMEOUT`, `GITHUB_UNAVAILABLE`, `GUARDRAIL_FAILED`, `INTERRUPTED`, `INTERNAL_ERROR`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `SERVICE_UNAVAILABLE`. `classify_exception` range un échec du crew dans un code ; les mots-clés de quota/indisponibilité sont partagés avec les retries de `crewquestion.py`.
 - **Aucune fuite** : `/api/qualify` ne renvoie plus `str(e)` mais un message lisible lié au code (429/503/504/500).
 - **Échecs d'exécution** : `executionhistory` stocke `error_code` et `error_retryable` ; l'étape en échec reste dans `result` (« Échec à l'étape N/M »). `result` contient un message lisible pour une cause reconnue, suivi du texte technique d'origine tronqué (« détail : … »). La classification remonte la chaîne `__cause__` (un timeout ou une panne GitHub dans une étape est reconnu) et compare des mots entiers (« 429 » ne reconnaît pas `page_4290.tsx`).
 - **Interface** : `ApiError` porte `status`, `code`, `retryable` ; un serveur injoignable donne `NETWORK_ERROR` (« Impossible de joindre le serveur »). `ErrorBanner` affiche l'erreur avec « Réessayer » quand elle est transitoire (rechargement de l'historique). Sous un échec d'exécution, un conseil adapté au code est affiché (réessayer plus tard, ou reformuler la demande).
+
+- **Exécutions orphelines** (`backend/orphans.py`) : une exécution restée `running` après un crash ou un redéploiement est marquée `failed` / `INTERRUPTED` (retryable) quand elle n'a plus donné signe de vie depuis 10 minutes (chaque changement d'étape met `updated_at` à jour) et n'est pas en cours dans le process courant (`_active_execution_ids`). Balayage au démarrage, au sondage de progression, avant le contrôle de concurrence de `/api/execute` (plus de 409 éternel) et avant toute suppression (une ligne orpheline devient supprimable). Le texte déjà produit est conservé. Limite : après un crash, la conversation est libérée au bout de 10 minutes, pas immédiatement ; avec plusieurs instances du backend, le délai de 10 minutes protège les exécutions vivantes des autres instances.
+- **Écritures GitHub partielles** : quand une exécution échoue sur un repository cible, le message d'échec est complété par un bloc « Travail déjà présent sur GitHub » constaté via l'API (`describe_partial_delivery`, lecture seule, 20 s maximum) : branche et commits d'avance (dont nouveaux commits de cette tentative), Pull Request ouverte ou fusionnée, ou « rien n'a été poussé ». Si GitHub est injoignable, le bloc le dit au lieu d'affirmer qu'il n'y a rien. Il rappelle que « Réessayer » reprend sur la même branche et comment abandonner (fermer la PR, supprimer la branche).
 
 ---
 
