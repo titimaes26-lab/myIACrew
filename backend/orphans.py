@@ -19,6 +19,7 @@ from errors import ErrorCode
 # plusieurs battements : une instance voisine (déploiement en continu) ne voit jamais une exécution
 # vivante comme morte.
 HEARTBEAT_SECONDS = 60
+HEARTBEAT_RETRY_SECONDS = 10
 ORPHAN_AFTER_SECONDS = 600
 
 INTERRUPTED_MESSAGE = (
@@ -49,11 +50,11 @@ def sweep_stale_executions(
     périmètre demandé : pas de requête sur toute la table à chaque sondage de progression)."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=max_age_seconds)
-    # Le filtre d'âge est posé dans la requête : seules les lignes réellement périmées sont chargées
-    # (le sondage de progression appelle ceci toutes les quelques secondes).
-    statement = select(ExecutionHistory).where(
-        ExecutionHistory.status == "running", ExecutionHistory.updated_at < cutoff
-    )
+    # Requête légère (id + updated_at seulement, jamais le gros champ `result`) : le sondage de
+    # progression appelle ceci toutes les quelques secondes. L'âge est jugé UNIQUEMENT en Python,
+    # fuseau explicite : comparer en SQL un cutoff avec fuseau à une colonne TIMESTAMP sans fuseau
+    # dépend du fuseau de session Postgres et pourrait masquer de vraies orphelines.
+    statement = select(ExecutionHistory.id, ExecutionHistory.updated_at).where(ExecutionHistory.status == "running")
     if ids is not None:
         statement = statement.where(ExecutionHistory.id.in_(list(ids)))
     if conversation_id is not None:
@@ -61,10 +62,14 @@ def sweep_stale_executions(
     if user_id is not None:
         statement = statement.where(ExecutionHistory.user_id == user_id)
 
+    stale_ids = [
+        row_id for row_id, updated_at in session.exec(statement).all()
+        if row_id not in active_ids and _aware(updated_at) < cutoff
+    ]
     swept: List[int] = []
-    for entry in session.exec(statement).all():
-        if entry.id in active_ids or _aware(entry.updated_at) >= cutoff:
-            continue
+    if not stale_ids:
+        return swept
+    for entry in session.exec(select(ExecutionHistory).where(ExecutionHistory.id.in_(stale_ids))).all():
         # Garde le texte déjà produit (sections des agents terminés) : utile pour comprendre où ça
         # s'est arrêté ; le message d'interruption est ajouté à la suite.
         previous = (entry.result or "").strip()

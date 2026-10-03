@@ -234,7 +234,7 @@ def render_partial_delivery_block(
     )
     if partial.pr_url:
         lines.append(f"- Pull Request {'fusionnée' if partial.pr_state == 'merged' else 'ouverte'} : {partial.pr_url}")
-    elif getattr(partial, "pr_checked", True):
+    elif partial.pr_checked:
         lines.append("- Pull Request : aucune ouverte pour cette branche")
     else:
         lines.append("- Pull Request : non vérifiée (GitHub n'a pas répondu) — vérifiez-la avant de réessayer")

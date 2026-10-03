@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
+from sqlalchemy import update as sql_update
 from sqlmodel import Session, func, select
 
 from crewquestion import (
@@ -23,7 +24,7 @@ from agent_metrics import (
     agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize,
 )
 from auth import get_current_user, close_http_client
-from orphans import HEARTBEAT_SECONDS, sweep_stale_executions
+from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from errors import (
     AppError, ErrorCode, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
@@ -507,24 +508,33 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
         reason = "délai dépassé" if isinstance(e, (asyncio.TimeoutError, TimeoutError)) else (str(e) or type(e).__name__)
         return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
 
-def _touch_execution(execution_id: int) -> None:
-    """Signe de vie (updated_at) d'une exécution en cours. Best-effort."""
+def _touch_execution(execution_id: int) -> bool:
+    """Signe de vie (updated_at) d'une exécution en cours. Best-effort ; True si écrit sans erreur.
+    Un seul UPDATE conditionnel (status='running') : un battement tardif ne peut pas écraser le
+    updated_at final d'une exécution déjà terminée (la durée affichée s'en déduit)."""
     try:
         with Session(engine) as heartbeat_session:
-            entry = heartbeat_session.get(ExecutionHistory, execution_id)
-            if entry is not None and entry.status == "running":
-                entry.updated_at = datetime.now(timezone.utc)
-                heartbeat_session.add(entry)
-                heartbeat_session.commit()
+            heartbeat_session.exec(
+                sql_update(ExecutionHistory)
+                .where(ExecutionHistory.id == execution_id, ExecutionHistory.status == "running")
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            heartbeat_session.commit()
+        return True
     except Exception as e:
         print(f"AVERTISSEMENT : battement de l'exécution {execution_id} impossible : {type(e).__name__}: {e}", flush=True)
+        return False
 
 async def _heartbeat(execution_id: int) -> None:
     """Écrit un signe de vie toutes les HEARTBEAT_SECONDS tant que l'exécution tourne, même pendant
     une longue étape ou une pause de quota (sinon une instance voisine la croirait morte)."""
     while True:
         await asyncio.sleep(HEARTBEAT_SECONDS)
-        await asyncio.to_thread(_touch_execution, execution_id)
+        if not await asyncio.to_thread(_touch_execution, execution_id):
+            # Échec (base occupée, coupure brève) : un nouvel essai rapide plutôt que d'attendre un
+            # battement entier, pour ne pas laisser updated_at vieillir jusqu'au seuil des orphelines.
+            await asyncio.sleep(HEARTBEAT_RETRY_SECONDS)
+            await asyncio.to_thread(_touch_execution, execution_id)
 
 def _track_execution_task(task: asyncio.Task, execution_id: int) -> None:
     """Un seul endroit pour tout le suivi d'une tâche de fond : référence forte (anti-GC, voir
@@ -1534,8 +1544,7 @@ async def delete_history_entry(
 
     # Bloqué sur status="running" : une exécution orpheline (plus de signe de vie, voir orphans.py)
     # vient d'être balayée ci-dessus et n'est donc plus "running" ; ce qui reste "running" est une
-    # exécution vivante (ou récemment vivante). Autoriser la
-    # suppression dans ce second cas romprait le contrôle de concurrence d'/api/execute (qui ne
+    # exécution vivante (ou récemment vivante). Autoriser la suppression d'une exécution vivante romprait le contrôle de concurrence d'/api/execute (qui ne
     # regarde plus que les lignes encore en base pour décider si la conversation est libre) sans
     # rien faire pour arrêter le crew qui tourne encore réellement en tâche de fond : une nouvelle
     # exécution démarrerait alors EN PARALLÈLE de celle "supprimée" sur la même conversation

@@ -248,3 +248,30 @@ def test_heartbeat_touches_only_running_rows(monkeypatch):
     with Session(engine) as db:
         assert db.get(ExecutionHistory, ids[0]).updated_at.replace(tzinfo=None) > before + timedelta(seconds=60)
         assert db.get(ExecutionHistory, ids[1]).updated_at.replace(tzinfo=None) <= before + timedelta(seconds=1)
+
+
+def test_heartbeat_retries_quickly_after_a_failed_write(monkeypatch):
+    calls = []
+
+    def flaky(execution_id):
+        calls.append(execution_id)
+        return len(calls) > 1  # le premier battement échoue
+
+    monkeypatch.setattr(main, "_touch_execution", flaky)
+    monkeypatch.setattr(main, "HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(main, "HEARTBEAT_RETRY_SECONDS", 0.01)
+
+    async def scenario():
+        task = asyncio.create_task(main._heartbeat(7))
+        await asyncio.sleep(0.15)
+        task.cancel()
+
+    asyncio.run(scenario())
+    assert calls[:2] == [7, 7]  # échec puis nouvel essai sans attendre un battement entier
+
+
+def test_touch_reports_failure_instead_of_raising(monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(main, "Session", broken)
+    assert main._touch_execution(1) is False
