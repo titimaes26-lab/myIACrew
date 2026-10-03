@@ -36,6 +36,10 @@ export interface ExecutionHistoryEntry {
   // null dès que l'exécution quitte "running" (succès OU échec) — voir
   // ExecutionHistory.current_step côté backend pour le détail du pourquoi.
   current_step: string | null;
+  // Cause d'un échec (voir backend/errors.py) ; null hors statut 'failed' ou pour les anciennes lignes.
+  error_code: string | null;
+  error_retryable: boolean | null;
+  error_step: string | null;
 }
 
 export interface RepoTarget {
@@ -52,6 +56,8 @@ export interface RepoTargetSuggestion {
 
 export interface ChatTurn {
   id: number | string;
+  errorCode?: string | null;
+  errorRetryable?: boolean | null;
   userMessage: string;
   // 'cancelled' est un état frontend uniquement : annuler n'interrompt que l'attente
   // côté navigateur, pas forcément l'exécution côté serveur (voir useConversation.ts).

@@ -4,6 +4,8 @@ import type { ExecutionHistoryEntry } from '../types';
 import { useHistorySelection } from '../hooks/useHistorySelection';
 import HistoryEntryRow from './HistoryEntryRow';
 import HistorySelectionBar from './HistorySelectionBar';
+import ErrorBanner from './ErrorBanner';
+import { toDisplayedError, type DisplayedError } from '../utils/errors';
 
 interface HistoryPanelProps {
   apiUrl: string;
@@ -20,7 +22,8 @@ function plural(count: number, singular: string, pluralForm: string): string {
 export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation }: HistoryPanelProps) {
   const [entries, setEntries] = useState<ExecutionHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DisplayedError | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -40,7 +43,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
         if (!cancelled) setEntries(data);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Impossible de charger l'historique.");
+        if (!cancelled) setError(toDisplayedError(err, "Impossible de charger l'historique."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -49,7 +52,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, accessToken]);
+  }, [apiUrl, accessToken, reloadKey]);
 
   const handleDelete = async (id: number) => {
     if (!window.confirm('Supprimer cette exécution de l\'historique ?')) return;
@@ -62,7 +65,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
       await apiClient(apiUrl, accessToken).deleteHistoryEntry(id);
       setEntries((current) => current.filter((entry) => entry.id !== id));
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Suppression impossible.');
+      setError(toDisplayedError(err, 'Suppression impossible.'));
     } finally {
       setBusy(false);
       setDeletingId(null);
@@ -98,7 +101,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
         );
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Suppression impossible.');
+      setError(toDisplayedError(err, 'Suppression impossible.'));
     } finally {
       setBusy(false);
     }
@@ -109,7 +112,14 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
       <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>📜 Historique des exécutions</p>
 
       {loading && <p style={{ color: '#666', fontSize: '14px' }}>Chargement...</p>}
-      {error && <p role="alert" style={{ color: '#991b1b', fontSize: '14px' }}>❌ {error}</p>}
+      {error && (
+        <ErrorBanner
+          message={error.message}
+          retryable={error.retryable}
+          // Seul le chargement de la liste se relance d'un clic : une suppression se refait depuis la ligne.
+          onRetry={entries.length === 0 ? () => { setError(null); setLoading(true); setReloadKey((k) => k + 1); } : undefined}
+        />
+      )}
       {notice && <p role="status" style={{ color: '#92400e', fontSize: '14px' }}>ℹ️ {notice}</p>}
       {!loading && !error && entries.length === 0 && (
         <p style={{ color: '#666', fontSize: '14px' }}>Aucune exécution pour l'instant.</p>

@@ -3,6 +3,7 @@ import type { ChatTurn } from '../types';
 import StepIndicator from './StepIndicator';
 import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
+import { failureHint } from '../utils/errors';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
 import AgentSummary from './AgentSummary';
@@ -59,6 +60,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
+  const hint = turn.status === 'failed' ? failureHint(turn.errorCode, turn.errorRetryable) : null;
   // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
   // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
   // l'un est modifié sans l'autre (ex: JSX étendu à un autre statut sans mettre à jour
@@ -149,6 +151,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
             <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace', color: '#7f1d1d' }}>
               {failure.message}
             </pre>
+            {hint && <p style={{ margin: '8px 0 0', fontSize: '13px', color: '#7f1d1d' }}>{hint}</p>}
           </div>
         )}
 
@@ -157,6 +160,8 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
             {turn.result}
           </pre>
         )}
+
+        {hint && !failure && <p style={{ margin: 0, fontSize: '13px', color: '#7f1d1d' }}>{hint}</p>}
 
         {turn.status === 'failed' && onRetry && (
           <button

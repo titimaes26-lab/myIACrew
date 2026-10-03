@@ -1,3 +1,4 @@
+import ErrorBanner from './components/ErrorBanner';
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { useConversation } from './hooks/useConversation';
 import { MetricsApiContext } from './hooks/metricsApi';
@@ -100,9 +101,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
       )}
 
       {error && (
-        <div role="alert" style={{ padding: '12px 16px', backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', color: '#991b1b', marginBottom: '20px', fontWeight: '500' }}>
-          ❌ {error}
-        </div>
+        <ErrorBanner message={error} />
       )}
 
       <ChatThread turns={turns} onRetry={handleRetry} retryDisabled={retryDisabled} />

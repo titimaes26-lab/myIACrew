@@ -56,6 +56,12 @@ class ExecutionHistory(SQLModel, table=True):
     api_calls_count: Optional[int] = None
     rate_limit_hits: Optional[int] = None
     total_wait_time_seconds: Optional[float] = None
+    # Cause d'un échec (voir errors.classify_exception) : renseignés uniquement quand status="failed".
+    # error_code = code stable (QUOTA_EXHAUSTED, GUARDRAIL_FAILED, INTERNAL_ERROR...), error_retryable =
+    # « réessayer tel quel a une chance de réussir », error_step = rôle de l'agent en échec (ou None).
+    error_code: Optional[str] = None
+    error_retryable: Optional[bool] = None
+    error_step: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -101,6 +107,9 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS rate_limit_hits INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS total_wait_time_seconds FLOAT",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS current_step VARCHAR",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_code VARCHAR",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_retryable BOOLEAN",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_step VARCHAR",
 ]
 
 def _run_lightweight_migrations():

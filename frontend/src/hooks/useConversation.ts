@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiClient, type ExecuteAcceptedResponse } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, QualificationReport, RepoTarget } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
+import { toDisplayedError } from '../utils/errors';
 
 // Fréquence de sondage de la progression réelle (voir l'effet plus bas) : assez rapide pour
 // paraître réactif face à des étapes qui durent typiquement plusieurs dizaines de secondes,
@@ -25,6 +26,8 @@ function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
     rateLimitHits: entry.rate_limit_hits,
     totalWaitTimeSeconds: entry.total_wait_time_seconds,
     currentStep: entry.current_step,
+    errorCode: entry.error_code,
+    errorRetryable: entry.error_retryable,
   };
 }
 
@@ -351,7 +354,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       setConversationResetSignal((n) => n + 1);
     } catch (err: unknown) {
       if (myGeneration !== conversationGenerationRef.current) return;
-      setError(err instanceof Error ? err.message : 'Impossible de charger cette conversation.');
+      setError(toDisplayedError(err, 'Impossible de charger cette conversation.').message);
     }
   };
 
@@ -539,7 +542,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
           : turn)));
         return;
       }
-      const message = err instanceof Error ? err.message : 'Une erreur est survenue.';
+      const message = toDisplayedError(err, 'Une erreur est survenue.').message;
       setTurns((t) => t.map((turn) => (turn.id === tempId
         ? { ...turn, status: 'failed', result: message, updatedAt: new Date().toISOString() }
         : turn)));

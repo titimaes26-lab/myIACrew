@@ -33,6 +33,7 @@ from crewai.project import CrewBase, agent, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tools import tool
 from tools import check_syntax
+from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
 from github_tools import (
     github_read_file,
     github_list_directory,
@@ -90,10 +91,7 @@ register_event_listeners()
 # puissent jamais diverger silencieusement si l'un est mis à jour (ex: nouveau message d'erreur
 # Gemini à reconnaître) sans que l'autre le soit.
 def _is_retryable_error(err_msg: str) -> bool:
-    return any(marker in err_msg for marker in (
-        "429", "resource_exhausted", "rate limit", "quota",
-        "503", "unavailable", "high demand", "overloaded",
-    ))
+    return any(marker in err_msg for marker in QUOTA_MARKERS + UNAVAILABLE_MARKERS)
 
 def _compute_backoff_wait(err_msg: str, retries: int, base_delay: float) -> float:
     match = re.search(r'retry after (\d+(\.\d+)?)', err_msg)

@@ -1,3 +1,4 @@
+import { toDisplayedError } from '../utils/errors';
 import { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api';
 import type { MetricsSummary, MetricsWorkflowFilter } from '../types';
@@ -24,7 +25,7 @@ export function useMetricsSummary(apiUrl: string, accessToken: string, days: num
         setLoaded((previous) => ({
           key,
           data: previous?.data ?? null,
-          error: err instanceof Error ? err.message : 'Impossible de charger les métriques.',
+          error: toDisplayedError(err, 'Impossible de charger les métriques.').message,
         }));
       });
     return () => controller.abort();

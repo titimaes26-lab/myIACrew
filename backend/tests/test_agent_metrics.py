@@ -421,13 +421,14 @@ def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents
         crewai_event_bus.emit(None, _llm_event(usage={"total_tokens": 12}, call_id="x"))
         _current_metrics.get().record_agent_done(DESIGNER, 2.0)
         crewai_event_bus.emit(None, _llm_event(role="Analyste Diagnostic Technique", usage={"total_tokens": 8}, call_id="y"))
-        raise RuntimeError("quota épuisé")
+        raise RuntimeError("boom inattendu")
 
     execution_id = _launch(run_engine, monkeypatch, fake_run)
     with Session(run_engine) as db:
         entry = db.get(ExecutionHistory, execution_id)
         runs = {r.agent: r for r in db.exec(select(AgentRun)).all()}
-    assert entry.status == "failed" and "quota épuisé" in entry.result and entry.api_calls_count == 2
+    assert entry.status == "failed" and "boom inattendu" in entry.result and entry.api_calls_count == 2
+    assert (entry.error_code, entry.error_retryable) == ("INTERNAL_ERROR", False)
     assert runs["design"].status == "completed" and runs["diagnostic"].status == "incomplete"
     assert runs["diagnostic"].duration_seconds is None and runs["diagnostic"].llm_calls == 1
 

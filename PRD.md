@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.4 — Mise à jour le 2026-10-03
+> Version : 1.5 — Mise à jour le 2026-10-03
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées.
 
 ---
 
@@ -99,6 +99,14 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 - **Persistance** : une ligne `agentrun` par agent mesuré, écrite en fin d'exécution (succès ou échec). Un agent qui a fait des appels sans terminer sa tâche est marqué `incomplete`. L'écriture est « au mieux » : elle n'échoue jamais l'exécution.
 - **Tableau de bord** (bouton « 📊 Performance » du Studio, chargé à la demande) : filtres période (7, 30, 90 jours) et workflow ; tuiles (exécutions, taux de succès, durée médiane, appels LLM, tokens, pauses quota) ; durée par agent (médiane en barre, p95 en point, un seul axe) ; tokens par agent (entrée/sortie empilées) ; appels LLM par jour ; tableau de détail. Chaque graphique a un jumeau tableau, une infobulle (souris et clavier) et des couleurs validées en clair et en sombre.
 - **Détail d'une exécution** : sous chaque message terminé, « Voir la performance par agent » affiche durée, appels LLM, tokens et outils de cette exécution.
+
+### 2.9 Gestion des erreurs
+
+- **Format unique** : toute erreur de l'API est `{"detail": message, "code": CODE, "retryable": bool}` (`detail` reste la clé lue par le frontend). Les gestionnaires de `main.py` couvrent `AppError` (erreur volontaire d'un endpoint), `HTTPException` (y compris les 404/405 de routes et `auth.py`), les erreurs de validation (422, `detail` = phrase lisible, liste détaillée dans `errors`) et toute exception non prévue (500 générique, détail dans les logs seulement).
+- **Codes** (`backend/errors.py`) : `QUOTA_EXHAUSTED`, `LLM_UNAVAILABLE`, `LLM_TIMEOUT`, `GITHUB_UNAVAILABLE`, `GUARDRAIL_FAILED`, `INTERNAL_ERROR`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `SERVICE_UNAVAILABLE`. `classify_exception` range un échec du crew dans un code ; les mots-clés de quota/indisponibilité sont partagés avec les retries de `crewquestion.py`.
+- **Aucune fuite** : `/api/qualify` ne renvoie plus `str(e)` mais un message lisible lié au code (429/503/504/500).
+- **Échecs d'exécution** : `executionhistory` stocke `error_code`, `error_retryable` et `error_step` (rôle de l'agent en échec). `result` contient un message lisible pour une cause reconnue, le texte d'origine sinon.
+- **Interface** : `ApiError` porte `status`, `code`, `retryable` ; un serveur injoignable donne `NETWORK_ERROR` (« Impossible de joindre le serveur »). `ErrorBanner` affiche l'erreur avec « Réessayer » quand elle est transitoire (rechargement de l'historique). Sous un échec d'exécution, un conseil adapté au code est affiché (réessayer plus tard, ou reformuler la demande).
 
 ---
 
@@ -202,6 +210,7 @@ POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [
 | `result` | text (nullable) | sortie du crew, une section par agent avec sa durée |
 | `status` | text | `running` \| `success` \| `failed` |
 | `current_step` | text (nullable) | étape en cours (`design`, `architecture`, `diagnostic`, `development`, `qa`), vidée à la fin |
+| `error_code` / `error_retryable` / `error_step` | text / bool / text (nullables) | cause d'un échec (voir 2.9), uniquement si `status = failed` |
 | `user_id` | text (indexé) | auteur (id Supabase) |
 | `conversation_id` | int (indexé) | fil de conversation |
 | `repo_owner`, `repo_name`, `base_branch`, `work_branch` | text (nullable) | cible GitHub et branche de travail |

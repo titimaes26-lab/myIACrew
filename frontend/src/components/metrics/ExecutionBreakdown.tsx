@@ -1,3 +1,4 @@
+import { toDisplayedError } from '../../utils/errors';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../../api';
 import { MetricsApiContext } from '../../hooks/metricsApi';
@@ -56,7 +57,7 @@ export default function ExecutionBreakdown({ executionId }: { executionId: numbe
       .then((runs) => setLoaded({ executionId, runs, error: null }))
       .catch((err: unknown) => {
         if (!controller.signal.aborted) {
-          setLoaded({ executionId, runs: null, error: err instanceof Error ? err.message : 'Impossible de charger le détail.' });
+          setLoaded({ executionId, runs: null, error: toDisplayedError(err, 'Impossible de charger le détail.').message });
         }
       });
     return () => controller.abort();
