@@ -1,4 +1,5 @@
 import asyncio
+import os
 import traceback
 import uuid
 import re
@@ -17,6 +18,7 @@ from sqlmodel import Session, func, select
 from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
     build_conversation_context, track_execution_metrics, workflow_step_keys, resumable_prefix, RESUMABLE_STEPS,
+    FINALIZATION_ROLE,
     AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
 )
 from database import (
@@ -290,7 +292,7 @@ _GITHUB_ACCESS_ERRORS = {
 
 _GITHUB_PRECHECK_TIMEOUT_S = 15
 # Seconde tentative automatique (une seule) après un échec transitoire : délai avant de relancer.
-AUTO_RETRY_DELAY_S = 90
+AUTO_RETRY_DELAY_S = float(os.getenv("AUTO_RETRY_DELAY_S", "90"))
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
 
@@ -672,6 +674,36 @@ def _load_checkpoints_for(execution_id: int) -> dict[str, str]:
     with Session(engine) as checkpoint_session:
         return _load_checkpoints(checkpoint_session, execution_id)
 
+def _delete_checkpoints_for(execution_id: int) -> None:
+    """Les points de reprise ne servent qu'à une exécution en échec : inutiles (et volumineux, le code
+    complet de l'Analyste y figure) une fois celle-ci réussie. Best-effort."""
+    try:
+        with Session(engine) as cleanup_session:
+            for checkpoint in cleanup_session.exec(
+                select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id)
+            ).all():
+                cleanup_session.delete(checkpoint)
+            cleanup_session.commit()
+    except Exception as e:
+        print(f"AVERTISSEMENT : purge des points de reprise impossible (execution_id={execution_id}) : {type(e).__name__}: {e}", flush=True)
+
+def _fail_execution(execution_id: int, message: str) -> None:
+    """Marque une exécution « failed » (interne) quand plus aucun autre chemin ne peut le faire. Best-effort."""
+    try:
+        with Session(engine) as fail_session:
+            entry = fail_session.get(ExecutionHistory, execution_id)
+            if entry is not None and entry.status == "running":
+                entry.status = "failed"
+                entry.result = message
+                entry.current_step = None
+                entry.error_code = ErrorCode.INTERNAL_ERROR
+                entry.error_retryable = False
+                entry.updated_at = datetime.now(timezone.utc)
+                fail_session.add(entry)
+                fail_session.commit()
+    except Exception:
+        pass
+
 def _failed_before_development(exc: BaseException, request_type: str) -> bool:
     """Vrai si l'échec est celui d'une étape reprenable (design, architecture, diagnostic) : seul cas où
     une relance automatique ne réécrit rien sur GitHub. Faux pour tout échec hors étape (création du crew,
@@ -679,7 +711,7 @@ def _failed_before_development(exc: BaseException, request_type: str) -> bool:
     if not isinstance(exc, CrewStepError):
         return False
     keys = workflow_step_keys(request_type)
-    return 1 <= exc.step_index <= len(keys) and keys[exc.step_index - 1] in RESUMABLE_STEPS and exc.agent_role != "finalisation du résultat"
+    return 1 <= exc.step_index <= len(keys) and keys[exc.step_index - 1] in RESUMABLE_STEPS and exc.agent_role != FINALIZATION_ROLE
 
 def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id, conversation_id: int) -> dict[str, str]:
     """Sorties réutilisables pour `data.resume_from_execution_id`, ou {} si cette exécution n'est pas
@@ -694,6 +726,7 @@ def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id
         # Même demande : réutiliser design/architecture/code d'une AUTRE demande ferait committer du code pour
         # la mauvaise demande.
         or (previous.user_request or "").strip() != data.user_request.strip()
+        or (previous.clarifications or "").strip() != (data.clarifications or "").strip()
         or (previous.repo_owner or None) != data.repo_owner or (previous.repo_name or None) != data.repo_name
         or (previous.base_branch or None) != ((data.base_branch or "main") if data.repo_owner and data.repo_name else None)
     ):
@@ -747,15 +780,23 @@ async def _execute_crew_and_persist(
         )
     if retry_outputs is not None:
         # Seconde tentative automatique : l'attente se fait HORS du sémaphore (et hors de toute Session
-        # de base) pour ne bloquer ni un emplacement d'exécution ni une connexion pendant 90 s.
-        await asyncio.sleep(AUTO_RETRY_DELAY_S)
-        await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
-        async with _execution_semaphore:
-            await _run_crew_and_persist(
-                db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
-                work_branch, normalized_base_branch, final_prompt, conversation_context,
-                resume_outputs=retry_outputs, auto_retry_allowed=False,
-            )
+        # de base) pour ne bloquer ni un emplacement d'exécution ni une connexion pendant 90 s. « queued »
+        # (et non None) pendant l'attente : None ferait simuler une progression par StepIndicator.
+        try:
+            await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
+            await asyncio.sleep(AUTO_RETRY_DELAY_S)
+            async with _execution_semaphore:
+                await _run_crew_and_persist(
+                    db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
+                    work_branch, normalized_base_branch, final_prompt, conversation_context,
+                    resume_outputs=retry_outputs, auto_retry_allowed=False,
+                )
+        except BaseException as e:
+            # Annulation pendant l'attente (arrêt du service) ou erreur imprévue avant la 2e tentative :
+            # la ligne ne doit pas rester « running » et le suivi d'idempotence ne doit pas fuir.
+            _fail_execution(db_entry_id, f"Exécution interrompue pendant l'attente de la nouvelle tentative : {type(e).__name__}")
+            _cleanup_persisted_agents(db_entry_id)
+            raise
 
 async def _run_crew_and_persist(
     db_entry_id: int,
@@ -1044,12 +1085,6 @@ async def _run_crew_and_persist(
                 _safe_refresh(session, db_entry, "succès")
 
                 db_entry.result = raw_result
-                # Les points de reprise ne servent qu'à une exécution en échec : inutiles (et volumineux,
-                # le code complet de l'Analyste y figure) une fois celle-ci réussie.
-                for checkpoint in session.exec(
-                    select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == db_entry.id)
-                ).all():
-                    session.delete(checkpoint)
                 db_entry.status = "success"
                 # Plus rien à afficher une fois l'exécution terminée avec succès (voir current_step sur
                 # ExecutionHistory) : remis à None plutôt que laissé sur la dernière étape annoncée. Le
@@ -1067,6 +1102,9 @@ async def _run_crew_and_persist(
                 session.add(conversation)
                 session.commit()
                 print(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).", flush=True)
+                # Après le commit du succès, dans sa propre Session et au mieux : purger une ressource
+                # optionnelle ne doit jamais faire échouer (ni être validé par) le chemin d'une exécution réussie.
+                await asyncio.to_thread(_delete_checkpoints_for, db_entry.id)
                 _cleanup_persisted_agents(db_entry.id)
             except Exception as e:
                 _log_memory(f"execution_id={db_entry.id}, exception attrapée")
@@ -1084,13 +1122,16 @@ async def _run_crew_and_persist(
                 # (_execute_crew_and_persist), hors sémaphore et hors Session. Les mesures de cette tentative
                 # avortée ne sont pas enregistrées : la tentative suivante écrit les siennes.
                 if auto_retry_allowed and info.retryable and _failed_before_development(e, data.target_workflow):
-                    print(
-                        f"execution_id={db_entry.id} : échec transitoire ({info.code}), nouvelle tentative "
-                        f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
-                    )
-                    await asyncio.to_thread(_persist_current_step, db_entry.id, None)
                     saved = await asyncio.to_thread(_load_checkpoints_for, db_entry.id)
-                    return {key: saved[key] for key in resumable_prefix(workflow_step_keys(data.target_workflow), saved)}
+                    prefix = resumable_prefix(workflow_step_keys(data.target_workflow), saved)
+                    # Sans le point de reprise de CHAQUE étape déjà réussie (sauvegarde ratée), relancer
+                    # repayerait ces étapes pour rien : échec définitif, l'utilisateur décide.
+                    if len(prefix) >= e.step_index - 1:
+                        print(
+                            f"execution_id={db_entry.id} : échec transitoire ({info.code}), nouvelle tentative "
+                            f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
+                        )
+                        return {key: saved[key] for key in prefix}
 
                 # Message lisible pour une cause reconnue ; sinon le texte d'origine (déjà ce qu'affichait
                 # l'historique avant le typage des erreurs).

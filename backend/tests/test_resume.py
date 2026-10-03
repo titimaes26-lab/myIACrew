@@ -333,3 +333,95 @@ def test_resume_is_refused_when_the_request_text_differs(engine):
         conversation, entry = _failed_with_checkpoints(db)
         assert main._resumable_outputs(db, _data(entry, user_request="une AUTRE demande"), "u1", conversation.id) == {}
         assert main._resumable_outputs(db, _data(entry, user_request="  x  "), "u1", conversation.id) != {}
+
+
+def test_no_automatic_retry_when_a_finished_step_has_no_checkpoint(engine, monkeypatch):
+    calls = []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        calls.append(1)
+        # Échec à l'étape 3 alors qu'AUCUN point de reprise n'a été sauvegardé pour les étapes 1 et 2.
+        raise _step_error(3, "Analyste Diagnostic Technique")
+
+    saved = _saved(engine, _launch_with(engine, monkeypatch, fake_run))
+    assert len(calls) == 1 and saved.status == "failed"
+
+
+def test_resume_is_refused_when_the_clarifications_differ(engine):
+    with Session(engine) as db:
+        conversation, entry = _failed_with_checkpoints(db, clarifications="en mode sombre")
+        assert main._resumable_outputs(db, _data(entry, clarifications="en mode clair"), "u1", conversation.id) == {}
+        assert main._resumable_outputs(db, _data(entry, clarifications="en mode sombre"), "u1", conversation.id) != {}
+
+
+def test_checkpoint_purge_failure_never_fails_a_successful_execution(engine, monkeypatch):
+    real_session = main.Session
+    state = {"purge": False}
+
+    class BrokenOnPurge:
+        def __init__(self, eng):
+            if state["purge"]:
+                raise RuntimeError("connexion périmée")
+            self._inner = real_session(eng)
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+    original = main._delete_checkpoints_for
+
+    def purge(execution_id):
+        state["purge"] = True
+        try:
+            original(execution_id)
+        finally:
+            state["purge"] = False
+
+    monkeypatch.setattr(main, "_delete_checkpoints_for", purge)
+    monkeypatch.setattr(main, "Session", BrokenOnPurge)
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        return type("R", (), {"raw": "ok"})()
+
+    execution_id = _launch_with(engine, monkeypatch, fake_run)
+    with real_session(engine) as db:
+        assert db.get(ExecutionHistory, execution_id).status == "success"
+
+
+def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engine, monkeypatch):
+    monkeypatch.setattr(main, "AUTO_RETRY_DELAY_S", 5)
+    calls = []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        calls.append(1)
+        raise _step_error(1, DESIGNER)
+
+    class FakeCrew:
+        run_dynamic_crew = fake_run
+
+    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    with Session(engine) as db:
+        conversation = Conversation(user_id="u1", title="t")
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        entry = ExecutionHistory(user_request="x", workflow="DESIGN_AND_DEV", status="running", user_id="u1", conversation_id=conversation.id)
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        ids = (entry.id, conversation.id)
+    data = main.WorkflowExecutionInput(user_request="x", target_workflow="DESIGN_AND_DEV")
+
+    async def scenario():
+        task = asyncio.create_task(main._execute_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "p", "c"))
+        await asyncio.sleep(0.5)  # 1re tentative échouée, on attend la 2de
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(scenario())
+    saved = _saved(engine, ids[0])
+    assert len(calls) == 1 and saved.status == "failed" and "interrompue" in saved.result

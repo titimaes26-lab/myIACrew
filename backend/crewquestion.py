@@ -154,6 +154,9 @@ WORKFLOW_STEP_KEYS = {
 # effet de bord. development écrit sur GitHub et qa en dépend : on les rejoue toujours.
 RESUMABLE_STEPS = ("design", "architecture", "diagnostic")
 
+# Rôle porté par CrewStepError quand l'échec survient APRÈS la dernière étape (agrégation du résultat).
+FINALIZATION_ROLE = "finalisation du résultat"
+
 
 def workflow_step_keys(request_type: str) -> list[str]:
     # Tout type inconnu retombe sur le workflow complet, comme run_dynamic_crew l'a toujours fait.
@@ -1639,12 +1642,13 @@ class AppDevelopmentCrew():
                     except Exception as e:
                         print(f"AVERTISSEMENT : échec du callback de reprise pour '{role}' : {type(e).__name__}: {e}", flush=True)
 
-        # Hors boucle asyncio : le rejeu du contrôle de l'Analyste lit le dépôt (appels GitHub bloquants) et
-        # chaque étape reprise écrit en base — comme pour on_step_change, jamais directement sur la boucle.
-        if resume_outputs:
-            await asyncio.to_thread(_apply_resume)
-
         try:
+            # Hors boucle asyncio : le rejeu du contrôle de l'Analyste lit le dépôt (appels GitHub bloquants) et
+            # chaque étape reprise écrit en base — comme pour on_step_change, jamais directement sur la boucle.
+            # DANS le try : le finally ci-dessous purge le cache mémoïsé de CrewAI même si ce rejeu échoue.
+            # Strictement séquentiel (await) : rien d'autre ne touche cette instance de crew pendant ce temps.
+            if resume_outputs:
+                await asyncio.to_thread(_apply_resume)
             while True:
                 remaining = [(k, t) for k, t in selected if k not in completed_keys]
 
@@ -1788,7 +1792,7 @@ class AppDevelopmentCrew():
                         agent_role = remaining[attempt_completed][1].agent.role
                     else:
                         step_index = total_steps
-                        agent_role = "finalisation du résultat"
+                        agent_role = FINALIZATION_ROLE
                     if on_step_change is not None:
                         # Plus aucune étape n'est réellement en cours à cet instant : sans ce
                         # nettoyage, ExecutionHistory.current_step resterait affiché comme "suivi
