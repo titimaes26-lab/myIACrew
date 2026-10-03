@@ -4,12 +4,16 @@ Objectif : refuser tout de suite (422, un message par champ) une faute de frappe
 découvrirait qu'au milieu d'une exécution de plusieurs minutes, après avoir consommé le quota LLM.
 """
 import re
-from typing import Optional
+from typing import Optional, get_args
+
+from crewquestion import RequestType
 
 MAX_REQUEST_CHARS = 20_000
-ALLOWED_WORKFLOWS = ("ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV")
+# Dérivé du Literal de qualification : ajouter un workflow là-bas l'autorise ici sans second endroit à tenir.
+ALLOWED_WORKFLOWS = get_args(RequestType)
 
-_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+# « _ » accepté : les comptes GitHub Enterprise Managed User ressemblent à « jdoe_acme ».
+_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$")
 _REPO = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 # Interdits dans un nom de référence git (git check-ref-format) : contrôle, espace, ~ ^ : ? * [ \
 _BRANCH_FORBIDDEN = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
@@ -27,8 +31,8 @@ def validate_repo_owner(value: Optional[str]) -> Optional[str]:
     value = empty_to_none(value)
     if value is not None and not _OWNER.match(value):
         raise ValueError(
-            "propriétaire GitHub invalide (lettres, chiffres et tirets, 39 caractères au plus, "
-            "ni début ni fin par un tiret)"
+            "propriétaire GitHub invalide (lettres, chiffres, tirets et « _ », 39 caractères au plus, "
+            "ni début ni fin par un séparateur)"
         )
     return value
 
@@ -53,6 +57,8 @@ def validate_branch_name(value: Optional[str]) -> Optional[str]:
         or value.startswith(("-", "/"))
         or value.endswith(("/", ".", ".lock"))
         or value == "@"
+        # Règle git par composant du chemin : aucun ne commence par « . » ni ne finit par « .lock ».
+        or any(part.startswith(".") or part.endswith(".lock") for part in value.split("/"))
     )
     if invalid:
         raise ValueError("nom de branche invalide (sans espace ni « .. », « ~ », « ^ », « : », « ? », « * », « [ », « \\ »)")

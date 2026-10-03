@@ -30,3 +30,11 @@ export function failureHint(code: string | null | undefined): string | null {
       return null;
   }
 }
+
+// Vrai pour une panne de connexion ou de serveur (réseau coupé, 5xx, délai, trop de requêtes), faux
+// pour une erreur permanente côté client (401, 404...) qu'un nouvel essai ne réglera pas.
+export function isConnectionFailure(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  if (err.code === 'NETWORK_ERROR') return true;
+  return err.status !== null && (err.status >= 500 || err.status === 408 || err.status === 429);
+}

@@ -19,12 +19,12 @@ from errors import AppError  # noqa: E402
 from github_tools import GitHubAccessProblem, check_github_access  # noqa: E402
 
 
-@pytest.mark.parametrize("owner", ["octocat", "a", "my-org", "A1-b2", "x" * 39])
+@pytest.mark.parametrize("owner", ["octocat", "a", "my-org", "A1-b2", "x" * 39, "jdoe_acme"])
 def test_valid_owners(owner):
     assert validation.validate_repo_owner(owner) == owner
 
 
-@pytest.mark.parametrize("owner", ["-bad", "bad-", "a b", "a/b", "x" * 40, "né"])
+@pytest.mark.parametrize("owner", ["-bad", "bad-", "_bad", "bad_", "a b", "a/b", "x" * 40, "né"])
 def test_invalid_owners(owner):
     with pytest.raises(ValueError):
         validation.validate_repo_owner(owner)
@@ -47,7 +47,7 @@ def test_valid_branches(branch):
 
 
 @pytest.mark.parametrize("branch", [
-    "a b", "a..b", "-x", "/x", "x/", "x.", "x.lock", "a//b", "a@{b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "@", "a\nb", "x" * 256,
+    "feature/.hidden", "release.lock/x", ".hidden", "a b", "a..b", "-x", "/x", "x/", "x.", "x.lock", "a//b", "a@{b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "@", "a\nb", "x" * 256,
 ])
 def test_invalid_branches(branch):
     with pytest.raises(ValueError):
@@ -194,3 +194,53 @@ def test_execute_skips_the_check_for_analysis_and_without_repo(engine, monkeypat
             await asyncio.sleep(0)
         assert asyncio.run(scenario())["status"] == "running"
     assert calls == []
+
+
+def test_workflows_follow_the_qualification_literal():
+    from typing import get_args
+    from crewquestion import RequestType
+    assert validation.ALLOWED_WORKFLOWS == get_args(RequestType)
+
+
+def test_rate_limit_is_retryable_not_forbidden(token, monkeypatch):
+    def boom(*args):
+        raise GithubException(403, {"message": "API rate limit exceeded for user"}, {})
+    monkeypatch.setattr(github_tools, "_get_repo", boom)
+    problem = _problem()
+    assert problem.kind == "rate_limited"
+    assert main._GITHUB_ACCESS_ERRORS["rate_limited"] == (503, "GITHUB_UNAVAILABLE", True)
+
+
+def test_plain_403_stays_forbidden(token, monkeypatch):
+    def boom(*args):
+        raise GithubException(403, {"message": "Resource not accessible by integration"}, {})
+    monkeypatch.setattr(github_tools, "_get_repo", boom)
+    assert _problem().kind == "forbidden"
+
+
+def test_slow_github_precheck_times_out_with_a_retryable_error(engine, monkeypatch):
+    import time
+    monkeypatch.setattr(main, "_GITHUB_PRECHECK_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(main, "check_github_access", lambda *a: time.sleep(0.3))
+    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
+    with Session(engine) as db:
+        with pytest.raises(AppError) as excinfo:
+            asyncio.run(main.execute_workflow(data=data, session=db, user={"id": "u1"}))
+        assert (excinfo.value.status_code, excinfo.value.retryable) == (503, True)
+        assert not db.exec(select(Conversation)).all()
+
+
+def test_foreign_conversation_is_refused_before_any_github_call(engine, monkeypatch):
+    from fastapi import HTTPException
+    calls = []
+    monkeypatch.setattr(main, "check_github_access", lambda *a: calls.append(a))
+    with Session(engine) as db:
+        foreign = Conversation(user_id="u2", title="t")
+        db.add(foreign)
+        db.commit()
+        db.refresh(foreign)
+        data = main.WorkflowExecutionInput(
+            user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r", conversation_id=foreign.id)
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(main.execute_workflow(data=data, session=db, user={"id": "u1"}))
+    assert excinfo.value.status_code == 404 and calls == []

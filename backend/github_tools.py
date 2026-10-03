@@ -959,7 +959,7 @@ def describe_partial_delivery(
 
 class GitHubAccessProblem(Exception):
     """Refus du contrôle préalable (voir check_github_access). `kind` : not_found | forbidden |
-    invalid_token | missing_token | unavailable ; `message` : à montrer tel quel (dit quoi corriger)."""
+    invalid_token | missing_token | rate_limited | unavailable ; `message` : à montrer tel quel (dit quoi corriger)."""
 
     def __init__(self, kind: str, message: str):
         super().__init__(message)
@@ -986,6 +986,9 @@ def check_github_access(owner: str, repo: str, base_branch: str) -> None:
             ) from e
         if e.status == 401:
             raise GitHubAccessProblem("invalid_token", "Le GITHUB_TOKEN du serveur est invalide ou expiré : renouvelez-le.") from e
+        if e.status == 403 and "rate limit" in str(e).lower():
+            # Limite de débit : passagère, donc réessayable (≠ droits insuffisants).
+            raise GitHubAccessProblem("rate_limited", "La limite de débit de GitHub est atteinte : réessayez dans quelques minutes.") from e
         if e.status == 403:
             raise GitHubAccessProblem(
                 "forbidden",

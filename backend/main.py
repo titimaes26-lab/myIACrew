@@ -278,9 +278,11 @@ _GITHUB_ACCESS_ERRORS = {
     "forbidden": (403, ErrorCode.FORBIDDEN, False),
     "invalid_token": (502, ErrorCode.GITHUB_UNAVAILABLE, False),
     "unavailable": (503, ErrorCode.GITHUB_UNAVAILABLE, True),
+    "rate_limited": (503, ErrorCode.GITHUB_UNAVAILABLE, True),
     "missing_token": (500, ErrorCode.INTERNAL_ERROR, False),
 }
 
+_GITHUB_PRECHECK_TIMEOUT_S = 15
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
 
@@ -1151,12 +1153,26 @@ async def execute_workflow(
     # pour qu'ils ne puissent pas diverger silencieusement si l'un est modifié sans l'autre.
     should_verify_github_delivery = has_repo_target and data.target_workflow != "ANALYSE_ONLY"
 
+    conversation = None
+    if data.conversation_id is not None:
+        conversation = session.get(Conversation, data.conversation_id)
+        if not conversation or conversation.user_id != user.get("id"):
+            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+
     # Contrôle préalable GitHub : une faute (repository, droits, branche de base) se découvre ICI, avant
     # toute ligne en base et tout appel LLM, au lieu de la fin d'une exécution de plusieurs minutes.
     if should_verify_github_delivery:
         try:
-            await asyncio.to_thread(
-                check_github_access, data.repo_owner, data.repo_name, data.base_branch or "main"
+            # Borné dans le temps : PyGithub peut sinon attendre longtemps (délai par défaut et
+            # nouvelles tentatives) pendant que la requête de lancement reste suspendue.
+            await asyncio.wait_for(
+                asyncio.to_thread(check_github_access, data.repo_owner, data.repo_name, data.base_branch or "main"),
+                timeout=_GITHUB_PRECHECK_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise AppError(
+                503, ErrorCode.GITHUB_UNAVAILABLE,
+                "GitHub met trop de temps à répondre : réessayez dans quelques instants.", True,
             )
         except GitHubAccessProblem as problem:
             status_code, code, retryable = _GITHUB_ACCESS_ERRORS.get(
@@ -1164,11 +1180,7 @@ async def execute_workflow(
             )
             raise AppError(status_code, code, problem.message, retryable)
 
-    if data.conversation_id is not None:
-        conversation = session.get(Conversation, data.conversation_id)
-        if not conversation or conversation.user_id != user.get("id"):
-            raise HTTPException(status_code=404, detail="Conversation introuvable.")
-    else:
+    if conversation is None:
         conversation = Conversation(
             user_id=user.get("id"),
             title=data.user_request.strip()[:80] or "Nouvelle conversation",

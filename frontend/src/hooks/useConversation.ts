@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiClient, type ExecuteAcceptedResponse } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, QualificationReport, RepoTarget } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
-import { toDisplayedError } from '../utils/errors';
+import { toDisplayedError, isConnectionFailure } from '../utils/errors';
 import { useConnectionStatus } from './useConnectionStatus';
 
 // Fréquence de sondage de la progression réelle (voir l'effet plus bas) : assez rapide pour
@@ -135,6 +135,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // second ne fait qu'attendre le même résultat que le premier finira de toute façon par
     // apporter.
     let resyncInFlight = false;
+    // Posé au nettoyage : un sondage encore en vol d'un ancien cycle ne doit plus rien signaler.
+    let stopped = false;
 
     const poll = () => {
       // Capturé À CHAQUE appel (pas une fois pour tout l'effet) : un changement de
@@ -149,6 +151,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
       client.getConversationProgress(conversationId)
         .then((progress) => {
           // Toute réponse (même périmée ci-dessous) prouve que la connexion fonctionne.
+          if (stopped) return;
           reportSuccess();
           if (myGeneration !== conversationGenerationRef.current) return;
           if (myCycle !== pollCycleRef.current) return;
@@ -252,17 +255,20 @@ export function useConversation(accessToken: string, apiUrl: string) {
               resyncInFlight = false;
             });
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           // Sondage périodique best-effort : une erreur réseau ponctuelle ne doit pas
           // interrompre l'exécution en cours, seulement priver cette itération de mise à jour.
-          // Plusieurs échecs d'affilée sont signalés à l'utilisateur (connectionLost).
-          reportFailure();
+          // Plusieurs échecs d'affilée sont signalés à l'utilisateur (connectionLost) — mais
+          // seulement les vraies pannes de connexion ou de serveur : un 401/404 est permanent,
+          // « nouvelle tentative automatique » serait faux.
+          if (!stopped && isConnectionFailure(err)) reportFailure();
         });
     };
     poll();
     const interval = setInterval(poll, PROGRESS_POLL_MS);
     return () => {
       clearInterval(interval);
+      stopped = true;
       // Plus de sondage (fin d'exécution, changement de conversation) : plus rien à signaler.
       resetConnection();
     };
@@ -386,14 +392,18 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
   const sendMessage = async (text: string, repoTarget: RepoTarget) => {
     const tempId = `temp-${Date.now()}`;
+    // Même normalisation que le backend (champ repository vide ou d'espaces = absent) : qualification et
+    // exécution doivent s'accorder sur l'existence d'un repository cible.
+    const repoOwner = repoTarget.owner?.trim() ?? '';
+    const repoName = repoTarget.name?.trim() ?? '';
     const executePayload = {
       conversation_id: conversationId ?? undefined,
-      repo_owner: repoTarget.owner || undefined,
-      repo_name: repoTarget.name || undefined,
-      base_branch: repoTarget.branch || undefined,
+      repo_owner: repoOwner || undefined,
+      repo_name: repoName || undefined,
+      base_branch: repoTarget.branch?.trim() || undefined,
     };
 
-    const hasRepoTarget = Boolean(repoTarget.owner && repoTarget.name);
+    const hasRepoTarget = Boolean(repoOwner && repoName);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     // Capturé maintenant (jamais modifié par sendMessage lui-même, seulement lu) : si une
