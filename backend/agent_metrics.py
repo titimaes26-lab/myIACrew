@@ -302,6 +302,34 @@ def _round(value: Optional[float], digits: int = 1) -> Optional[float]:
     return None if value is None else round(value, digits)
 
 
+# Libellés des causes d'échec (codes de errors.ErrorCode) ; UNCLASSIFIED = lignes d'avant le suivi des
+# causes ou échec sans code. Un code inconnu (futur) s'affiche tel quel plutôt que d'être masqué.
+UNCLASSIFIED_FAILURE = "UNCLASSIFIED"
+FAILURE_LABELS = {
+    "QUOTA_EXHAUSTED": "Quota du modèle épuisé",
+    "LLM_UNAVAILABLE": "Modèle indisponible ou surchargé",
+    "LLM_TIMEOUT": "Délai du modèle dépassé",
+    "GITHUB_UNAVAILABLE": "GitHub injoignable",
+    "GUARDRAIL_FAILED": "Contrôle de qualité non respecté",
+    "INTERRUPTED": "Interrompue (redémarrage du serveur)",
+    "INTERNAL_ERROR": "Erreur interne",
+    UNCLASSIFIED_FAILURE: "Cause non enregistrée",
+}
+
+
+def failure_causes(executions: list[dict]) -> list[dict]:
+    """Échecs de la période regroupés par cause, du plus fréquent au moins fréquent."""
+    counts: dict[str, int] = {}
+    for e in executions:
+        if e["status"] == "failed":
+            code = e.get("error_code") or UNCLASSIFIED_FAILURE
+            counts[code] = counts.get(code, 0) + 1
+    return [
+        {"code": code, "label": FAILURE_LABELS.get(code, code), "count": count}
+        for code, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
 def summarize(
     runs: list[dict], executions: list[dict], days: int, workflow: Optional[str] = None, tz_offset_minutes: int = 0,
 ) -> dict:
@@ -368,6 +396,7 @@ def summarize(
             "wait_seconds": _round(sum(e.get("total_wait_time_seconds") or 0 for e in executions)),
         },
         "agents": agents,
+        "failures": failure_causes(executions),
         "daily": [{"date": day, **values} for day, values in sorted(daily.items())],
     }
 

@@ -8,6 +8,7 @@ import AgentDurationChart from './AgentDurationChart';
 import AgentTokensChart from './AgentTokensChart';
 import ChartCard from './ChartCard';
 import DailyCallsChart from './DailyCallsChart';
+import FailureCausesChart from './FailureCausesChart';
 import MetricsFilters from './MetricsFilters';
 import StatTile from './StatTile';
 import './metrics.css';
@@ -71,6 +72,7 @@ export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; 
           <Tiles summary={data} />
           <AgentDurationChart agents={data.agents} />
           <AgentTokensChart agents={data.agents} />
+          <FailureCausesChart failures={data.failures} total={data.executions.total} />
           <DailyCallsChart daily={data.daily} />
           <AgentTable summary={data} />
         </div>

@@ -123,6 +123,12 @@ export interface DailyMetricsRow {
   tokens: number;
 }
 
+export interface FailureCauseRow {
+  code: string;
+  label: string;
+  count: number;
+}
+
 export interface MetricsSummary {
   period_days: number;
   workflow: string | null;
@@ -138,6 +144,7 @@ export interface MetricsSummary {
     wait_seconds: number | null;
   };
   agents: AgentMetricsRow[];
+  failures: FailureCauseRow[];
   daily: DailyMetricsRow[];
 }
 

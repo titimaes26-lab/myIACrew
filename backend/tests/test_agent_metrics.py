@@ -502,3 +502,38 @@ def test_endpoint_handles_the_maximum_number_of_executions_with_the_real_chunk_s
     result = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"}))
     assert result["executions"]["total"] == 1000
     assert next(a for a in result["agents"] if a["agent"] == "qa")["runs"] == 1000
+
+
+# --- Échecs par cause ---------------------------------------------------------------------------
+
+def test_failure_causes_group_sort_and_label_failed_executions_only():
+    from agent_metrics import failure_causes
+    executions = [
+        {"status": "failed", "error_code": "QUOTA_EXHAUSTED"},
+        {"status": "failed", "error_code": "GUARDRAIL_FAILED"},
+        {"status": "failed", "error_code": "QUOTA_EXHAUSTED"},
+        {"status": "failed", "error_code": None},
+        {"status": "failed", "error_code": "FUTURE_CODE"},
+        {"status": "success", "error_code": "QUOTA_EXHAUSTED"},  # jamais compté : pas un échec
+    ]
+    assert failure_causes(executions) == [
+        {"code": "QUOTA_EXHAUSTED", "label": "Quota du modèle épuisé", "count": 2},
+        {"code": "FUTURE_CODE", "label": "FUTURE_CODE", "count": 1},
+        {"code": "GUARDRAIL_FAILED", "label": "Contrôle de qualité non respecté", "count": 1},
+        {"code": "UNCLASSIFIED", "label": "Cause non enregistrée", "count": 1},
+    ]
+    assert failure_causes([]) == []
+
+
+def test_summary_endpoint_exposes_failure_causes_for_the_user_and_period_only(session):
+    mine = _execution(session, "u1", status="failed")
+    mine.error_code = "LLM_TIMEOUT"
+    other = _execution(session, "u2", status="failed")
+    other.error_code = "QUOTA_EXHAUSTED"
+    old = _execution(session, "u1", status="failed", age_days=60)
+    old.error_code = "QUOTA_EXHAUSTED"
+    for entry in (mine, other, old):
+        session.add(entry)
+    session.commit()
+    result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"}))
+    assert result["failures"] == [{"code": "LLM_TIMEOUT", "label": "Délai du modèle dépassé", "count": 1}]

@@ -1494,6 +1494,7 @@ async def metrics_summary(
             ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.workflow,
             ExecutionHistory.created_at, ExecutionHistory.updated_at,
             ExecutionHistory.rate_limit_hits, ExecutionHistory.total_wait_time_seconds,
+            ExecutionHistory.error_code,
         )
         .where(ExecutionHistory.user_id == uid)
         .where(ExecutionHistory.created_at >= since)
@@ -1506,7 +1507,7 @@ async def metrics_summary(
     executions = [
         {
             "id": r[0], "status": r[1], "workflow": r[2], "created_at": r[3], "updated_at": r[4],
-            "rate_limit_hits": r[5], "total_wait_time_seconds": r[6],
+            "rate_limit_hits": r[5], "total_wait_time_seconds": r[6], "error_code": r[7],
         }
         for r in session.exec(statement).all()
     ]
