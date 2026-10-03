@@ -3,7 +3,8 @@ import type { ChatTurn } from '../types';
 import StepIndicator from './StepIndicator';
 import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
-import { failureHint } from '../utils/errors';
+import { isTransientFailure } from '../utils/failureView';
+import FailureBlock from './FailureBlock';
 import { WORKFLOW_STEPS } from '../constants/workflowSteps';
 import { formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
@@ -65,7 +66,6 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
   const resumedLabel = turn.resumedSteps?.length
     ? turn.resumedSteps.map((key) => WORKFLOW_STEPS.DESIGN_AND_DEV.find((step) => step.key === key)?.label.split(' (')[0] ?? key).join(', ')
     : null;
-  const hint = turn.status === 'failed' ? failureHint(turn.errorCode) : null;
   // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
   // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
   // l'un est modifié sans l'autre (ex: JSX étendu à un autre statut sans mettre à jour
@@ -139,7 +139,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
         )}
 
         {turn.status === 'running' && !turn.dismissedLocally && (
-          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} currentStepKey={turn.currentStep} />
+          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} currentStepKey={turn.currentStep} reusedSteps={turn.resumedSteps} />
         )}
 
         {turn.status === 'running' && turn.dismissedLocally && (
@@ -149,31 +149,16 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           </p>
         )}
 
-        {turn.result && turn.status === 'failed' && failure && (
-          <div role="alert" className="failure">
-            <div className="failure__title">
-              <span aria-hidden="true">{agentIcon(failure.agentRole)}</span>
-              <span>
-                Échec à l'étape {failure.stepIndex}/{failure.totalSteps} — {failure.agentRole}
-              </span>
-            </div>
-            <pre className="mono-block failure__text">
-              {failure.message}
-            </pre>
-            {hint && <p className="failure__hint">{hint}</p>}
-          </div>
-        )}
-
-        {turn.result && turn.status === 'failed' && !failure && (
-          <pre role="alert" className="mono-block">
-            {turn.result}
-          </pre>
-        )}
-
-        {hint && !failure && <p className="failure__hint">{hint}</p>}
+        {turn.result && turn.status === 'failed' && <FailureBlock turn={turn} detail={failure} />}
 
         {turn.status === 'failed' && onRetry && (
-          <Button variant="danger" size="sm" className="retry-btn" onClick={() => onRetry(turn)} disabled={retryDisabled}>
+          <Button
+            variant={isTransientFailure(turn.errorRetryable) ? 'primary' : 'danger'}
+            size="sm"
+            className="retry-btn"
+            onClick={() => onRetry(turn)}
+            disabled={retryDisabled}
+          >
             🔁 Relancer cette demande
           </Button>
         )}

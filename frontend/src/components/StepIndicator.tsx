@@ -21,9 +21,14 @@ interface StepIndicatorProps {
   // plus bas, seul mode disponible pour le tout premier message d'une conversation (son id
   // n'est connu qu'une fois /api/execute résolu, donc rien à sonder avant cela).
   currentStepKey?: string | null;
+  // Étapes réutilisées d'une exécution précédente (reprise) : affichées comme terminées, à part.
+  reusedSteps?: string[];
 }
 
-export default function StepIndicator({ workflow, since, currentStepKey }: StepIndicatorProps) {
+// « Conception (specs produit / jeu) » -> « Conception » : le détail reste dans l'infobulle (title).
+const shortLabel = (label: string) => label.split(' (')[0];
+
+export default function StepIndicator({ workflow, since, currentStepKey, reusedSteps }: StepIndicatorProps) {
   const steps = (workflow && WORKFLOW_STEPS[workflow]) || DEFAULT_STEPS;
   // Signal réel distinct des vraies étapes du workflow (jamais une clé de WORKFLOW_STEPS, voir
   // constants/workflowSteps.ts) : persisté côté backend (_execute_crew_and_persist, main.py) tant
@@ -78,27 +83,40 @@ export default function StepIndicator({ workflow, since, currentStepKey }: StepI
   // commencées (⏳) — fidèle elle aussi, puisque le crew n'a justement pas encore été instancié.
   const activeIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : isQueued ? -1 : estimatedIndex;
 
+  const reused = new Set(reusedSteps ?? []);
+
   return (
     <div className="steps">
       {/* role="status"/aria-live seulement ici, PAS sur le conteneur entier : le chrono ci-
           dessous change chaque seconde (TICK_MS), et un lecteur d'écran annoncerait sinon ce
           texte à chaque tick pendant toute la durée d'une exécution (plusieurs minutes). Ce
           bloc-ci ne change, lui, qu'à chaque transition d'étape réelle. */}
-      <div role="status" aria-live="polite" className="stack stack--tight">
-        {steps.map((step, i) => {
-          const done = i < activeIndex;
-          const current = i === activeIndex;
-          return (
-            <div key={step.key} className={`step${done ? ' step--done' : current ? ' step--current' : ''}`}>
-              <span aria-hidden="true">{done ? '✅' : current ? step.icon : '⏳'}</span>
-              <span>
-                {step.label}
-                {current ? '…' : ''}
-                {done ? ' (terminé)' : ''}
-              </span>
-            </div>
-          );
-        })}
+      <div role="status" aria-live="polite">
+        <ol className="stepper" aria-label="Progression de l'exécution">
+          {steps.map((step, i) => {
+            // Étape reprise d'une exécution précédente : déjà terminée, mais signalée à part.
+            const isReused = reused.has(step.key);
+            const done = isReused || i < activeIndex;
+            const current = !done && i === activeIndex;
+            const state = isReused ? 'reused' : done ? 'done' : current ? 'current' : 'todo';
+            return (
+              <li
+                key={step.key}
+                className={`stepper__item stepper__item--${state}`}
+                aria-current={current ? 'step' : undefined}
+                title={step.label}
+              >
+                <span className="stepper__node" aria-hidden="true">
+                  {isReused ? '↻' : done ? '✓' : current ? step.icon : i + 1}
+                </span>
+                <span className="stepper__label">{shortLabel(step.label)}</span>
+                <span className="sr-only">
+                  {isReused ? ' (réutilisée de la tentative précédente)' : done ? ' (terminée)' : current ? ' (en cours)' : ' (à venir)'}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
       </div>
       <p className="steps__caption">
         {hasRealProgress
