@@ -12,12 +12,13 @@ interface HistoryEntryRowProps {
   entry: ExecutionHistoryEntry;
   checked: boolean;
   busy: boolean;
+  deleting: boolean;
   onToggle: (id: number, shiftKey: boolean) => void;
   onResume: (conversationId: number) => void;
   onDelete: (id: number) => void;
 }
 
-export default function HistoryEntryRow({ entry, checked, busy, onToggle, onResume, onDelete }: HistoryEntryRowProps) {
+export default function HistoryEntryRow({ entry, checked, busy, deleting, onToggle, onResume, onDelete }: HistoryEntryRowProps) {
   const running = entry.status === 'running';
   const date = toServerDate(entry.created_at).toLocaleString('fr-FR');
 
@@ -35,6 +36,8 @@ export default function HistoryEntryRow({ entry, checked, busy, onToggle, onResu
         title={running ? 'Une exécution en cours ne peut pas être supprimée.' : undefined}
         aria-label={`Sélectionner l'exécution du ${date} : ${entry.user_request.slice(0, 60)}`}
         onClick={handleClick}
+        // Maj+clic ne doit pas aussi sélectionner le texte entre les deux lignes.
+        onMouseDown={(event) => { if (event.shiftKey) event.preventDefault(); }}
         onChange={() => undefined}
         style={{ marginTop: '3px', flexShrink: 0 }}
       />
@@ -64,7 +67,7 @@ export default function HistoryEntryRow({ entry, checked, busy, onToggle, onResu
             disabled={busy}
             style={{ padding: '6px 10px', backgroundColor: '#fef2f2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '6px', cursor: busy ? 'not-allowed' : 'pointer', fontSize: '13px' }}
           >
-            Supprimer
+            {deleting ? '...' : 'Supprimer'}
           </button>
         )}
       </div>

@@ -198,6 +198,7 @@ class ConversationCreateInput(BaseModel):
     title: Optional[str] = None
 
 BULK_DELETE_MAX = 100
+_SQL_INT_MAX = 2**31 - 1
 
 class BulkDeleteInput(BaseModel):
     ids: List[int]
@@ -1353,13 +1354,17 @@ async def get_history(
     )
     return session.exec(statement).all()
 
-def _delete_execution(session: Session, entry: ExecutionHistory) -> None:
-    """Supprime une exécution et ses mesures par agent (sans commit).
+def _delete_executions(session: Session, entries: List[ExecutionHistory]) -> None:
+    """Supprime des exécutions et leurs mesures par agent (sans commit).
     Les mesures n'ont pas de clé étrangère : sans cette suppression explicite, elles survivraient
-    à l'exécution supprimée (données orphelines, invisibles)."""
-    for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id == entry.id)).all():
+    aux exécutions supprimées (données orphelines, invisibles)."""
+    if not entries:
+        return
+    ids = [entry.id for entry in entries]
+    for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id.in_(ids))).all():
         session.delete(agent_run)
-    session.delete(entry)
+    for entry in entries:
+        session.delete(entry)
 
 @app.delete("/api/history/{execution_id}")
 async def delete_history_entry(
@@ -1394,7 +1399,7 @@ async def delete_history_entry(
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
 
     print(f"  → Suppression en cours : user_request={entry.user_request[:50]}", flush=True)
-    _delete_execution(session, entry)
+    _delete_executions(session, [entry])
     session.commit()
     print("  → Suppression confirmée en base", flush=True)
     return {"status": "deleted", "id": execution_id}
@@ -1411,15 +1416,18 @@ async def bulk_delete_history(
     if len(ids) > BULK_DELETE_MAX:
         raise HTTPException(status_code=422, detail=f"{BULK_DELETE_MAX} exécutions au plus par suppression.")
     entries = {}
-    if ids:
+    # Hors plage d'un entier SQL : forcément inconnu (et fatal pour la requête IN sous Postgres/SQLite).
+    valid_ids = [i for i in ids if 0 < i <= _SQL_INT_MAX]
+    if valid_ids:
         rows = session.exec(
             select(ExecutionHistory).where(
-                ExecutionHistory.id.in_(ids), ExecutionHistory.user_id == user.get("id")
+                ExecutionHistory.id.in_(valid_ids), ExecutionHistory.user_id == user.get("id")
             )
         ).all()
         entries = {row.id: row for row in rows}
     deleted: List[int] = []
     skipped = []
+    doomed: List[ExecutionHistory] = []
     for execution_id in ids:
         entry = entries.get(execution_id)
         if entry is None:
@@ -1428,7 +1436,8 @@ async def bulk_delete_history(
             # Même raison que pour la suppression unitaire (voir delete_history_entry).
             skipped.append({"id": execution_id, "reason": "running"})
         else:
-            _delete_execution(session, entry)
+            doomed.append(entry)
             deleted.append(execution_id)
+    _delete_executions(session, doomed)
     session.commit()
     return {"deleted": deleted, "skipped": skipped}

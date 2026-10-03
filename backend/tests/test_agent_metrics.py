@@ -343,6 +343,15 @@ def test_bulk_delete_ignores_duplicates_and_accepts_an_empty_list(session):
     assert _bulk(session, []) == {"deleted": [], "skipped": []}
 
 
+def test_bulk_delete_treats_out_of_range_ids_as_not_found(session):
+    a = _execution(session, "u1")
+    huge = 10**20
+    assert _bulk(session, [a.id, huge, -5, 0]) == {
+        "deleted": [a.id],
+        "skipped": [{"id": huge, "reason": "not_found"}, {"id": -5, "reason": "not_found"}, {"id": 0, "reason": "not_found"}],
+    }
+
+
 def test_bulk_delete_rejects_more_than_the_maximum(session):
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as excinfo:

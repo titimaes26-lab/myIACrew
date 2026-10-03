@@ -23,6 +23,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const selectableIds = useMemo(
     () => entries.filter((entry) => entry.status !== 'running').map((entry) => entry.id),
@@ -54,6 +55,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
     if (!window.confirm('Supprimer cette exécution de l\'historique ?')) return;
 
     setBusy(true);
+    setDeletingId(id);
     setError(null);
     setNotice(null);
     try {
@@ -63,6 +65,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
       setError(err instanceof Error ? err.message : 'Suppression impossible.');
     } finally {
       setBusy(false);
+      setDeletingId(null);
     }
   };
 
@@ -86,6 +89,8 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
       setEntries((current) => current.filter((entry) => !removed.has(entry.id)));
       clear();
       if (result.skipped.length > 0) {
+        // Une ligne ignorée a changé côté serveur (ex: passée « en cours ») : on recharge la liste.
+        apiClient(apiUrl, accessToken).listHistory().then(setEntries).catch(() => undefined);
         const reasons = [...new Set(result.skipped.map((item) => SKIP_REASON_LABEL[item.reason]))].join(', ');
         setNotice(
           `${plural(result.deleted.length, 'supprimée', 'supprimées')}, `
@@ -126,6 +131,7 @@ export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation
             entry={entry}
             checked={selected.has(entry.id)}
             busy={busy}
+            deleting={deletingId === entry.id}
             onToggle={toggle}
             onResume={onResumeConversation}
             onDelete={handleDelete}
