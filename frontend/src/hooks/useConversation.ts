@@ -3,6 +3,7 @@ import { apiClient, type ExecuteAcceptedResponse } from '../api';
 import type { ChatTurn, ExecutionHistoryEntry, QualificationReport, RepoTarget } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
 import { toDisplayedError } from '../utils/errors';
+import { useConnectionStatus } from './useConnectionStatus';
 
 // Fréquence de sondage de la progression réelle (voir l'effet plus bas) : assez rapide pour
 // paraître réactif face à des étapes qui durent typiquement plusieurs dizaines de secondes,
@@ -36,6 +37,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { lost: connectionLost, reportFailure, reportSuccess, reset: resetConnection } = useConnectionStatus();
   // workflow typé QualificationReport['request_type'] (pas un simple string) : sinon
   // effectiveWorkflow, plus bas, se retrouverait lui-même élargi à string dès qu'il combine
   // cette valeur avec workflowType (typé WorkflowType), perdant la garantie à la
@@ -146,6 +148,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
 
       client.getConversationProgress(conversationId)
         .then((progress) => {
+          // Toute réponse (même périmée ci-dessous) prouve que la connexion fonctionne.
+          reportSuccess();
           if (myGeneration !== conversationGenerationRef.current) return;
           if (myCycle !== pollCycleRef.current) return;
           if (mySeq <= lastAppliedSeq) return;
@@ -251,12 +255,18 @@ export function useConversation(accessToken: string, apiUrl: string) {
         .catch(() => {
           // Sondage périodique best-effort : une erreur réseau ponctuelle ne doit pas
           // interrompre l'exécution en cours, seulement priver cette itération de mise à jour.
+          // Plusieurs échecs d'affilée sont signalés à l'utilisateur (connectionLost).
+          reportFailure();
         });
     };
     poll();
     const interval = setInterval(poll, PROGRESS_POLL_MS);
-    return () => clearInterval(interval);
-  }, [hasRunningTurn, runningTurnHasNumericId, conversationId, apiUrl, accessToken]);
+    return () => {
+      clearInterval(interval);
+      // Plus de sondage (fin d'exécution, changement de conversation) : plus rien à signaler.
+      resetConnection();
+    };
+  }, [hasRunningTurn, runningTurnHasNumericId, conversationId, apiUrl, accessToken, reportSuccess, reportFailure, resetConnection]);
 
   // Usage interne uniquement (startNewConversation/loadConversation ci-dessous) : abandonne
   // juste la requête HTTP en vol, sans toucher à `turns`. Distinct de cancelSending (le bouton
@@ -554,5 +564,5 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  return { turns, sending, hasRunningTurn, error, conversationId, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
+  return { turns, sending, hasRunningTurn, error, connectionLost, conversationId, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
 }

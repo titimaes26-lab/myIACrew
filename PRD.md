@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.6 — Mise à jour le 2026-10-03
+> Version : 1.7 — Mise à jour le 2026-10-03
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible.
 
 ---
 
@@ -110,6 +110,10 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 
 - **Exécutions orphelines** (`backend/orphans.py`) : une exécution restée `running` après un crash ou un redéploiement est marquée `failed` / `INTERRUPTED` (retryable) quand elle n'a plus donné signe de vie depuis 10 minutes (un battement écrit `updated_at` toutes les 60 s tant que l'exécution tourne, y compris pendant une longue étape ou une pause de quota, et à chaque changement d'étape) et n'est pas en cours dans le process courant (`_active_execution_ids`). Balayage au démarrage, au sondage de progression, avant le contrôle de concurrence de `/api/execute` (plus de 409 éternel) et avant toute suppression (une ligne orpheline devient supprimable). Le texte déjà produit est conservé. Limite : après un crash, la conversation est libérée au bout de 10 minutes, pas immédiatement ; avec plusieurs instances du backend (ou un déploiement en continu), le battement et le délai de 10 minutes empêchent de voir comme morte une exécution vivante d'une autre instance. La suppression ne balaie que les lignes visées.
 - **Écritures GitHub partielles** : quand une exécution échoue sur un repository cible, le message d'échec est complété par un bloc « Travail déjà présent sur GitHub » constaté via l'API (`describe_partial_delivery`, lecture seule, 20 s maximum) : branche et commits d'avance (dont nouveaux commits de cette tentative), Pull Request ouverte ou fusionnée (ou « non vérifiée » si la recherche a échoué), ou « rien n'a été poussé ». Si GitHub est injoignable, le bloc le dit au lieu d'affirmer qu'il n'y a rien. Il rappelle que « Réessayer » reprend sur la même branche et comment abandonner (fermer la PR, supprimer la branche).
+
+- **Validation des entrées** (`backend/validation.py`) : `/api/execute` et `/api/qualify` refusent tout de suite (422, un message par champ dans `errors`) une demande vide ou de plus de 20 000 caractères, un workflow inconnu, un propriétaire, un nom de repository ou un nom de branche invalide (règles GitHub et `git check-ref-format`). Un champ repository vide est traité comme absent.
+- **Contrôle préalable GitHub** (`check_github_access`, lecture seule) : pour un workflow qui écrit sur un repository cible (pas `ANALYSE_ONLY`), `/api/execute` vérifie avant toute ligne en base et tout appel LLM que le jeton est présent, que le repository est lisible, que le jeton a le droit d'écriture et que la branche de base existe. Refus : 404 `NOT_FOUND`, 403 `FORBIDDEN`, 502 `GITHUB_UNAVAILABLE` (jeton invalide, non réessayable), 503 `GITHUB_UNAVAILABLE` (panne, réessayable), 500 (jeton absent), avec un message qui dit quoi corriger. Il ajoute un aller-retour GitHub au lancement.
+- **Perte de connexion visible** : après 3 échecs consécutifs du sondage de progression, le Studio affiche « Connexion au serveur perdue — nouvelle tentative automatique » (ton ambre : l'exécution continue côté serveur) ; le message disparaît dès qu'une réponse arrive.
 
 ---
 

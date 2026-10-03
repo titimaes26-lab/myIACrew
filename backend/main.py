@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, NamedTuple, Optional
 from sqlalchemy import update as sql_update
 from sqlmodel import Session, func, select
@@ -24,12 +24,14 @@ from agent_metrics import (
     agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize,
 )
 from auth import get_current_user, close_http_client
+import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from errors import (
     AppError, ErrorCode, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
 from github_tools import (
     verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
+    check_github_access, GitHubAccessProblem,
 )
 from delivery import render_partial_delivery_block
 
@@ -157,8 +159,11 @@ async def _handle_http_exception(request: Request, exc: StarletteHTTPException) 
 async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     # FastAPI renvoie par défaut `detail` = liste d'objets : illisible tel quel dans l'interface
     # (qui attend une chaîne). On le ramène à une phrase, la liste détaillée restant dans `errors`.
+    def _readable(message: str) -> str:
+        return message.removeprefix("Value error, ")
+
     problems = [
-        {"field": ".".join(str(part) for part in err.get("loc", ()) if part != "body"), "message": str(err.get("msg", ""))}
+        {"field": ".".join(str(part) for part in err.get("loc", ()) if part != "body"), "message": _readable(str(err.get("msg", "")))}
         for err in exc.errors()
     ]
     summary = "; ".join(f"{p['field']} : {p['message']}" if p["field"] else p["message"] for p in problems[:3])
@@ -245,6 +250,8 @@ class UserRequestInput(BaseModel):
     conversation_id: Optional[int] = None
     has_repo_target: bool = False
 
+    _check_request = field_validator("user_request")(validation.validate_user_request)
+
 class WorkflowExecutionInput(BaseModel):
     user_request: str
     target_workflow: str
@@ -254,8 +261,25 @@ class WorkflowExecutionInput(BaseModel):
     base_branch: Optional[str] = "main"
     conversation_id: Optional[int] = None
 
+    # Refus immédiat (422, un message par champ) plutôt qu'une erreur découverte en pleine exécution.
+    _check_request = field_validator("user_request")(validation.validate_user_request)
+    _check_workflow = field_validator("target_workflow")(validation.validate_workflow)
+    _check_clarifications = field_validator("clarifications")(validation.validate_clarifications)
+    _check_owner = field_validator("repo_owner")(validation.validate_repo_owner)
+    _check_repo = field_validator("repo_name")(validation.validate_repo_name)
+    _check_branch = field_validator("base_branch")(validation.validate_branch_name)
+
 class ConversationCreateInput(BaseModel):
     title: Optional[str] = None
+
+# kind de GitHubAccessProblem -> (statut HTTP, code, réessayable)
+_GITHUB_ACCESS_ERRORS = {
+    "not_found": (404, ErrorCode.NOT_FOUND, False),
+    "forbidden": (403, ErrorCode.FORBIDDEN, False),
+    "invalid_token": (502, ErrorCode.GITHUB_UNAVAILABLE, False),
+    "unavailable": (503, ErrorCode.GITHUB_UNAVAILABLE, True),
+    "missing_token": (500, ErrorCode.INTERNAL_ERROR, False),
+}
 
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
@@ -1126,6 +1150,19 @@ async def execute_workflow(
     # (capture du SHA de référence avant le crew, vérification après coup) plutôt que dupliqué,
     # pour qu'ils ne puissent pas diverger silencieusement si l'un est modifié sans l'autre.
     should_verify_github_delivery = has_repo_target and data.target_workflow != "ANALYSE_ONLY"
+
+    # Contrôle préalable GitHub : une faute (repository, droits, branche de base) se découvre ICI, avant
+    # toute ligne en base et tout appel LLM, au lieu de la fin d'une exécution de plusieurs minutes.
+    if should_verify_github_delivery:
+        try:
+            await asyncio.to_thread(
+                check_github_access, data.repo_owner, data.repo_name, data.base_branch or "main"
+            )
+        except GitHubAccessProblem as problem:
+            status_code, code, retryable = _GITHUB_ACCESS_ERRORS.get(
+                problem.kind, (500, ErrorCode.INTERNAL_ERROR, False)
+            )
+            raise AppError(status_code, code, problem.message, retryable)
 
     if data.conversation_id is not None:
         conversation = session.get(Conversation, data.conversation_id)

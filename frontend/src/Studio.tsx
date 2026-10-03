@@ -1,4 +1,5 @@
 import ErrorBanner from './components/ErrorBanner';
+import ConnectionLostBanner from './components/ConnectionLostBanner';
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { useConversation } from './hooks/useConversation';
 import { MetricsApiContext } from './hooks/metricsApi';
@@ -18,7 +19,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   const [retryDraft, setRetryDraft] = useState<{ text: string; nonce: number } | null>(null);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const metricsApi = useMemo(() => ({ apiUrl: API_URL, accessToken }), [API_URL, accessToken]);
-  const { turns, sending, hasRunningTurn, error, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
+  const { turns, sending, hasRunningTurn, error, connectionLost, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
   // `sending` seul (envoi en vol DANS cette session) ne suffit pas : un tour repris depuis
   // l'Historique peut encore être "running" côté serveur sans que CETTE session l'ait
   // elle-même envoyé (sending resterait alors false). Sans bloquer la saisie dans ce cas
@@ -99,6 +100,8 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
       {showHistory && (
         <HistoryPanel apiUrl={API_URL} accessToken={accessToken} onResumeConversation={handleResumeConversation} />
       )}
+
+      {connectionLost && <ConnectionLostBanner />}
 
       {error && (
         <ErrorBanner message={error} />
