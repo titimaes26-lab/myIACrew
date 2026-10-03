@@ -1,6 +1,7 @@
 import { parseAgentMetadata } from '../utils/parseAgentMetadata';
 import { formatSeconds } from '../utils/formatDuration';
 import Badge from './ui/Badge';
+import { statusTone } from '../utils/statusTone';
 
 interface AgentSummaryProps {
   agentName: string;
@@ -22,7 +23,7 @@ export function AgentSummary({ agentName, content, durationSeconds }: AgentSumma
 
       {/* Status badge (verdict QA ou confiance) */}
       {metadata.status && (
-        <Badge tone={metadata.status.includes('GO') ? 'success' : metadata.status.includes('NON') ? 'danger' : 'info'}>
+        <Badge tone={statusTone(metadata.status)}>
           {metadata.status}
         </Badge>
       )}

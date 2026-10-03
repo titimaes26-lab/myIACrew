@@ -1,6 +1,6 @@
 import type { HTMLAttributes } from 'react';
 
-export type AlertTone = 'danger' | 'warning' | 'info';
+export type AlertTone = 'danger' | 'warning';
 
 // role="alert" pour une erreur (annoncée tout de suite), role="status" pour une information ou un
 // avertissement non bloquant (annoncé poliment) — jamais le même rôle pour les deux.

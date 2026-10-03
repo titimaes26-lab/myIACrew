@@ -6,7 +6,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
+  gap: 8px;
   padding: 6px 12px;
   font: inherit;
   font-size: var(--font-sm);
@@ -21,7 +21,9 @@
 .btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--fg-subtle); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn[aria-pressed="true"] { background: var(--info-soft); border-color: var(--info-line); color: var(--info-fg); }
+/* Après :hover (même poids) : un bouton bascule ouvert garde son apparence « pressé » au survol. */
+.btn[aria-pressed="true"],
+.btn[aria-pressed="true"]:hover:not(:disabled) { background: var(--info-soft); border-color: var(--info-line); color: var(--info-fg); }
 
 .btn--primary { color: var(--primary-fg); background: var(--primary); border-color: transparent; font-weight: 600; }
 .btn--primary:hover:not(:disabled) { background: var(--primary-hover); border-color: transparent; }
@@ -42,9 +44,6 @@
   border-radius: var(--radius-md);
   padding: 15px;
 }
-.card--flat { background: var(--surface-2); }
-.card--tight { padding: 10px 12px; }
-.card--selected { background: var(--primary-soft); border-color: var(--primary-line); }
 
 /* --- Badge --- */
 .badge {
@@ -77,7 +76,6 @@
   background: var(--danger-soft);
 }
 .alert--warning { color: var(--warning-fg); background: var(--warning-soft); border-color: var(--warning-line); }
-.alert--info { color: var(--info-fg); background: var(--info-soft); border-color: var(--info-line); }
 
 /* --- Champs --- */
 .field {
@@ -94,13 +92,13 @@
 .field:hover:not(:disabled) { border-color: var(--fg-subtle); }
 .field:disabled { opacity: 0.6; cursor: not-allowed; }
 .field--sm { padding: 4px 8px; font-size: var(--font-sm); }
-.field--accent { color: var(--primary-text); background: var(--primary-soft); border-color: var(--primary); font-weight: 600; }
+.field--accent,
+.field--accent:hover:not(:disabled) { color: var(--primary-text); background: var(--primary-soft); border-color: var(--primary); font-weight: 600; }
+select.field { cursor: pointer; }
+select.field:disabled { cursor: not-allowed; }
 
 .muted { color: var(--fg-muted); }
-.subtle { color: var(--fg-subtle); }
 .text-sm { font-size: var(--font-sm); }
-.text-xs { font-size: var(--font-xs); }
-.italic { font-style: italic; }
 
 @media (prefers-reduced-motion: reduce) {
   .btn, .field { transition: none; }

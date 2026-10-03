@@ -9,13 +9,6 @@ import { WORKFLOW_TYPE_OPTIONS, type WorkflowType } from '../constants/workflowT
 const MIN_TEXTAREA_HEIGHT = 52;
 const MAX_TEXTAREA_HEIGHT = 200;
 
-// Partagé entre les deux repères de séquence ("① Contexte" / "② Votre message") pour qu'ils ne
-// puissent pas diverger visuellement si l'un est retouché sans l'autre. Appliqué à des <h3> (pas
-// de simples <p>) : un lecteur d'écran qui navigue ce formulaire par titres (touche H) doit
-// pouvoir s'arrêter sur ces deux repères comme il le ferait pour n'importe quel autre titre de
-// section, index.css ne stylant que h1/h2 donc sans effet de cascade indésirable à neutraliser
-// ici pour h3.
-
 interface ChatInputProps {
   disabled: boolean;
   // Distinct de `disabled` dans l'API de ce composant (même si Studio.tsx leur passe
@@ -213,7 +206,7 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
             // n'est pas 'AUTO' est donc nécessaire : sans lui, un choix manuel oublié depuis
             // un message précédent resterait actif en silence pour une demande sans rapport,
             // qui contournerait alors /api/qualify sans que rien ne le signale à l'écran.
-            className={workflowType === 'AUTO' ? 'field field--sm' : 'field field--sm field--accent'}
+            className={`field field--sm${workflowType !== 'AUTO' ? ' field--accent' : ''}`}
           >
             {WORKFLOW_TYPE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>

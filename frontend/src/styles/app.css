@@ -1,11 +1,5 @@
 /* Mise en page de l'application (classes de composants) ; les couleurs viennent de tokens.css. */
-html, body {
-  background: var(--surface);
-  color: var(--fg);
-}
-#root { border-inline-color: var(--line); }
-h1, h2, h3 { color: var(--fg); }
-code { color: var(--fg); background: var(--code-inline-bg); }
+h3 { color: var(--fg); }
 
 /* --- Studio --- */
 .studio {
@@ -39,8 +33,6 @@ code { color: var(--fg); background: var(--code-inline-bg); }
 .stack--flush { gap: 0; }
 .stack--section { margin-top: 20px; }
 .row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.row--start { align-items: flex-start; }
-.row--between { justify-content: space-between; }
 .row--wrap-fields { display: flex; gap: 10px; flex-wrap: wrap; }
 .grow { flex: 1; min-width: 0; }
 
@@ -145,4 +137,4 @@ code { color: var(--fg); background: var(--code-inline-bg); }
 
 /* --- Markdown --- */
 .markdown-body { color: var(--fg); }
-.markdown-body code { padding: 2px 5px; border-radius: 4px; font-size: var(--font-sm); background: var(--code-inline-bg); }
+.markdown-body :not(pre) > code { padding: 2px 5px; border-radius: 4px; font-size: var(--font-sm); background: var(--code-bg); }

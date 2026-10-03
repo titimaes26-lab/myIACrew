@@ -11,7 +11,6 @@
   --fg: #1f2328;
   --fg-muted: #656d76;
   --fg-subtle: #8c959f;
-  --code-inline-bg: #eef0f2;
 
   --primary: #0070f3;
   --primary-hover: #005fd1;
@@ -40,16 +39,21 @@
 
   --radius-sm: 6px;
   --radius-md: 8px;
-  --radius-lg: 12px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
   --font-xs: 12px;
   --font-sm: 13px;
   --font-md: 14px;
   --transition: 120ms ease;
+
+  /* Anciens noms d'index.css : alias des jetons ci-dessus (chargé APRÈS index.css, donc prioritaire),
+     pour qu'il n'existe qu'UNE palette — corps du texte, titres, bordures, anneau de focus. */
+  --text: var(--fg-muted);
+  --text-h: var(--fg);
+  --bg: var(--surface);
+  --border: var(--line);
+  --code-bg: var(--surface-3);
+  --accent: var(--primary);
+  --accent-bg: var(--primary-soft);
+  --accent-border: var(--primary-line);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -62,7 +66,6 @@
     --fg: #e6e8ee;
     --fg-muted: #9aa1ad;
     --fg-subtle: #7b8291;
-    --code-inline-bg: #2a2c37;
 
     --primary: #2f74e0;
     --primary-hover: #4a88ea;
