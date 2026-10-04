@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import routes_history  # noqa: E402
 import execution  # noqa: E402
 import execution_context  # noqa: E402
 import execution_persistence  # noqa: E402
@@ -240,7 +241,7 @@ def test_no_resume_id_means_no_resume(engine):
 def test_deleting_an_execution_deletes_its_checkpoints(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db)
-        main.delete_history_entry(execution_id=entry.id, session=db, user={"id": "u1"})
+        routes_history.delete_history_entry(execution_id=entry.id, session=db, user={"id": "u1"})
         assert not db.exec(select(ExecutionCheckpoint)).all()
 
 

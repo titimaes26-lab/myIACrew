@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
 import main  # noqa: E402
+import routes_history  # noqa: E402
 import execution  # noqa: E402
 import execution_persistence  # noqa: E402
 import database  # noqa: E402
@@ -304,21 +305,21 @@ def test_deleting_an_execution_removes_its_agent_runs_and_only_its_own(session):
     for entry in (doomed, kept):
         _agent_run(session, entry, "design")
         _agent_run(session, entry, "qa")
-    result = main.delete_history_entry(execution_id=doomed.id, session=session, user={"id": "u1"})
+    result = routes_history.delete_history_entry(execution_id=doomed.id, session=session, user={"id": "u1"})
     assert result == {"status": "deleted", "id": doomed.id}
     remaining = list(session.exec(select(AgentRun)))
     assert {r.execution_id for r in remaining} == {kept.id} and len(remaining) == 2
     running = _execution(session, "u1", status="running")
     _agent_run(session, running, "design")
     with pytest.raises(HTTPException) as excinfo:
-        main.delete_history_entry(execution_id=running.id, session=session, user={"id": "u1"})
+        routes_history.delete_history_entry(execution_id=running.id, session=session, user={"id": "u1"})
     assert excinfo.value.status_code == 409
     assert any(r.execution_id == running.id for r in session.exec(select(AgentRun)))
 
 
 def _bulk(session, ids, user="u1"):
-    return main.bulk_delete_history(
-        payload=main.BulkDeleteInput(ids=ids), session=session, user={"id": user},
+    return routes_history.bulk_delete_history(
+        payload=routes_history.BulkDeleteInput(ids=ids), session=session, user={"id": user},
     )
 
 
@@ -359,7 +360,7 @@ def test_bulk_delete_treats_out_of_range_ids_as_not_found(session):
 def test_bulk_delete_rejects_more_than_the_maximum(session):
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as excinfo:
-        _bulk(session, list(range(1, main.BULK_DELETE_MAX + 2)))
+        _bulk(session, list(range(1, routes_history.BULK_DELETE_MAX + 2)))
     assert excinfo.value.status_code == 422
 
 

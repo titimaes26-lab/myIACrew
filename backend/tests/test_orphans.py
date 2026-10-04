@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import routes_history  # noqa: E402
 import execution  # noqa: E402
 import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
@@ -91,12 +92,12 @@ def test_progress_poll_releases_a_dead_execution(session):
 
 def test_stale_running_entry_becomes_deletable(session):
     stale = _running(session)
-    result = main.delete_history_entry(execution_id=stale.id, session=session, user={"id": "u1"})
+    result = routes_history.delete_history_entry(execution_id=stale.id, session=session, user={"id": "u1"})
     assert result["status"] == "deleted"
     live = _running(session, age=timedelta(seconds=5))
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as excinfo:
-        main.delete_history_entry(execution_id=live.id, session=session, user={"id": "u1"})
+        routes_history.delete_history_entry(execution_id=live.id, session=session, user={"id": "u1"})
     assert excinfo.value.status_code == 409
 
 
