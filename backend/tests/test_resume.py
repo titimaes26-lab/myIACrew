@@ -49,7 +49,7 @@ def TaskOutputFactory(raw):
     return TaskOutput(description="d", raw=raw, agent="x")
 
 
-def _run(monkeypatch, resume_outputs, request_type="DESIGN_AND_DEV"):
+def _run(monkeypatch, resume_outputs, request_type="DESIGN_AND_DEV", scope=None):
     _FakeCrew.received = []
     monkeypatch.setattr(cq, "Crew", _FakeCrew)
     monkeypatch.setattr(cq.quota_mgr, "adaptive_pause", lambda *a, **k: None)
@@ -67,6 +67,7 @@ def _run(monkeypatch, resume_outputs, request_type="DESIGN_AND_DEV"):
                 on_step_change=steps.append,
                 on_task_output_complete=lambda role, raw, duration: persisted.append((role, raw)),
                 resume_outputs=resume_outputs,
+                **({"scope": scope} if scope else {}),
             )
         except Exception as e:  # la fin (résumé, mise en forme) n'est pas l'objet de ce test
             return e
@@ -83,6 +84,17 @@ def test_resumed_steps_are_not_run_again_and_are_reported_as_persisted(monkeypat
     assert [raw for _, raw in persisted[:2]] == ["conception sauvegardée", "architecture sauvegardée"]
     # …et la progression repart à la première étape RESTANTE (pas à la première du workflow).
     assert steps[0] == "diagnostic"
+
+
+def test_a_small_feature_runs_without_the_architecture_step(monkeypatch):
+    persisted, steps = _run(monkeypatch, None, request_type="FEATURE", scope="PETIT")
+    assert len(_FakeCrew.received) == 3 and not any("Architecte" in r for r in _FakeCrew.received)
+    assert steps[0] == "diagnostic"
+
+
+def test_a_large_or_unscoped_feature_still_runs_the_architecture_step(monkeypatch):
+    _run(monkeypatch, None, request_type="FEATURE", scope="GRAND")
+    assert len(_FakeCrew.received) == 4 and any("Architecte" in r for r in _FakeCrew.received)
 
 
 def test_without_resume_outputs_every_step_runs(monkeypatch):
@@ -186,6 +198,15 @@ def test_resume_is_refused_when_the_previous_execution_does_not_match(engine, ch
         elif change == "other_repo":
             data_kwargs.update(repo_owner="o", repo_name="r")
         assert main._resumable_outputs(db, _data(entry, **data_kwargs), user, conv_id) == {}
+
+
+def test_resume_is_refused_when_the_scope_differs(engine):
+    with Session(engine) as db:
+        conversation, entry = _failed_with_checkpoints(db, workflow="FEATURE", steps=("diagnostic",), scope="PETIT")
+        same = _data(entry, target_workflow="FEATURE", scope="PETIT")
+        other = _data(entry, target_workflow="FEATURE", scope="GRAND")
+        assert main._resumable_outputs(db, same, "u1", conversation.id) == {"diagnostic": "sortie diagnostic"}
+        assert main._resumable_outputs(db, other, "u1", conversation.id) == {}
 
 
 def test_no_resume_id_means_no_resume(engine):

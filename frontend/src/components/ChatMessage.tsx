@@ -140,7 +140,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
         )}
 
         {turn.status === 'running' && !turn.dismissedLocally && (
-          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} currentStepKey={turn.currentStep} reusedSteps={turn.resumedSteps} />
+          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} scope={turn.scope} since={turn.createdAt} currentStepKey={turn.currentStep} reusedSteps={turn.resumedSteps} />
         )}
 
         {turn.status === 'running' && turn.dismissedLocally && (

@@ -10,6 +10,8 @@ export interface QualificationReport {
   questions: string[];
   // Vrai si le backend n'a pas pu qualifier la demande : request_type n'est alors qu'un défaut.
   fallback?: boolean;
+  // Taille d'une FEATURE : PETIT (ajustement local) saute l'étape d'architecture ; absent = parcours complet.
+  scope?: 'PETIT' | 'GRAND';
 }
 
 export interface BulkDeleteResult {
@@ -39,6 +41,8 @@ export interface ExecutionHistoryEntry {
   // Cause d'un échec (voir backend/errors.py) ; null hors statut 'failed' ou pour les anciennes lignes.
   error_code: string | null;
   error_retryable: boolean | null;
+  // Taille de qualification d'une FEATURE (PETIT : étape d'architecture sautée) ; null pour tout autre workflow.
+  scope?: string | null;
 }
 
 export interface RepoTarget {
@@ -57,6 +61,8 @@ export interface ChatTurn {
   id: number | string;
   errorCode?: string | null;
   errorRetryable?: boolean | null;
+  // PETIT : l'étape d'architecture est sautée (voir workflowSteps).
+  scope?: string | null;
   // Étapes déjà réussies d'une exécution précédente, réutilisées par cette reprise (voir « Relancer »).
   resumedSteps?: string[];
   userMessage: string;

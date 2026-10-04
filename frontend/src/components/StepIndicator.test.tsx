@@ -29,6 +29,25 @@ describe('StepIndicator', () => {
     expect(list[2]).toHaveClass('stepper__item--current');
   });
 
+  it('saute l’architecture pour une petite FEATURE et le dit', () => {
+    render(<StepIndicator workflow="FEATURE" scope="PETIT" since={since} currentStepKey="diagnostic" />);
+    const list = items();
+    expect(list).toHaveLength(3);
+    expect(list[0]).toHaveClass('stepper__item--current');   // le Diagnostic est la première étape
+    expect(screen.queryByText('Architecture')).toBeNull();
+    expect(screen.getByText(/étape d'architecture est sautée/)).toBeInTheDocument();
+  });
+
+  it('garde l’architecture pour une FEATURE sans scope, GRAND, ou pour un autre workflow', () => {
+    const { rerender } = render(<StepIndicator workflow="FEATURE" since={since} />);
+    expect(items()).toHaveLength(4);
+    rerender(<StepIndicator workflow="FEATURE" scope="GRAND" since={since} />);
+    expect(items()).toHaveLength(4);
+    rerender(<StepIndicator workflow="BUGFIX" scope="PETIT" since={since} />);
+    expect(items()).toHaveLength(3);
+    expect(screen.queryByText(/sautée/)).toBeNull();
+  });
+
   it('en file d’attente, aucune étape n’est courante', () => {
     render(<StepIndicator workflow="BUGFIX" since={since} currentStepKey="queued" />);
     for (const item of items()) expect(item).toHaveClass('stepper__item--todo');

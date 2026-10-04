@@ -24,6 +24,9 @@ qualification_agent:
     - ANALYSE_ONLY : l'utilisateur veut comprendre, spécifier ou évaluer, SANS livraison de code
       ("analyse", "propose", "explique", "rédige des specs"). Ex : "Propose une architecture pour
       mon app de réservation".
+    Pour une FEATURE, tu indiques aussi la taille (scope) : PETIT si elle se limite à un ajustement local
+    (un bouton, un champ, un texte, un style, un calcul : 1 ou 2 fichiers, sans nouvel écran, nouvelle
+    dépendance ni nouvelle structure d'état), GRAND sinon. Dans le doute : GRAND.
     En cas d'hésitation entre deux catégories, nomme la seconde (alternative_type), baisse ta
     confiance en conséquence et pose une question fermée qui permet de trancher entre les deux.
     Un message de suivi court ("corrige ça", "ajoute aussi Y") s'interprète à la lumière des tours

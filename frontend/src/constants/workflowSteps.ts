@@ -26,6 +26,13 @@ export const WORKFLOW_STEPS: Record<string, WorkflowStep[]> = {
 
 export const DEFAULT_STEPS = WORKFLOW_STEPS.DESIGN_AND_DEV;
 
+// Étapes réellement exécutées : une petite FEATURE (scope PETIT) saute l'architecture, comme côté serveur
+// (backend/crewquestion.py, workflow_step_keys).
+export function workflowSteps(workflow?: string | null, scope?: string | null): WorkflowStep[] {
+  const steps = (workflow && WORKFLOW_STEPS[workflow]) || DEFAULT_STEPS;
+  return workflow === 'FEATURE' && scope === 'PETIT' ? steps.filter((step) => step.key !== 'architecture') : steps;
+}
+
 // « Conception (specs produit / jeu) » -> « Conception » : le détail reste dans l'infobulle.
 export const stepShortLabel = (label: string): string => label.split(' (')[0];
 

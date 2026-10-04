@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from dataclasses import dataclass
 from typing import Any, List, Literal, NamedTuple, Optional
 from sqlalchemy import case, update as sql_update
@@ -302,6 +302,15 @@ class WorkflowExecutionInput(BaseModel):
     # (design, architecture, diagnostic) sont réutilisées au lieu d'être recalculées. Ignoré, sans
     # erreur, si cette exécution n'est pas reprenable (voir _resumable_outputs).
     resume_from_execution_id: Optional[int] = None
+    # Taille d'une FEATURE donnée par la qualification : PETIT saute l'étape d'architecture (voir
+    # crewquestion.workflow_step_keys). Ignoré, sans erreur, pour tout autre workflow ; absent = parcours complet.
+    scope: Optional[Literal["PETIT", "GRAND"]] = None
+
+    @model_validator(mode="after")
+    def _scope_only_for_feature(self):
+        if self.target_workflow != "FEATURE":
+            self.scope = None
+        return self
 
     # Refus immédiat (422, un message par champ) plutôt qu'une erreur découverte en pleine exécution.
     _check_request = field_validator("user_request")(validation.validate_user_request)
@@ -749,13 +758,13 @@ def _fail_execution(execution_id: int, message: str) -> None:
     except Exception:
         pass
 
-def _failed_before_development(exc: BaseException, request_type: str) -> bool:
+def _failed_before_development(exc: BaseException, request_type: str, scope: Optional[str] = None) -> bool:
     """Vrai si l'échec est celui d'une étape reprenable (design, architecture, diagnostic) : seul cas où
     une relance automatique ne réécrit rien sur GitHub. Faux pour tout échec hors étape (création du crew,
     vérification de livraison) ou à partir du développement."""
     if not isinstance(exc, CrewStepError):
         return False
-    keys = workflow_step_keys(request_type)
+    keys = workflow_step_keys(request_type, scope)
     return 1 <= exc.step_index <= len(keys) and keys[exc.step_index - 1] in RESUMABLE_STEPS and exc.agent_role != FINALIZATION_ROLE
 
 def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id, conversation_id: int) -> dict[str, str]:
@@ -768,6 +777,7 @@ def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id
     if (
         previous is None or previous.user_id != user_id or previous.conversation_id != conversation_id
         or previous.status != "failed" or previous.workflow != data.target_workflow
+        or (previous.scope or None) != (data.scope or None)
         # Même demande : réutiliser design/architecture/code d'une AUTRE demande ferait committer du code pour
         # la mauvaise demande.
         or (previous.user_request or "").strip() != data.user_request.strip()
@@ -777,7 +787,7 @@ def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id
     ):
         return {}
     saved = _load_checkpoints(session, previous.id)
-    prefix = resumable_prefix(workflow_step_keys(data.target_workflow), saved)
+    prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
     return {key: saved[key] for key in prefix}
 
 def _cleanup_persisted_agents(execution_id: int) -> None:
@@ -887,6 +897,7 @@ def _repo_instructions(
 def _crew_inputs(
     data: "WorkflowExecutionInput", conversation_id: int, final_prompt: str, conversation_context: str,
     work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool, repo_snapshot: str = "",
+    previous_plan: str = "",
 ) -> dict:
     return {
         'user_request': final_prompt,
@@ -901,6 +912,8 @@ def _crew_inputs(
         'repo_instructions': _repo_instructions(has_repo_target, data, work_branch, base_branch, branch_exists),
         # Aperçu du repo lu en Python (vide : l'agent lit lui-même avec ses outils).
         'repo_snapshot': repo_snapshot,
+        # Plan d'architecture du tour précédent de la conversation (vide : l'Architecte part de zéro).
+        'previous_plan': previous_plan,
     }
 
 
@@ -908,19 +921,77 @@ async def _prefetch_repo_snapshot(
     data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool,
     resume_outputs: Optional[dict[str, str]] = None,
 ) -> str:
-    """Aperçu du repo pour l'Architecte (racine, package.json, tsconfig.json, src), lu en Python plutôt que par ses
-    appels d'outils : autant de tours de LLM en moins. Seulement avec un repository cible et une étape d'architecture
-    qui va réellement tourner (pas réutilisée par une reprise).
+    """Aperçu du repo pour l'Architecte ET le Diagnostic (racine, résumé de package.json/tsconfig.json, src), lu en
+    Python plutôt que par leurs appels d'outils : autant de tours de LLM en moins, et la même vue pour les deux.
+    Seulement avec un repository cible et si l'une de ces deux étapes va réellement tourner (pas réutilisée par une
+    reprise, pas sautée par une petite FEATURE).
     Best-effort : toute erreur renvoie "" et l'agent lit lui-même (même règle de branche que _repo_instructions)."""
-    if not has_repo_target or "architecture" not in workflow_step_keys(data.target_workflow):
+    if not has_repo_target:
         return ""
-    if resume_outputs and "architecture" in resume_outputs:
+    steps = workflow_step_keys(data.target_workflow, data.scope)
+    if not any(step in steps and step not in (resume_outputs or {}) for step in ("architecture", "diagnostic")):
         return ""
     branch = work_branch if branch_exists else (base_branch or "main")
     try:
         return await asyncio.to_thread(build_repo_snapshot, data.repo_owner, data.repo_name, branch)
     except Exception as e:
         print(f"AVERTISSEMENT : aperçu du repository non lu ({type(e).__name__}: {e}) : l'agent lira lui-même.", flush=True)
+        return ""
+
+
+MAX_PREVIOUS_PLAN_CHARS = 6000
+_AGENT_DURATION_MARKER = re.compile(r"<!--agent-duration:[0-9.]+-->\s*")
+
+
+def _previous_architecture_plan(
+    session: Session, data: "WorkflowExecutionInput", has_repo_target: bool, user_id, conversation_id: int, current_id: int,
+) -> str:
+    """Plan de l'Architecte du dernier tour RÉUSSI de cette conversation qui en a produit un (parmi les 3 derniers),
+    sur le même repository cible, ou "". Sert de base à l'Architecte (il ne décrit alors que ce qui change) ; il peut
+    être périmé, la consigne lui demande de le confronter à l'aperçu du repository."""
+    target = (data.repo_owner, data.repo_name) if has_repo_target else (None, None)
+    rows = session.exec(
+        select(ExecutionHistory)
+        .where(ExecutionHistory.conversation_id == conversation_id)
+        .where(ExecutionHistory.user_id == user_id)
+        .where(ExecutionHistory.id != current_id)
+        .where(ExecutionHistory.status == "success")
+        .order_by(col(ExecutionHistory.created_at).desc())
+        .limit(3)
+    ).all()
+    for row in rows:
+        if (row.repo_owner or None, row.repo_name or None) != target:
+            continue
+        if "architecture" not in workflow_step_keys(row.workflow, row.scope):
+            continue
+        for agent_name, content in _parse_completed_agents(row.result or "").items():
+            if step_for_role(agent_name) != "architecture":
+                continue
+            body = content.split("\n", 1)[1] if content.startswith("## ") and "\n" in content else content
+            body = _AGENT_DURATION_MARKER.sub("", body).strip()
+            if body:
+                cut = "\n[… tronqué]" if len(body) > MAX_PREVIOUS_PLAN_CHARS else ""
+                return body[:MAX_PREVIOUS_PLAN_CHARS] + cut
+    return ""
+
+
+async def _load_previous_plan(
+    data: "WorkflowExecutionInput", has_repo_target: bool, user_id, conversation_id: int, current_id: int,
+    resume_outputs: Optional[dict[str, str]],
+) -> str:
+    """Plan du tour précédent à donner à l'Architecte, ou "" : seulement si son étape va réellement tourner (ni
+    sautée par une petite FEATURE, ni réutilisée par une reprise). Best-effort : une erreur donne ""."""
+    if "architecture" not in workflow_step_keys(data.target_workflow, data.scope) or "architecture" in (resume_outputs or {}):
+        return ""
+
+    def read() -> str:
+        with Session(engine) as plan_session:
+            return _previous_architecture_plan(plan_session, data, has_repo_target, user_id, conversation_id, current_id)
+
+    try:
+        return await asyncio.to_thread(read)
+    except Exception as e:
+        print(f"AVERTISSEMENT : plan du tour précédent non lu ({type(e).__name__}: {e}) : l'Architecte part de zéro.", flush=True)
         return ""
 
 
@@ -940,7 +1011,7 @@ async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, 
 
 async def _run_crew(
     crew: AppDevelopmentCrew, state: _RunState, execution_id: int, request_type: str, inputs: dict,
-    resume_outputs: Optional[dict[str, str]],
+    resume_outputs: Optional[dict[str, str]], scope: Optional[str] = None,
 ) -> Any:
     """Lance le crew avec ses métriques et son sondage mémoire périodique (toujours annulé, succès ou non)."""
     memory_ticker = asyncio.create_task(_periodic_memory_logger(f"execution_id={execution_id}, sondage périodique"))
@@ -954,6 +1025,8 @@ async def _run_crew(
                 on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(
                     execution_id, agent_name, output, duration),
                 resume_outputs=resume_outputs,
+                # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
+                **({"scope": scope} if scope else {}),
             )
     finally:
         # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette attente, les derniers
@@ -1131,10 +1204,10 @@ async def _retry_outputs_if_transient(
     # d'un couplage implicite entre ces deux conditions.
     if not isinstance(exc, CrewStepError):
         return None
-    if not (auto_retry_allowed and info.retryable and _failed_before_development(exc, data.target_workflow)):
+    if not (auto_retry_allowed and info.retryable and _failed_before_development(exc, data.target_workflow, data.scope)):
         return None
     saved = await asyncio.to_thread(_load_checkpoints_for, db_entry_id)
-    prefix = resumable_prefix(workflow_step_keys(data.target_workflow), saved)
+    prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
     if len(prefix) < exc.step_index - 1:
         return None
     print(
@@ -1219,11 +1292,13 @@ async def _run_crew_and_persist(
                     branch_exists = state.sha_before is not None
                     repo_snapshot = await _prefetch_repo_snapshot(
                         data, work_branch, normalized_base_branch, has_repo_target, branch_exists, resume_outputs)
+                    previous_plan = await _load_previous_plan(
+                        data, has_repo_target, db_entry.user_id, conversation_id, db_entry.id, resume_outputs)
                     inputs = _crew_inputs(
                         data, conversation_id, final_prompt, conversation_context, work_branch,
-                        normalized_base_branch, has_repo_target, branch_exists, repo_snapshot,
+                        normalized_base_branch, has_repo_target, branch_exists, repo_snapshot, previous_plan,
                     )
-                    result = await _run_crew(crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs)
+                    result = await _run_crew(crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs, data.scope)
                 raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
                 # Un rapport « réussi » ne prouve rien sur GitHub (un outil github_* en échec renvoie du texte à
@@ -1445,6 +1520,7 @@ async def execute_workflow(
         repo_name=data.repo_name if has_repo_target else None,
         base_branch=normalized_base_branch,
         work_branch=work_branch or None,
+        scope=data.scope,
         attempts=1,
         reused_steps=len(resume_outputs),
     )

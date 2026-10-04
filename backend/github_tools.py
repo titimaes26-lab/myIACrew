@@ -12,6 +12,7 @@ from github import Auth, Github, GithubException, InputGitTreeElement
 
 from delivery import merge_pull_request_body
 from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
+from project_summary import summarize_project
 from tools import check_syntax_content
 
 
@@ -727,7 +728,7 @@ def _capped_listing(listing: str) -> str:
 
 
 def build_repo_snapshot(owner: str, repo: str, branch: str) -> str:
-    """Texte « ## Racine / ## package.json / ## tsconfig.json / ## src » de la branche lue, ou "" si la racine est
+    """Texte « ## Racine / ## Résumé du projet / ## src » de la branche lue (JSON brut en repli), ou "" si la racine est
     illisible (l'agent retombe alors sur ses outils). Une lecture secondaire qui échoue devient une ligne « non lu »."""
     root = list_directory_cached(owner, repo, "", branch)
     if root.startswith("INFO"):
@@ -737,15 +738,28 @@ def build_repo_snapshot(owner: str, repo: str, branch: str) -> str:
         return ""
     root_names = {line.split(": ", 1)[-1].strip() for line in root.splitlines()}
     sections = [f"Aperçu du repository {owner}/{repo} (branche lue : {branch}).", f"## Racine\n{_capped_listing(root)}"]
-    for name, limit in _SNAPSHOT_FILE_LIMITS:
-        if name not in root_names:
-            continue
-        content = read_file_cached(owner, repo, name, branch)
-        if content.startswith("ERREUR"):
-            sections.append(f"## {name}\nnon lu : {content}")
-        else:
-            cut = "\n[… tronqué]" if len(content) > limit else ""
-            sections.append(f"## {name}\n{content[:limit]}{cut}")
+    # package.json + tsconfig.json : un résumé déterministe (dépendances, conventions, mode strict) bien plus court
+    # que le JSON brut ; le brut tronqué ne sert que de repli quand package.json n'est pas un JSON exploitable.
+    raw_files: dict[str, str] = {}
+    for name, _limit in _SNAPSHOT_FILE_LIMITS:
+        if name in root_names:
+            raw_files[name] = read_file_cached(owner, repo, name, branch)
+    package = raw_files.get("package.json")
+    tsconfig = raw_files.get("tsconfig.json")
+    summary = summarize_project(package, tsconfig if tsconfig and not tsconfig.startswith("ERREUR") else None) \
+        if package and not package.startswith("ERREUR") else None
+    if summary:
+        sections.append(f"## Résumé du projet\n{summary}")
+    else:
+        for name, limit in _SNAPSHOT_FILE_LIMITS:
+            content = raw_files.get(name)
+            if content is None:
+                continue
+            if content.startswith("ERREUR"):
+                sections.append(f"## {name}\nnon lu : {content}")
+            else:
+                cut = "\n[… tronqué]" if len(content) > limit else ""
+                sections.append(f"## {name}\n{content[:limit]}{cut}")
     if "src" in root_names:
         listing = list_directory_cached(owner, repo, "src", branch)
         sections.append(f"## src\n{'non lu : ' + listing if listing.startswith('ERREUR') else _capped_listing(listing)}")

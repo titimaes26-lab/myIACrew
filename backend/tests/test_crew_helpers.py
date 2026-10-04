@@ -193,7 +193,7 @@ def test_design_task_yaml_placeholders_are_known():
     import string
     import yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
-    known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch", "repo_snapshot"}
+    known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch", "repo_snapshot", "previous_plan"}
     for name in ("design_task", "architecture_task", "diagnostic_task", "development_task"):
         fields = {f[1] for f in string.Formatter().parse(tasks[name]["description"]) if f[1]}
         assert fields <= known | {"work_branch"}, name
@@ -212,7 +212,7 @@ def test_architecture_prompt_keeps_its_static_instructions_before_the_variable_d
     static, variable = description.split(marker)
     assert not [f[1] for f in string.Formatter().parse(static) if f[1]]
     assert {f[1] for f in string.Formatter().parse(variable) if f[1]} == {
-        "user_request", "conversation_context", "repo_instructions", "repo_snapshot"}
+        "user_request", "conversation_context", "repo_instructions", "repo_snapshot", "previous_plan"}
     assert "APERÇU DU REPOSITORY" in static
 
 
@@ -221,7 +221,7 @@ def test_architecture_prompt_stays_short_and_still_names_every_required_section(
     import yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
     task = tasks["architecture_task"]
-    assert len(task["description"].split()) <= 480
+    assert len(task["description"].split()) <= 520
     text = task["description"] + task["expected_output"]
     for heading in cq.ARCHITECTURE_REQUIRED_HEADINGS:
         assert heading in text, heading

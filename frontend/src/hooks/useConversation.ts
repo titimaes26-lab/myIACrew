@@ -29,6 +29,7 @@ function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
     currentStep: entry.current_step,
     errorCode: entry.error_code,
     errorRetryable: entry.error_retryable,
+    scope: entry.scope,
   };
 }
 
@@ -62,7 +63,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   const [workflowType, setWorkflowType] = useState<WorkflowType>('AUTO');
   const abortControllerRef = useRef<AbortController | null>(null);
   // Exécution en échec que le prochain envoi reprend (voir prepareRetry) : consommée par sendMessage.
-  const resumeFromRef = useRef<{ id: number; userMessage: string } | null>(null);
+  const resumeFromRef = useRef<{ id: number; userMessage: string; scope?: string | null } | null>(null);
   // Incrémenté à chaque changement de conversation (nouvelle ou reprise d'une différente),
   // jamais pour un simple envoi de message. Sert à repérer, après un await, si l'opération en
   // cours est toujours la plus récente avant d'appliquer son résultat sur l'état : contrairement
@@ -398,7 +399,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // refuse de toute façon une reprise incohérente avec le workflow ou le repository).
   const prepareRetry = useCallback((turn: ChatTurn) => {
     resumeFromRef.current = typeof turn.id === 'number' && turn.status === 'failed'
-      ? { id: turn.id, userMessage: turn.userMessage }
+      ? { id: turn.id, userMessage: turn.userMessage, scope: turn.scope }
       : null;
   }, []);
 
@@ -544,12 +545,17 @@ export function useConversation(accessToken: string, apiUrl: string) {
         return;
       }
 
-      setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: report.request_type, agentSummary: report.summary } : turn)));
+      // Une reprise garde la taille du tour en échec : la qualification n'est pas déterministe, et un autre scope
+      // changerait les étapes (donc le serveur refuserait de réutiliser celles déjà réussies).
+      const resumed = executePayload.resume_from_execution_id !== undefined && resume?.scope;
+      const scope = report.request_type === 'FEATURE' ? (resumed ? resume.scope : report.scope) : undefined;
+      setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: report.request_type, agentSummary: report.summary, scope } : turn)));
 
       const data = await api.execute({
         ...executePayload,
         user_request: text,
         target_workflow: report.request_type,
+        scope,
       }, controller.signal);
       if (myGeneration !== conversationGenerationRef.current) return;
       applyExecuteAccepted(tempId, data);

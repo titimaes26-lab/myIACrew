@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { WORKFLOW_STEPS, DEFAULT_STEPS, stepShortLabel } from '../constants/workflowSteps';
+import { workflowSteps, stepShortLabel } from '../constants/workflowSteps';
 import { formatSeconds } from '../utils/formatDuration';
 import { toServerDate } from '../utils/serverDate';
 
@@ -12,6 +12,8 @@ function elapsedSecondsSince(since: string): number {
 
 interface StepIndicatorProps {
   workflow?: string;
+  // PETIT : petite FEATURE, étape d'architecture sautée (voir workflowSteps).
+  scope?: string | null;
   // Timestamp de départ du tour (turn.createdAt), utilisé plutôt que l'instant de montage
   // du composant : celui-ci peut être remonté (changement de `key`) une fois le workflow
   // connu, ce qui décalerait un chrono basé sur le montage.
@@ -25,8 +27,8 @@ interface StepIndicatorProps {
   reusedSteps?: string[];
 }
 
-export default function StepIndicator({ workflow, since, currentStepKey, reusedSteps }: StepIndicatorProps) {
-  const steps = (workflow && WORKFLOW_STEPS[workflow]) || DEFAULT_STEPS;
+export default function StepIndicator({ workflow, scope, since, currentStepKey, reusedSteps }: StepIndicatorProps) {
+  const steps = workflowSteps(workflow, scope);
   // Signal réel distinct des vraies étapes du workflow (jamais une clé de WORKFLOW_STEPS, voir
   // constants/workflowSteps.ts) : persisté côté backend (_execute_crew_and_persist, main.py) tant
   // que cette exécution attend son tour derrière _execution_semaphore (au plus 2 exécutions de
@@ -118,6 +120,9 @@ export default function StepIndicator({ workflow, since, currentStepKey, reusedS
           })}
         </ol>
       </div>
+      {workflow === 'FEATURE' && scope === 'PETIT' && (
+        <p className="steps__caption">Petite modification : l'étape d'architecture est sautée.</p>
+      )}
       <p className="steps__caption">
         {hasRealProgress
           ? `En cours depuis ${formatSeconds(elapsed)} — progression suivie en direct.`

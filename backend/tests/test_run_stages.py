@@ -312,7 +312,7 @@ def test_crew_inputs_carry_the_repo_snapshot_with_an_empty_default():
     ("FEATURE", True, False, "main"),
     ("DESIGN_AND_DEV", True, True, "crewai/b"),
     ("ANALYSE_ONLY", True, False, "main"),
-    ("BUGFIX", True, False, None),                 # pas d'étape d'architecture
+    ("BUGFIX", True, False, "main"),               # le Diagnostic lit aussi l'aperçu
     ("FEATURE", False, False, None),               # pas de repository cible
 ])
 def test_snapshot_is_prefetched_only_with_a_repo_and_an_architecture_step(monkeypatch, workflow, has_repo, branch_exists, expected_branch):
@@ -324,11 +324,15 @@ def test_snapshot_is_prefetched_only_with_a_repo_and_an_architecture_step(monkey
     assert snapshot == ("APERÇU" if expected_branch else "")
 
 
-@pytest.mark.parametrize("resumed, reads", [({"design": "x", "architecture": "y"}, False), ({"design": "x"}, True), (None, True)])
-def test_no_snapshot_is_read_when_a_resume_reuses_the_architecture(monkeypatch, resumed, reads):
+@pytest.mark.parametrize("resumed, reads", [
+    ({"design": "x", "architecture": "y", "diagnostic": "z"}, False),   # plus rien à lire : tout est réutilisé
+    ({"design": "x", "architecture": "y"}, True),                        # le Diagnostic va tourner
+    ({"design": "x"}, True), (None, True),
+])
+def test_no_snapshot_is_read_when_a_resume_reuses_every_step_that_reads(monkeypatch, resumed, reads):
     calls = []
     monkeypatch.setattr(main, "build_repo_snapshot", lambda *a: calls.append(a) or "APERÇU")
-    asyncio.run(main._prefetch_repo_snapshot(_data(target_workflow="FEATURE"), "crewai/b", "main", True, False, resumed))
+    asyncio.run(main._prefetch_repo_snapshot(_data(target_workflow="DESIGN_AND_DEV"), "crewai/b", "main", True, False, resumed))
     assert bool(calls) is reads
 
 
@@ -365,3 +369,120 @@ def test_the_crew_runs_inside_the_read_cache_and_receives_the_snapshot(engine, m
     asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
     assert seen[0]["repo_snapshot"] == "APERÇU" and in_cache == [True]
     assert github_tools._read_cache.get() is None   # le cache ne survit pas à l'exécution
+
+
+# --- Petite FEATURE : architecture sautée -----------------------------------------------------------
+
+def test_a_small_feature_skips_the_architecture_step_only_for_feature():
+    from crewquestion import workflow_step_keys
+    assert workflow_step_keys("FEATURE") == ["architecture", "diagnostic", "development", "qa"]
+    assert workflow_step_keys("FEATURE", "GRAND") == ["architecture", "diagnostic", "development", "qa"]
+    assert workflow_step_keys("FEATURE", "PETIT") == ["diagnostic", "development", "qa"]
+    for workflow in ("BUGFIX", "ANALYSE_ONLY", "DESIGN_AND_DEV"):
+        assert workflow_step_keys(workflow, "PETIT") == workflow_step_keys(workflow)
+
+
+def test_scope_is_kept_for_a_feature_and_dropped_for_any_other_workflow():
+    assert _data(target_workflow="FEATURE", scope="PETIT").scope == "PETIT"
+    assert _data(target_workflow="BUGFIX", scope="PETIT").scope is None
+    assert _data(target_workflow="FEATURE").scope is None
+    with pytest.raises(Exception):
+        _data(target_workflow="FEATURE", scope="ENORME")
+
+
+def test_snapshot_is_still_read_for_a_small_feature_because_the_diagnostic_runs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "build_repo_snapshot", lambda *a: calls.append(a) or "APERÇU")
+    asyncio.run(main._prefetch_repo_snapshot(_data(target_workflow="FEATURE", scope="PETIT"), "b", "main", True, False))
+    assert calls
+
+
+def test_a_small_feature_failure_is_judged_against_its_own_steps():
+    # Sans l'architecture, l'étape 1 est le Diagnostic (reprenable) et l'étape 2 le développement (jamais rejoué).
+    before_dev = main._failed_before_development(CrewStepError(1, 3, "Analyste", RuntimeError("x")), "FEATURE", "PETIT")
+    in_dev = main._failed_before_development(CrewStepError(2, 3, "Développeur", RuntimeError("x")), "FEATURE", "PETIT")
+    assert before_dev is True and in_dev is False
+    # Même rang d'étape dans le parcours complet : c'est l'architecture (reprenable) pour 1, le diagnostic pour 2.
+    assert main._failed_before_development(CrewStepError(2, 4, "Analyste", RuntimeError("x")), "FEATURE") is True
+
+
+def test_qualification_scope_defaults_to_the_safe_full_path():
+    from crewquestion import AnalysisReport, _coerce_analysis_report
+    base = dict(summary="s", request_type="FEATURE", confidence=0.9, is_clear=True)
+    assert AnalysisReport(**base).scope == "GRAND"
+    raw = {"summary": "s", "request_type": "FEATURE", "confidence": 0.9, "is_clear": True}
+    assert _coerce_analysis_report({**raw, "scope": "petit"}).scope == "PETIT"
+    assert _coerce_analysis_report({**raw, "scope": "?"}).scope == "GRAND"
+    assert _coerce_analysis_report(raw).scope == "GRAND"
+
+
+# --- Plan du tour précédent ---------------------------------------------------------------------------
+
+def _plan_result(plan="## Cible\nUn panier", extra=""):
+    return (
+        "## Architecte Logiciel React / TypeScript\n<!--agent-duration:12.50-->\n\n" + plan
+        + "\n\n---\n\n## Analyste Diagnostic Technique\n\ncode" + extra
+    )
+
+
+def _history(engine, conversation_id, result, status="success", workflow="FEATURE", scope=None, owner="o", repo="r"):
+    with Session(engine) as db:
+        entry = ExecutionHistory(
+            user_request="x", workflow=workflow, status=status, user_id="u1", conversation_id=conversation_id,
+            repo_owner=owner, repo_name=repo, result=result, scope=scope,
+        )
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        return entry.id
+
+
+def _plan(engine, conversation_id, current_id, data=None, has_repo=True):
+    with Session(engine) as db:
+        return main._previous_architecture_plan(db, data or _data(target_workflow="FEATURE"), has_repo, "u1", conversation_id, current_id)
+
+
+def test_previous_plan_is_the_architect_section_of_the_last_successful_turn(engine):
+    _, conversation_id = _new_execution(engine, "FEATURE")
+    _history(engine, conversation_id, _plan_result("## Cible\nVieux plan"))
+    _history(engine, conversation_id, _plan_result("## Cible\nPlan récent"))
+    current = _history(engine, conversation_id, None, status="running")
+    plan = _plan(engine, conversation_id, current)
+    assert plan == "## Cible\nPlan récent" and "agent-duration" not in plan
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(status="failed"),                        # tour en échec : pas une base fiable
+    dict(workflow="BUGFIX"),                       # aucune étape d'architecture
+    dict(workflow="FEATURE", scope="PETIT"),       # architecture sautée à ce tour-là
+    dict(owner="autre"),                           # autre repository
+])
+def test_previous_plan_ignores_turns_that_cannot_provide_one(engine, kwargs):
+    _, conversation_id = _new_execution(engine, "FEATURE")
+    _history(engine, conversation_id, _plan_result(), **kwargs)
+    assert _plan(engine, conversation_id, _history(engine, conversation_id, None, status="running")) == ""
+
+
+def test_previous_plan_is_capped_and_scoped_to_the_conversation(engine):
+    _, conversation_id = _new_execution(engine, "FEATURE")
+    _, other_conversation = _new_execution(engine, "FEATURE")
+    _history(engine, other_conversation, _plan_result("## Cible\nAutre conversation"))
+    assert _plan(engine, conversation_id, 0) == ""
+    _history(engine, conversation_id, _plan_result("x" * (main.MAX_PREVIOUS_PLAN_CHARS + 500)))
+    plan = _plan(engine, conversation_id, 0)
+    assert plan.endswith("[… tronqué]") and len(plan) < main.MAX_PREVIOUS_PLAN_CHARS + 30
+
+
+def test_previous_plan_is_not_loaded_when_the_architecture_will_not_run(engine, monkeypatch):
+    _, conversation_id = _new_execution(engine, "FEATURE")
+    _history(engine, conversation_id, _plan_result())
+    load = lambda data, resumed=None: asyncio.run(main._load_previous_plan(data, True, "u1", conversation_id, 0, resumed))  # noqa: E731
+    assert load(_data(target_workflow="FEATURE")) != ""
+    assert load(_data(target_workflow="FEATURE", scope="PETIT")) == ""        # architecture sautée
+    assert load(_data(target_workflow="BUGFIX")) == ""
+    assert load(_data(target_workflow="FEATURE"), {"architecture": "y"}) == ""  # réutilisée par une reprise
+
+
+def test_crew_inputs_carry_the_previous_plan_with_an_empty_default():
+    assert main._crew_inputs(_data(), 1, "p", "c", "b", "main", True, False)["previous_plan"] == ""
+    assert main._crew_inputs(_data(), 1, "p", "c", "b", "main", True, False, "", "PLAN")["previous_plan"] == "PLAN"

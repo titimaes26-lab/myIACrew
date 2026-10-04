@@ -63,6 +63,8 @@ class ExecutionHistory(SQLModel, table=True):
     error_retryable: Optional[bool] = None
     # Raisonnement de l'exécution : nombre de tentatives (2 après une relance automatique), étapes reprises d'une
     # exécution précédente, et dernier verdict QA du résultat (GO | GO_AVEC_RESERVES | NO_GO) pour suivre la qualité.
+    # Taille de qualification d'une FEATURE (PETIT : étape d'architecture sautée) ; None pour tout autre workflow.
+    scope: Optional[str] = None
     attempts: Optional[int] = None
     reused_steps: Optional[int] = None
     qa_verdict: Optional[str] = None
@@ -123,6 +125,7 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS current_step VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_code VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_retryable BOOLEAN",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS scope VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS attempts INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS reused_steps INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS qa_verdict VARCHAR",

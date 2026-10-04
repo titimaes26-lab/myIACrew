@@ -80,6 +80,9 @@ architecture_task:
     ces fichiers : au plus 2 lectures de plus, pour un fichier précis qu'il ne couvre pas. Sans aperçu :
     4 lectures AU PLUS, dans cet ordre : racine, `package.json`, `tsconfig.json` (s'il existe), `src`.
     Sans repository : aucune lecture, toute dépendance proposée est à ajouter.
+    Si un PLAN DU TOUR PRÉCÉDENT figure plus bas, pars de lui, mais il peut être périmé : confronte-le à
+    l'aperçu et à la demande. Garde TOUTES les sections et leur format ; ne détaille que ce que CETTE
+    demande change (Cible, Décisions, Contrats et Fichiers concernent ses seuls fichiers), le reste : "inchangé".
 
     Raisonne dans cet ordre :
     1. Existant : arborescence et composants RÉELLEMENT lus (ou "projet vide / aucun repository"), et
@@ -115,6 +118,9 @@ architecture_task:
 
     Aperçu du repository (vide si aucun) :
     {repo_snapshot}
+
+    Plan du tour précédent (vide si aucun) :
+    {previous_plan}
   expected_output: >
     Des titres "##" dans cet ordre : "Existant", "Cible", "Décisions", "Dépendances à ajouter",
     "Contrats d'interface", "Fichiers à créer ou modifier", "Couverture", "Risques".
@@ -188,6 +194,8 @@ diagnostic_task:
     ni d'identifiants qui auraient l'air réels, rien de tout cela ne s'est produit à ce stade.
     Sans repository cible (travail sur disque local), utilise `read_a_files_content` pour toute
     lecture.
+    Si un APERÇU DU REPOSITORY figure en fin de tâche (lu par le système avant ton travail : racine,
+    dépendances, conventions, `src`), ne le relis pas : tes lectures portent sur les fichiers à modifier.
 
     Correctif MINIMAL : change uniquement ce que la cause ou la fonctionnalité exige ; ne reformate
     pas, ne renomme pas, ne réordonne pas et ne réécris pas du code qui n'est pas concerné (un petit
@@ -233,6 +241,9 @@ diagnostic_task:
     corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
     ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
     ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
+
+    Aperçu du repository (lu par le système avant ton travail ; vide si aucun) :
+    {repo_snapshot}
   expected_output: >
     Les hypothèses classées, la section "Traçabilité" (avec "Ce qui infirmerait cette cause" et
     "Vérification manuelle"), le plan (liste des fichiers prévus et leur

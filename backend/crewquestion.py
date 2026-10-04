@@ -158,9 +158,13 @@ RESUMABLE_STEPS = ("design", "architecture", "diagnostic")
 FINALIZATION_ROLE = "finalisation du résultat"
 
 
-def workflow_step_keys(request_type: str) -> list[str]:
+def workflow_step_keys(request_type: str, scope: Optional[str] = None) -> list[str]:
     # Tout type inconnu retombe sur le workflow complet, comme run_dynamic_crew l'a toujours fait.
-    return list(WORKFLOW_STEP_KEYS.get(request_type, WORKFLOW_STEP_KEYS["DESIGN_AND_DEV"]))
+    keys = list(WORKFLOW_STEP_KEYS.get(request_type, WORKFLOW_STEP_KEYS["DESIGN_AND_DEV"]))
+    # Une petite FEATURE saute l'architecture : le Diagnostic part directement de la demande et du repo.
+    if request_type == "FEATURE" and scope == "PETIT":
+        keys.remove("architecture")
+    return keys
 
 
 def resumable_prefix(step_keys: list[str], saved_outputs: dict[str, str]) -> list[str]:
@@ -235,6 +239,9 @@ def _format_crew_result(result, task_durations: Optional[dict[str, float]] = Non
 
 # --- PYDANTIC MODEL & LLM ---
 RequestType = Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"]
+# Taille d'une FEATURE : PETIT = ajustement local (1 ou 2 fichiers, ni nouvel écran ni nouvelle dépendance) ; l'étape
+# d'architecture est alors sautée. Dans le doute (et pour tout autre type) : GRAND, le parcours complet.
+Scope = Literal["PETIT", "GRAND"]
 
 class AnalysisReport(BaseModel):
     # Ordre des champs volontaire : le modèle remplit le JSON dans cet ordre, donc il rédige sa
@@ -249,6 +256,10 @@ class AnalysisReport(BaseModel):
         default=None, description="Deuxième catégorie la plus plausible, ou null si aucune."
     )
     request_type: RequestType = Field(description="Type de workflow à déclencher.")
+    scope: Scope = Field(
+        default="GRAND",
+        description="PETIT seulement pour une FEATURE locale (1 ou 2 fichiers, sans nouvel écran ni nouvelle dépendance) ; sinon GRAND.",
+    )
     # Obligatoire (pas de valeur par défaut) : un défaut à 1.0 ferait passer pour certaine une
     # réponse qui omet ce champ, sans jamais déclencher le seuil de clarification.
     confidence: float = Field(
@@ -328,8 +339,11 @@ def _build_qualification_prompt(user_prompt: str, conversation_context: str = ""
         2. reasoning : les indices précis relevés dans la demande et la règle appliquée.
         3. alternative_type : la 2e catégorie la plus plausible (ou null).
         4. request_type : ta décision.
-        5. confidence : de 0 à 1. Sous {QUALIFICATION_CONFIDENCE_THRESHOLD}, is_clear doit être false.
-        6. is_clear, puis questions (2 à 4) si is_clear est false.
+        5. scope : PETIT seulement si c'est une FEATURE locale (un bouton, un champ, un texte, un style, un
+           calcul : 1 ou 2 fichiers, sans nouvel écran, nouvelle dépendance ni nouvelle structure d'état) ;
+           dans le doute, et pour tout autre type, GRAND.
+        6. confidence : de 0 à 1. Sous {QUALIFICATION_CONFIDENCE_THRESHOLD}, is_clear doit être false.
+        7. is_clear, puis questions (2 à 4) si is_clear est false.
 
         Règles pour les questions : fermées (réponse courte ou choix entre options). Si tu hésites
         entre deux catégories, une question nomme ces deux catégories et demande de trancher.
@@ -378,6 +392,8 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
         reasoning=str(data.get("reasoning") or ""),
         alternative_type=alternative if alternative in _REQUEST_TYPES else None,
         request_type=request_type,
+        # Tout sauf « PETIT » explicite (absent, illisible) = GRAND : le parcours complet est le choix sûr.
+        scope="PETIT" if str(data.get("scope", "")).strip().upper() == "PETIT" else "GRAND",
         confidence=min(max(confidence, 0.0), 1.0),
         is_clear=_as_bool(data.get("is_clear", False)),
         questions=[str(q) for q in questions] if isinstance(questions, list) else [],
@@ -1580,7 +1596,7 @@ class AppDevelopmentCrew():
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None, resume_outputs: Optional[dict[str, str]] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None, resume_outputs: Optional[dict[str, str]] = None, scope: Optional[str] = None):
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
         # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
@@ -1594,7 +1610,7 @@ class AppDevelopmentCrew():
             'design': self.design_task, 'architecture': self.architecture_task,
             'diagnostic': self.diagnostic_task, 'development': self.development_task, 'qa': self.qa_task,
         }
-        selected = [(key, factories[key]()) for key in workflow_step_keys(request_type)]
+        selected = [(key, factories[key]()) for key in workflow_step_keys(request_type, scope)]
 
         # Contexte EXPLICITE par tâche au lieu du défaut CrewAI (toutes les sorties précédentes) :
         # chaque agent reçoit ce dont il a besoin pour raisonner, et pas plus. Le Développeur ne

@@ -109,7 +109,7 @@ class _CountingRepo:
 @pytest.fixture()
 def counting(monkeypatch):
     repo = _CountingRepo(
-        files={("main", "package.json"): b'{"name": "app"}', ("main", "tsconfig.json"): b'{"strict": true}'},
+        files={("main", "package.json"): b'{"name": "app"}', ("main", "tsconfig.json"): b'{"compilerOptions": {"strict": true}}'},
         dirs={("main", ""): [("package.json", "file"), ("tsconfig.json", "file"), ("src", "dir")],
               ("main", "src"): [("src/App.tsx", "file")]},
     )
@@ -181,8 +181,9 @@ def test_delivery_checks_never_read_from_or_fill_the_file_cache(counting):
 def test_repo_snapshot_lists_the_root_reads_the_config_files_and_src(counting):
     snapshot = gt.build_repo_snapshot("o", "r", "main")
     assert "branche lue : main" in snapshot
-    assert "## Racine" in snapshot and "## package.json" in snapshot and '{"name": "app"}' in snapshot
-    assert "## tsconfig.json" in snapshot and "## src" in snapshot and "src/App.tsx" in snapshot
+    assert "## Racine" in snapshot and "## Résumé du projet" in snapshot and "- Nom : app" in snapshot
+    assert "mode strict activé" in snapshot and "## src" in snapshot and "src/App.tsx" in snapshot
+    assert '{"name": "app"}' not in snapshot   # le JSON brut est remplacé par son résumé
 
 
 def test_repo_snapshot_skips_missing_files_truncates_and_degrades_to_empty(counting):
@@ -221,3 +222,10 @@ def test_read_cache_logs_nothing_when_no_read_happened(capsys):
     with gt.track_read_cache():
         pass
     assert "CACHE LECTURE" not in capsys.readouterr().out
+
+
+def test_repo_snapshot_falls_back_to_the_raw_files_when_package_json_is_not_json(counting):
+    counting.files[("main", "package.json")] = b"{ ceci n'est pas du json"
+    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    assert "## package.json" in snapshot and "ceci n'est pas du json" in snapshot
+    assert "## Résumé du projet" not in snapshot and "## tsconfig.json" in snapshot
