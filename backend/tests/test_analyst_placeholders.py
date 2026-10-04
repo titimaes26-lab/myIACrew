@@ -1,12 +1,9 @@
 """Raccourcis laissés par le modèle (« // … reste du code ») : détection et faux positifs à éviter."""
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analyst_output import review_diagnostic_output
 from analyst_placeholders import find_placeholders
-from analyst_support import block, edit  # noqa: E402
+from analyst_support import block, edit
 
 
 def test_placeholder_comments_are_detected():

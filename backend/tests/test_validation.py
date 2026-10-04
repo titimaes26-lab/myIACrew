@@ -1,27 +1,23 @@
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from github import GithubException  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
+import pytest
+from fastapi.testclient import TestClient
+from github import GithubException
+from sqlmodel import Session, select
 
-import github_client  # noqa: E402
-import main  # noqa: E402
-import fastapi  # noqa: E402
-import schemas  # noqa: E402
-import routes_execute  # noqa: E402
-import execution  # noqa: E402
-import database  # noqa: E402
-import validation  # noqa: E402
-from auth import get_current_user  # noqa: E402
-from database import Conversation, ExecutionHistory, ExecutionLaunch  # noqa: E402
-from errors import AppError  # noqa: E402
-from github_access import GitHubAccessProblem, check_github_access  # noqa: E402
+import github_client
+import main
+import fastapi
+import schemas
+import routes_execute
+import execution
+import database
+import validation
+from auth import get_current_user
+from database import Conversation, ExecutionHistory, ExecutionLaunch
+from errors import AppError
+from github_access import GitHubAccessProblem, check_github_access
 
 
 @pytest.mark.parametrize("owner", ["octocat", "a", "my-org", "A1-b2", "x" * 39, "jdoe_acme"])
@@ -82,13 +78,6 @@ def test_models_normalize_empty_repo_fields_so_no_repo_target():
 
 
 # --- Endpoint : 422 lisible, rien créé ---------------------------------------------------------
-
-@pytest.fixture()
-def engine(monkeypatch):
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    SQLModel.metadata.create_all(eng)
-    monkeypatch.setattr(database, "engine", eng)
-    return eng
 
 
 def test_invalid_repo_gives_a_field_level_422_and_creates_nothing(engine):

@@ -1,12 +1,9 @@
 """Cas limites des modules analyst_* : balises à chemin invalide, fin de ligne, imports hors dépôt, diff tronqué."""
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import analyst_blocks  # noqa: E402
-import analyst_imports  # noqa: E402
-from analyst_output import build_delivery_report, review_diagnostic_output  # noqa: E402
+import analyst_blocks
+import analyst_imports
+from analyst_output import build_delivery_report, review_diagnostic_output
 
 TRUNCATED = "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué"
 OK_FILE = "<<<FICHIER: src/a.ts>>>\nexport const a = 1;\n<<<FIN_FICHIER>>>\n"

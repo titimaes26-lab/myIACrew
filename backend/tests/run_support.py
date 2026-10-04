@@ -1,21 +1,16 @@
 """Fabriques communes aux tests des étapes d'exécution : entrée type, base en mémoire, faux crew."""
 """Étapes extraites de _run_crew_and_persist : fonctions pures ou presque, testées une à une."""
-import os
-import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
+import pytest
 
-import schemas  # noqa: E402
-import execution  # noqa: E402
-import execution_context  # noqa: E402
-import database  # noqa: E402
-from crew_workflow import CrewStepError  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
-from database import Conversation, ExecutionHistory  # noqa: E402
+import schemas
+import execution
+import execution_context
+from crew_workflow import CrewStepError
+from sqlmodel import Session
+from database import Conversation, ExecutionHistory
 
 
 @pytest.fixture(autouse=True)
@@ -28,14 +23,6 @@ def _data(**kwargs):
     params = dict(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
     params.update(kwargs)
     return schemas.WorkflowExecutionInput(**params)
-
-
-@pytest.fixture()
-def engine(monkeypatch):
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    SQLModel.metadata.create_all(eng)
-    monkeypatch.setattr(database, "engine", eng)
-    return eng
 
 
 def _new_execution(engine, workflow="BUGFIX"):

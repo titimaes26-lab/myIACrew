@@ -1,41 +1,27 @@
 """Exécution de bout en bout avec un faux crew : mesures persistées, échec partiel, rattrapage des verdicts QA au démarrage."""
-# ruff: noqa: F811  (la fixture `session` importée de metrics_support est reprise comme argument des tests)
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
+from sqlmodel import Session, select
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-import database  # noqa: E402
-import execution  # noqa: E402
-import main  # noqa: E402
-import schemas  # noqa: E402
-from database import AgentRun, ExecutionHistory  # noqa: E402
-from metrics_collect import current_metrics  # noqa: E402
-from metrics_support import DESIGNER, _agent_run, _execution, _llm_event, session  # noqa: E402,F401
+import database
+import execution
+import main
+import schemas
+from database import AgentRun, ExecutionHistory
+from metrics_collect import current_metrics
+from metrics_support import DESIGNER, _llm_event
 
 
-@pytest.fixture()
-def run_engine(monkeypatch):
-    from sqlalchemy.pool import StaticPool
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(database, "engine", engine)
-    return engine
-
-
-def _launch(run_engine, monkeypatch, fake_run):
+def _launch(engine, monkeypatch, fake_run):
     """Lance execution.run_crew_and_persist avec un faux crew (aucun LLM, aucun GitHub)."""
 
     class FakeCrew:
         run_dynamic_crew = fake_run
 
     monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
-    with Session(run_engine) as db:
+    with Session(engine) as db:
         conversation = database.Conversation(user_id="u1", title="t")
         db.add(conversation)
         db.commit()
@@ -50,7 +36,7 @@ def _launch(run_engine, monkeypatch, fake_run):
     return ids[0]
 
 
-def test_successful_run_persists_agent_runs_and_real_llm_call_count(run_engine, monkeypatch):
+def test_successful_run_persists_agent_runs_and_real_llm_call_count(engine, monkeypatch):
     from types import SimpleNamespace
     from crewai.events.event_bus import crewai_event_bus
 
@@ -63,8 +49,8 @@ def test_successful_run_persists_agent_runs_and_real_llm_call_count(run_engine, 
         metrics.record_agent_done("QA Engineer / Automated Tester", 6.0)
         return SimpleNamespace(raw="résultat final")
 
-    execution_id = _launch(run_engine, monkeypatch, fake_run)
-    with Session(run_engine) as db:
+    execution_id = _launch(engine, monkeypatch, fake_run)
+    with Session(engine) as db:
         entry = db.get(ExecutionHistory, execution_id)
         runs = {r.agent: r for r in db.exec(select(AgentRun)).all()}
     assert entry.status == "success" and entry.api_calls_count == 3
@@ -73,7 +59,7 @@ def test_successful_run_persists_agent_runs_and_real_llm_call_count(run_engine, 
     assert runs["qa"].status == "completed" and runs["qa"].usage_calls == 0
 
 
-def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents(run_engine, monkeypatch):
+def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents(engine, monkeypatch):
     from crewai.events.event_bus import crewai_event_bus
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
@@ -82,8 +68,8 @@ def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents
         crewai_event_bus.emit(None, _llm_event(role="Analyste Diagnostic Technique", usage={"total_tokens": 8}, call_id="y"))
         raise RuntimeError("boom inattendu")
 
-    execution_id = _launch(run_engine, monkeypatch, fake_run)
-    with Session(run_engine) as db:
+    execution_id = _launch(engine, monkeypatch, fake_run)
+    with Session(engine) as db:
         entry = db.get(ExecutionHistory, execution_id)
         runs = {r.agent: r for r in db.exec(select(AgentRun)).all()}
     assert entry.status == "failed" and "boom inattendu" in entry.result and entry.api_calls_count == 2
@@ -92,8 +78,8 @@ def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents
     assert runs["diagnostic"].duration_seconds is None and runs["diagnostic"].llm_calls == 1
 
 
-def test_backfill_sets_the_verdict_of_old_successful_executions_only(run_engine):
-    with Session(run_engine) as db:
+def test_backfill_sets_the_verdict_of_old_successful_executions_only(engine):
+    with Session(engine) as db:
         old = ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1", result="## QA\nVerdict : NO_GO")
         none = ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1", result="aucun QA")
         failed = ExecutionHistory(user_request="r", workflow="BUGFIX", status="failed", user_id="u1", result="Verdict : GO")
@@ -102,6 +88,6 @@ def test_backfill_sets_the_verdict_of_old_successful_executions_only(run_engine)
         db.commit()
         ids = [old.id, none.id, failed.id, done.id]
     main._backfill_qa_verdicts()
-    with Session(run_engine) as db:
+    with Session(engine) as db:
         verdicts = [db.get(ExecutionHistory, i).qa_verdict for i in ids]
     assert verdicts == ["NO_GO", None, None, "GO"]

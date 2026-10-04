@@ -1,20 +1,16 @@
 """Seconde tentative automatique : quelles erreurs, avec quelles étapes réutilisées, sans occuper de créneau pendant l'attente."""
-# ruff: noqa: F811  (les fixtures importées de resume_support sont reprises comme arguments des tests)
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
+import pytest
+from sqlmodel import Session, select
 
-import schemas  # noqa: E402
-import execution  # noqa: E402
-import execution_persistence  # noqa: E402
-import execution_state  # noqa: E402
-from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
-from resume_support import engine, DESIGNER, _step_error, _launch_with, _saved  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import schemas
+import execution
+import execution_persistence
+import execution_state
+from database import Conversation, ExecutionCheckpoint, ExecutionHistory
+from resume_support import DESIGNER, _step_error, _launch_with, _saved
 
 
 def test_transient_failure_in_an_early_step_is_retried_once_reusing_saved_steps(engine, monkeypatch):

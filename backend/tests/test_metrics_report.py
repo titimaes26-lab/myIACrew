@@ -1,17 +1,12 @@
 """Agrégats purs : percentiles, synthèse, jours par fuseau, causes d'échec, coût et verdicts."""
-# ruff: noqa: F811  (la fixture `session` importée de metrics_support est reprise comme argument des tests)
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-import routes_metrics  # noqa: E402
-from metrics_report import percentile, summarize  # noqa: E402
-from metrics_support import DESIGNER, _agent_run, _execution, session  # noqa: E402,F401
+import routes_metrics
+from metrics_report import percentile, summarize
 
 
 def test_percentile_interpolates_and_handles_empty():

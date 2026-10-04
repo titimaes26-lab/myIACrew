@@ -1,25 +1,22 @@
 """Orchestration d'une exécution : persistance du succès, mesures, démarrage en échec, portée d'écriture GitHub."""
-# ruff: noqa: F811  (les fixtures importées de run_support sont reprises comme arguments des tests)
 """Étapes extraites de _run_crew_and_persist : fonctions pures ou presque, testées une à une."""
 import asyncio
-import os
-import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-import github_guards  # noqa: E402
+import pytest
+import github_guards
 
-import routes_execute  # noqa: E402
-import execution  # noqa: E402
-import execution_outcomes  # noqa: E402
-import execution_context  # noqa: E402
-import execution_persistence  # noqa: E402
-import memory_monitor  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
-from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
-from run_support import no_network_snapshot, _data, engine, _new_execution, _fake_crew  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import routes_execute
+import execution
+import execution_outcomes
+import execution_context
+import execution_persistence
+import memory_monitor
+from sqlmodel import Session, select
+from database import Conversation, ExecutionCheckpoint, ExecutionHistory
+from run_support import no_network_snapshot  # noqa: E402,F401  (fixture automatique : jamais de réseau pour l'aperçu du dépôt)
+from run_support import _data, _new_execution, _fake_crew
 
 
 def test_success_persistence_error_never_turns_a_delivered_run_into_a_failure(engine, monkeypatch):

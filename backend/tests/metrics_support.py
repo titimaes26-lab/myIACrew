@@ -1,26 +1,12 @@
 """Éléments communs aux tests des métriques : base SQLite en mémoire, fabriques d'exécutions et de mesures par agent."""
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import pytest  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-from database import AgentRun, ExecutionHistory  # noqa: E402
+from database import AgentRun, ExecutionHistory
 
 
 DESIGNER = "Lead Product / Game Designer"
-
-
-@pytest.fixture()
-def session():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as db:
-        yield db
 
 
 def _execution(db, user_id, status="success", workflow="BUGFIX", age_days=0, seconds=50):

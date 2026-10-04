@@ -1,19 +1,16 @@
 """CrewRun (crew_run.py) : retry résumable sur quota, échec attribué à une étape, annonces d'étapes, nettoyage final."""
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from crewai.tasks.task_output import TaskOutput  # noqa: E402
+import pytest
+from crewai.tasks.task_output import TaskOutput
 
-import crew_cache  # noqa: E402
-import crew_retry  # noqa: E402
-import crew_run  # noqa: E402
-import crew_summary  # noqa: E402
-import crew_workflow  # noqa: E402
-import crewquestion as cq  # noqa: E402
+import crew_cache
+import crew_retry
+import crew_run
+import crew_summary
+import crew_workflow
+import crewquestion as cq
 
 DESIGN_AND_DEV = ["design", "architecture", "diagnostic", "development", "qa"]
 

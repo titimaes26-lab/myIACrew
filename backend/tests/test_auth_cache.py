@@ -1,17 +1,14 @@
 import asyncio
 import base64
 import json
-import os
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import httpx  # noqa: E402
-import pytest  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
+import httpx
+import pytest
+from fastapi import HTTPException
 
-import auth  # noqa: E402
+import auth
 
 
 def _jwt(exp=None):

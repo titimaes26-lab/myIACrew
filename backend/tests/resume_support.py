@@ -1,32 +1,18 @@
 """Fabriques communes aux tests de reprise : base en mémoire, exécutions échouées avec points de reprise, lancement avec un faux crew."""
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
+from sqlmodel import Session
 
-import crew_workflow  # noqa: E402
-import schemas  # noqa: E402
-import execution  # noqa: E402
-import database  # noqa: E402
-from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
+import crew_workflow
+import schemas
+import execution
+from database import Conversation, ExecutionCheckpoint, ExecutionHistory
 
 
 def TaskOutputFactory(raw):
     from crewai.tasks.task_output import TaskOutput
     return TaskOutput(description="d", raw=raw, agent="x")
-
-
-@pytest.fixture()
-def engine(monkeypatch):
-    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    SQLModel.metadata.create_all(eng)
-    monkeypatch.setattr(database, "engine", eng)
-    return eng
 
 
 def _failed_with_checkpoints(db, workflow="DESIGN_AND_DEV", user="u1", steps=("design", "architecture"), **kwargs):

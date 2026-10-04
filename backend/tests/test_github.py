@@ -1,21 +1,18 @@
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 pytest.importorskip("github_write")  # saute le fichier si PyGithub/crewai ne sont pas installés
-import github_pull_request  # noqa: E402
-import github_snapshot  # noqa: E402
-import github_batch  # noqa: E402
-import github_write  # noqa: E402
-import github_edit  # noqa: E402
-import github_edit_failures  # noqa: E402
-import github_read  # noqa: E402
-import github_guards  # noqa: E402
-import github_client  # noqa: E402
-from github import GithubException  # noqa: E402
+import github_pull_request
+import github_snapshot
+import github_batch
+import github_write
+import github_edit
+import github_edit_failures
+import github_read
+import github_guards
+import github_client
+from github import GithubException
 
 
 class FakeContentFile:

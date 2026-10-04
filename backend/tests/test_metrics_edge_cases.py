@@ -1,11 +1,8 @@
 """Cas limites de metrics_report : dates naïves et avec fuseau, durée inconnue."""
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import metrics_report  # noqa: E402
+import metrics_report
 
 UTC = timezone.utc
 

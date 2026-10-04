@@ -1,18 +1,14 @@
 """Reprise côté serveur : points de reprise enregistrés, conditions pour qu'une reprise soit acceptée ou refusée."""
-# ruff: noqa: F811  (les fixtures importées de resume_support sont reprises comme arguments des tests)
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
+import pytest
+from sqlmodel import Session, select
 
-import routes_history  # noqa: E402
-import execution_resume  # noqa: E402
-import execution_persistence  # noqa: E402
-from database import ExecutionCheckpoint  # noqa: E402
-from resume_support import engine, _data, _failed_with_checkpoints  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import routes_history
+import execution_resume
+import execution_persistence
+from database import ExecutionCheckpoint
+from resume_support import _data, _failed_with_checkpoints
 
 
 def test_completed_agent_persists_a_checkpoint_only_for_resumable_steps(engine):

@@ -1,14 +1,10 @@
 """Qualification du besoin : lecture tolérante du JSON, seuil de confiance, prompt, point d'accès."""
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
-import qualification  # noqa: E402
+import qualification
 
 
 def test_coerce_analysis_report_fixes_common_model_mistakes():

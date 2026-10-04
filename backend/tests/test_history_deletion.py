@@ -1,17 +1,13 @@
 """Suppression d'historique (unitaire et par lot) : les mesures par agent partent avec l'exécution, et seulement la sienne."""
-# ruff: noqa: F811  (la fixture `session` importée de metrics_support est reprise comme argument des tests)
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
-from sqlmodel import select  # noqa: E402
+import pytest
+from sqlmodel import select
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-import routes_history  # noqa: E402
-from database import AgentRun, ExecutionHistory  # noqa: E402
-from metrics_support import DESIGNER, _agent_run, _execution, session  # noqa: E402,F401
+import routes_history
+from database import AgentRun, ExecutionHistory
+from metrics_support import _agent_run, _execution
 
 
 def test_deleting_an_execution_removes_its_agent_runs_and_only_its_own(session):

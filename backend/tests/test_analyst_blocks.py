@@ -1,12 +1,9 @@
 """Balises de fichiers : extraction, clôtures, chemins, marqueurs décorés ou mal formés, indentation."""
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analyst_output import review_diagnostic_output
 from analyst_blocks import parse_file_sections
-from analyst_support import parse_file_blocks, block  # noqa: E402
+from analyst_support import parse_file_blocks, block
 
 
 def test_extracts_files_and_strips_outer_fence():

@@ -1,23 +1,20 @@
 """Issue d'une exécution : messages d'échec et de livraison, blocs du résultat partiel, décision de relance."""
-# ruff: noqa: F811  (les fixtures importées de run_support sont reprises comme arguments des tests)
 """Étapes extraites de _run_crew_and_persist : fonctions pures ou presque, testées une à une."""
 import asyncio
-import os
-import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
+import pytest
 
-import execution_outcomes  # noqa: E402
-import execution_context  # noqa: E402
-import execution_resume  # noqa: E402
-import execution_persistence  # noqa: E402
-import execution_state  # noqa: E402
-from crew_workflow import CrewStepError  # noqa: E402
-from errors import classify_exception  # noqa: E402
-from run_support import no_network_snapshot, _data, _step_error  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import execution_outcomes
+import execution_context
+import execution_resume
+import execution_persistence
+import execution_state
+from crew_workflow import CrewStepError
+from errors import classify_exception
+from run_support import no_network_snapshot  # noqa: E402,F401  (fixture automatique : jamais de réseau pour l'aperçu du dépôt)
+from run_support import _data, _step_error
 
 
 def test_delivery_failure_message_depends_on_the_kind_of_problem():

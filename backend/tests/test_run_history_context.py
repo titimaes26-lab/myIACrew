@@ -1,19 +1,16 @@
 """Contexte tiré de la conversation : plan du tour précédent, tours précédents lus à la demande, branche de travail réutilisée."""
-# ruff: noqa: F811  (les fixtures importées de run_support sont reprises comme arguments des tests)
 """Étapes extraites de _run_crew_and_persist : fonctions pures ou presque, testées une à une."""
 import asyncio
 from datetime import datetime, timedelta, timezone
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
+import pytest
 
-import execution_context  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
-from database import Conversation, ExecutionHistory  # noqa: E402
-from run_support import no_network_snapshot, _data, engine, _new_execution  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import execution_context
+from sqlmodel import Session, select
+from database import Conversation, ExecutionHistory
+from run_support import no_network_snapshot  # noqa: E402,F401  (fixture automatique : jamais de réseau pour l'aperçu du dépôt)
+from run_support import _data, _new_execution
 
 
 def _plan_result(plan="## Cible\nUn panier", extra=""):

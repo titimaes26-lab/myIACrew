@@ -1,22 +1,19 @@
 """Contexte d'une exécution : consignes, aperçu du dépôt, entrées du crew, petite FEATURE sans architecture."""
-# ruff: noqa: F811  (les fixtures importées de run_support sont reprises comme arguments des tests)
 """Étapes extraites de _run_crew_and_persist : fonctions pures ou presque, testées une à une."""
 import asyncio
-import os
-import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-import github_client  # noqa: E402
+import pytest
+import github_client
 
-import execution  # noqa: E402
-import execution_context  # noqa: E402
-from github_snapshot import GitHubVerificationUnavailable  # noqa: E402
-from sqlmodel import Session  # noqa: E402
-from database import ExecutionHistory  # noqa: E402
-from run_support import no_network_snapshot, _data, engine, _new_execution, _fake_crew  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import execution
+import execution_context
+from github_snapshot import GitHubVerificationUnavailable
+from sqlmodel import Session
+from database import ExecutionHistory
+from run_support import no_network_snapshot  # noqa: E402,F401  (fixture automatique : jamais de réseau pour l'aperçu du dépôt)
+from run_support import _data, _new_execution, _fake_crew
 
 
 def test_repo_instructions_without_repo_target_use_the_local_workspace():

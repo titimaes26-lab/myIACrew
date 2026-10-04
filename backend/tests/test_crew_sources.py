@@ -1,18 +1,14 @@
 """Lecture du code d'origine et espace de travail local : branche de travail, repli, confinement, dossiers."""
-import os
-import sys
 
 import pytest
-import github_read  # noqa: E402
-import github_client  # noqa: E402
+import github_read
+import github_client
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
-import crew_tools  # noqa: E402
-import crew_workspace  # noqa: E402
-from crew_support import output, new_crew, _edit_block, _fake_fetcher, _repo_crew  # noqa: E402
+import crew_tools
+import crew_workspace
+from crew_support import output, new_crew, _edit_block, _fake_fetcher, _repo_crew
 
 
 def test_base_source_uses_the_work_branch_when_it_exists(monkeypatch):

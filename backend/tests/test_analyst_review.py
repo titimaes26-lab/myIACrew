@@ -1,13 +1,10 @@
 """Contrôle d'une sortie du diagnostic : rapport de livraison, modifications ciblées résolues en fichiers complets."""
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analyst_output import build_delivery_report, review_diagnostic_output
 from analyst_blocks import FILE_ABSENT, PRESENT_UNREADABLE
 from analyst_edits import apply_edits, parse_edit_sections
-from analyst_support import block, edit  # noqa: E402
+from analyst_support import block, edit
 
 
 def test_output_without_files_is_rejected_unless_declared_not_delivered():

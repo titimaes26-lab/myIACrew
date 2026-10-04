@@ -1,14 +1,11 @@
 import asyncio
-import os
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
+import pytest
 
-import llm_limiter  # noqa: E402
-from llm_limiter import GeminiRateLimiter, install, is_quota_error, retry_delay_seconds  # noqa: E402
+import llm_limiter
+from llm_limiter import GeminiRateLimiter, install, is_quota_error, retry_delay_seconds
 
 QUOTA_TEXT = (
     "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota.\\n"

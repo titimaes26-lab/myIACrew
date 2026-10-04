@@ -1,17 +1,13 @@
 """Contrôles automatiques des specs, du plan d'architecture et du rapport QA (verdicts, fichiers retirés)."""
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
-import qa_report  # noqa: E402
-import crew_guardrails  # noqa: E402
-import crew_llms  # noqa: E402
-from crew_support import output, new_crew, GOOD_SPEC, GOOD_ARCH  # noqa: E402
+import qa_report
+import crew_guardrails
+import crew_llms
+from crew_support import output, new_crew, GOOD_SPEC, GOOD_ARCH
 
 
 @pytest.mark.parametrize("text, expected", [

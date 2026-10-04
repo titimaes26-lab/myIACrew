@@ -1,11 +1,7 @@
 """Fabriques communes aux tests du crew : sorties factices, crew prêt à l'emploi, lecteurs de dépôt factices, textes types."""
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
 

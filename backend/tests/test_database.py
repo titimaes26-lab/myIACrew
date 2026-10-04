@@ -1,11 +1,9 @@
 import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import database  # noqa: E402
+import database
 
 POSTGRES = "postgresql://u:p@host:5432/db"
 

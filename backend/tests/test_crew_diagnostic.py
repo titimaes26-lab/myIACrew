@@ -1,17 +1,13 @@
 """Garde-fou du diagnostic et commit des fichiers de l'Analyste : modifications ciblées, imports, reprise, fichiers retirés."""
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
-import crew_tools  # noqa: E402
-import crew_guardrails  # noqa: E402
-import crew_workspace  # noqa: E402
-from crew_support import output, new_crew, _edit_block  # noqa: E402
+import crew_tools
+import crew_guardrails
+import crew_workspace
+from crew_support import output, new_crew, _edit_block
 
 
 def test_guardrail_resolves_a_targeted_edit_into_a_complete_committable_file():

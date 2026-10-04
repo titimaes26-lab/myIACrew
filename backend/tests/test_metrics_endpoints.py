@@ -1,17 +1,13 @@
 """Points d'accès du tableau de bord : synthèse, comparaison de périodes, liste des exécutions, mesures d'une exécution."""
-# ruff: noqa: F811  (la fixture `session` importée de metrics_support est reprise comme argument des tests)
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-import routes_metrics  # noqa: E402
-from database import AgentRun, ExecutionHistory  # noqa: E402
-from metrics_support import DESIGNER, _agent_run, _execution, session  # noqa: E402,F401
+import routes_metrics
+from database import AgentRun, ExecutionHistory
+from metrics_support import _agent_run, _execution
 
 
 def test_metrics_summary_endpoint_is_scoped_to_the_user_period_and_workflow(session):

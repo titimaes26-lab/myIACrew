@@ -1,12 +1,9 @@
 import logging
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import logs  # noqa: E402
+import logs
 
 
 @pytest.fixture(autouse=True)

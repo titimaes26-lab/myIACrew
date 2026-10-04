@@ -1,21 +1,17 @@
 """Collecte des mesures : lecture des usages, rôles, compteurs par agent, événements CrewAI, lignes persistées."""
-# ruff: noqa: F811  (la fixture `session` importée de metrics_support est reprise comme argument des tests)
-import os
-import sys
 import threading
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
-from sqlmodel import select  # noqa: E402
+import pytest
+from sqlmodel import select
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-import execution_persistence  # noqa: E402
-from database import AgentRun, ExecutionHistory  # noqa: E402
-from metrics_collect import ExecutionMetrics, build_agent_run_rows, flush_events, parse_usage, track_execution_metrics  # noqa: E402
-from metrics_roles import step_for_role  # noqa: E402
-from metrics_support import DESIGNER, _agent_run, _execution, _llm_event, session  # noqa: E402,F401
+import execution_persistence
+from database import AgentRun, ExecutionHistory
+from metrics_collect import ExecutionMetrics, build_agent_run_rows, flush_events, parse_usage, track_execution_metrics
+from metrics_roles import step_for_role
+from metrics_support import DESIGNER, _execution, _llm_event
 
 
 @pytest.mark.parametrize("usage, expected", [

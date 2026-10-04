@@ -1,40 +1,29 @@
 import itertools
 import asyncio
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-import github_snapshot  # noqa: E402
-import github_client  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
+import pytest
+import github_snapshot
+import github_client
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
-import schemas  # noqa: E402
-import routes_conversations  # noqa: E402
-import routes_history  # noqa: E402
-import execution  # noqa: E402
-import execution_outcomes  # noqa: E402
-import execution_context  # noqa: E402
-import execution_state  # noqa: E402
-import database  # noqa: E402
-from database import Conversation, ExecutionHistory  # noqa: E402
-from delivery import render_partial_delivery_block  # noqa: E402
+import schemas
+import routes_conversations
+import routes_history
+import execution
+import execution_outcomes
+import execution_context
+import execution_state
+import database
+from database import Conversation, ExecutionHistory
+from delivery import render_partial_delivery_block
 from github_delivery import PartialDelivery, describe_partial_delivery
 from github_snapshot import GitHubVerificationUnavailable
-from orphans import INTERRUPTED_MESSAGE, ORPHAN_AFTER_SECONDS, sweep_stale_executions  # noqa: E402
+from orphans import INTERRUPTED_MESSAGE, ORPHAN_AFTER_SECONDS, sweep_stale_executions
 
 OLD = timedelta(seconds=ORPHAN_AFTER_SECONDS + 60)
-
-
-@pytest.fixture()
-def session():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as db:
-        yield db
 
 
 _conversation_ids = itertools.count(100)

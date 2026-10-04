@@ -1,10 +1,7 @@
 import json
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from project_summary import MAX_LISTED_DEPENDENCIES, summarize_project  # noqa: E402
+from project_summary import MAX_LISTED_DEPENDENCIES, summarize_project
 
 PACKAGE = json.dumps({
     "name": "boutique", "scripts": {"dev": "vite", "build": "tsc -b", "test": "vitest"},

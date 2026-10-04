@@ -1,29 +1,17 @@
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from sqlalchemy.exc import IntegrityError  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
+import pytest
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import select
 
-from database import ExecutionHistory, ExecutionLaunch  # noqa: E402
-from errors import AppError, ErrorCode  # noqa: E402
-from limits import (  # noqa: E402
+from database import ExecutionHistory, ExecutionLaunch
+from errors import AppError, ErrorCode
+from limits import (
     MAX_RUNNING_PER_USER, SlidingWindowLimiter, check_qualify_rate, check_user_execution_quota, record_execution_launch,
 )
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture()
-def session():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as db:
-        yield db
 
 
 def _row(db, user="u1", status="running", conversation_id=None, created=NOW, updated=NOW):

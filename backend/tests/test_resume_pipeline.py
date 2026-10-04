@@ -1,18 +1,14 @@
 """Reprise côté crew : étapes du pipeline, préfixe réutilisable, sorties reprises comme contexte."""
-# ruff: noqa: F811  (les fixtures importées de resume_support sont reprises comme arguments des tests)
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
+import pytest
 
-import crewquestion as cq  # noqa: E402
-import crew_workflow  # noqa: E402
-import crew_retry  # noqa: E402
-import crew_run  # noqa: E402
-from resume_support import TaskOutputFactory  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import crewquestion as cq
+import crew_workflow
+import crew_retry
+import crew_run
+from resume_support import TaskOutputFactory
 
 
 def test_workflow_step_keys_are_the_single_source_of_the_pipeline():

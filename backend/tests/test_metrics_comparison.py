@@ -1,17 +1,13 @@
 """Synthèse du tableau de bord : comparaison à la période précédente, exactitude au-delà de 1 000 exécutions, coût et qualité."""
-# ruff: noqa: F811  (la fixture `session` importée de metrics_support est reprise comme argument des tests)
-import os
-import sys
 from datetime import timedelta, timezone
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
-import routes_metrics  # noqa: E402
-from database import ExecutionHistory  # noqa: E402
-from metrics_support import DESIGNER, _agent_run, _execution, session  # noqa: E402,F401
+import routes_metrics
+from database import ExecutionHistory
+from metrics_support import _agent_run, _execution
 
 
 def _summary(session, days=30, workflow=None, user="u1"):

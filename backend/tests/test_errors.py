@@ -1,22 +1,19 @@
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, SQLModel, create_engine, select
 
-import main  # noqa: E402
-import schemas  # noqa: E402
-import routes_execute  # noqa: E402
-import execution  # noqa: E402
-import database  # noqa: E402
-from auth import get_current_user  # noqa: E402
-from database import ExecutionHistory  # noqa: E402
-from errors import AppError, DeliveryError, ErrorCode, classify_exception, http_status_for  # noqa: E402
-from github_snapshot import GitHubVerificationUnavailable  # noqa: E402
+import main
+import schemas
+import routes_execute
+import execution
+import database
+from auth import get_current_user
+from database import ExecutionHistory
+from errors import AppError, DeliveryError, ErrorCode, classify_exception, http_status_for
+from github_snapshot import GitHubVerificationUnavailable
 
 
 @pytest.mark.parametrize("exc, code, retryable", [

@@ -1,12 +1,9 @@
 """Cohérence des imports relatifs des fichiers livrés."""
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analyst_output import review_diagnostic_output
 from analyst_imports import find_import_problems
-from analyst_support import block, edit, f  # noqa: E402
+from analyst_support import block, edit, f
 
 
 def test_import_of_missing_named_export_is_flagged():

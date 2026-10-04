@@ -1,15 +1,12 @@
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
-import crewquestion as cq  # noqa: E402
-import crew_tools  # noqa: E402
-import crew_guardrails  # noqa: E402
-from analyst_output import build_delivery_report  # noqa: E402
-from qa_report import (  # noqa: E402
+import crewquestion as cq
+import crew_tools
+import crew_guardrails
+from analyst_output import build_delivery_report
+from qa_report import (
     has_blocking_problems,
     normalize_verdict,
     parse_criteria,

@@ -1,22 +1,18 @@
 """Créneau d'exécution : une à la fois, file d'attente, échéance maximale, arrêt d'un crew bloqué, message de délai."""
-# ruff: noqa: F811  (les fixtures importées de resume_support sont reprises comme arguments des tests)
 import asyncio
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
-from sqlmodel import Session, select  # noqa: E402
+import pytest
+from sqlmodel import Session, select
 
-import schemas  # noqa: E402
-import routes_conversations  # noqa: E402
-import execution  # noqa: E402
-import execution_context  # noqa: E402
-import execution_persistence  # noqa: E402
-import execution_state  # noqa: E402
-from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
-from resume_support import engine, DESIGNER, _launch_with, _saved, _new_failed_execution  # noqa: E402,F401,F811  (fixtures reprises par nom)
+import schemas
+import routes_conversations
+import execution
+import execution_context
+import execution_persistence
+import execution_state
+from database import Conversation, ExecutionCheckpoint, ExecutionHistory
+from resume_support import DESIGNER, _launch_with, _saved, _new_failed_execution
 
 
 def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, monkeypatch):

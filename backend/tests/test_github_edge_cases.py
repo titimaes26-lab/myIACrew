@@ -1,21 +1,18 @@
 """Cas limites des modules github_* : 404, dossiers, occurrences, branche absente, syntaxe, cache de lecture."""
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 pytest.importorskip("github_write")
-import github_client  # noqa: E402
-import github_delivery  # noqa: E402
-import github_edit  # noqa: E402
-import github_guards  # noqa: E402
-import github_read  # noqa: E402
-import github_snapshot  # noqa: E402
-import github_write  # noqa: E402
-from analyst_blocks import PRESENT_UNREADABLE  # noqa: E402
-from github import GithubException  # noqa: E402
+import github_client
+import github_delivery
+import github_edit
+import github_guards
+import github_read
+import github_snapshot
+import github_write
+from analyst_blocks import PRESENT_UNREADABLE
+from github import GithubException
 
 BRANCH = "crewai/a"
 
@@ -222,8 +219,8 @@ def test_only_a_syntax_error_report_rejects_the_content(monkeypatch):
 
 # --- lot de fichiers en un seul commit ------------------------------------------------------------------
 
-import github_batch  # noqa: E402
-import github_edit_failures  # noqa: E402
+import github_batch
+import github_edit_failures
 
 
 class _GitRepo:

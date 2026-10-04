@@ -1,15 +1,12 @@
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
-import crewquestion as cq  # noqa: E402
-import crew_tools  # noqa: E402
-import github_pull_request  # noqa: E402
-import github_client  # noqa: E402
-from delivery import (  # noqa: E402
+import crewquestion as cq
+import crew_tools
+import github_pull_request
+import github_client
+from delivery import (
     GENERATED_END,
     GENERATED_START,
     build_pull_request_body,

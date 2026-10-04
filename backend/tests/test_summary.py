@@ -1,4 +1,4 @@
-import crew_summary  # noqa: E402
+import crew_summary
 from summary import delivery_facts, fallback_summary
 
 DIAG = "Analyste Diagnostic Technique"

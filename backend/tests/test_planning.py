@@ -1,13 +1,10 @@
-import os
-import sys
 import warnings
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import pytest  # noqa: E402
+import pytest
 
-import crewquestion as cq  # noqa: E402
-import crew_llms  # noqa: E402
+import crewquestion as cq
+import crew_llms
 
 
 def _agents():
