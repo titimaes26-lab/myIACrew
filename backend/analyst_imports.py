@@ -61,6 +61,52 @@ def _import_candidates(importer: str, spec: str) -> list[str]:
         + [f"{target}/index{suffix}" for suffix in _RESOLVE_SUFFIXES[:4]]
     )
 
+def _imports_of(content: str) -> list[tuple[str | None, str | None, str]]:
+    """[(import par défaut, imports nommés, spécificateur)] d'un fichier : `import a, { b } from "x"` et `import "x"`."""
+    imports = [(m.group(1), m.group(2), m.group(3)) for m in _IMPORT_FROM.finditer(content)]
+    imports += [(None, None, m.group(1)) for m in _IMPORT_SIDE_EFFECT.finditer(content)]
+    return imports
+
+
+def _missing_import_problem(
+    path: str, spec: str, candidates: list[str], entries: Callable[[str], set[str] | None]
+) -> str | None:
+    """Message si l'import ne mène à aucun fichier livré ni existant, None sinon. Dans le doute (dossier inconnu, ou
+    aucun moyen de lister : `entries` renvoie alors None), jamais de signalement."""
+    known_absent = bool(candidates)
+    for candidate in candidates:
+        names = entries(posixpath.dirname(candidate))
+        if names is None:
+            known_absent = False
+            break
+        if posixpath.basename(candidate) in names:
+            known_absent = False
+            break
+    if known_absent:
+        return (
+            f"{path} : l'import '{spec}' ne correspond à aucun fichier livré ni existant "
+            "(livre ce fichier, ou corrige le chemin)."
+        )
+    return None
+
+
+def _export_problems(
+    path: str, spec: str, resolved: str, default_name: str | None, named: str | None, resolved_content: str
+) -> list[str]:
+    """Imports (par défaut ou nommés) que le fichier LIVRÉ visé n'exporte pas."""
+    exported, has_default, star = _exports_of(resolved_content)
+    if star:
+        return []
+    problems = []
+    if default_name and not has_default:
+        problems.append(f"{path} : import par défaut depuis '{spec}', mais {resolved} n'a pas d'export par défaut.")
+    for item in (named or "").split(","):
+        name = item.replace("type ", "", 1).strip().split(" as ")[0].strip()
+        if name and name not in exported:
+            problems.append(f"{path} : '{name}' est importé depuis '{spec}', mais {resolved} ne l'exporte pas.")
+    return problems
+
+
 def find_import_problems(
     files: list[dict],
     list_dir: Callable[[str], set[str] | None] | None = None,
@@ -93,36 +139,15 @@ def find_import_problems(
     for path, content in scanned.items():
         if analyst_blocks.extension(path) not in CODE_EXTENSIONS:
             continue
-        imports = [(m.group(1), m.group(2), m.group(3)) for m in _IMPORT_FROM.finditer(content)]
-        imports += [(None, None, m.group(1)) for m in _IMPORT_SIDE_EFFECT.finditer(content)]
-        for default_name, named, spec in imports:
+        for default_name, named, spec in _imports_of(content):
             candidates = _import_candidates(path, spec)
             resolved = next((c for c in candidates if c in delivered), None)
             if resolved is None:
-                known_absent = bool(candidates)
-                for candidate in candidates:
-                    names = entries(posixpath.dirname(candidate))
-                    if names is None:
-                        known_absent = False
-                        break
-                    if posixpath.basename(candidate) in names:
-                        known_absent = False
-                        break
-                if known_absent and list_dir is not None:
-                    problems.append(
-                        f"{path} : l'import '{spec}' ne correspond à aucun fichier livré ni existant "
-                        "(livre ce fichier, ou corrige le chemin)."
-                    )
+                missing = _missing_import_problem(path, spec, candidates, entries)
+                if missing:
+                    problems.append(missing)
                 continue
             if analyst_blocks.extension(resolved) not in CODE_EXTENSIONS:
                 continue
-            exported, has_default, star = _exports_of(delivered[resolved])
-            if star:
-                continue
-            if default_name and not has_default:
-                problems.append(f"{path} : import par défaut depuis '{spec}', mais {resolved} n'a pas d'export par défaut.")
-            for item in (named or "").split(","):
-                name = item.replace("type ", "", 1).strip().split(" as ")[0].strip()
-                if name and name not in exported:
-                    problems.append(f"{path} : '{name}' est importé depuis '{spec}', mais {resolved} ne l'exporte pas.")
+            problems += _export_problems(path, spec, resolved, default_name, named, delivered[resolved])
     return list(dict.fromkeys(problems))

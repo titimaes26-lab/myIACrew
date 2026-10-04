@@ -123,6 +123,95 @@ def _fences_are_balanced(lines: list[str]) -> bool:
             open_fence = None
     return open_fence is None
 
+class _FileSectionParser:
+    """État d'une lecture de balises <<<FICHIER>>> : fichier en cours (chemin normalisé, balise brute, lignes du
+    contenu) et résultats. Une méthode par sorte de ligne reconnue."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, str] = {}
+        self.broken: dict[str, str] = {}
+        self.current_path: str | None = None
+        self.current_raw = ""
+        self.body: list[str] = []
+        # Vrai entre une balise mal formée et sa <<<FIN_FICHIER>>> : ce contenu n'appartient à aucun
+        # fichier exploitable, et sa balise de fin n'est pas une balise orpheline.
+        self.in_malformed = False
+        # Balise d'ouverture indentée (fichiers écrits dans une liste Markdown) : l'indentation
+        # COMMUNE à toutes les lignes du contenu est alors retirée (voir textwrap.dedent) — jamais
+        # un préfixe fixe retiré ligne par ligne, qui décalerait seulement une partie des lignes.
+        self.marker_indented = False
+
+    @property
+    def block_open(self) -> bool:
+        return bool(self.current_raw or self.current_path)
+
+    def mark_broken(self, path: str | None, raw: str, reason: str) -> None:
+        key = path or raw.strip() or "(chemin vide)"
+        self.files.pop(key, None)
+        self.broken[key] = reason
+
+    def _reset_block(self) -> None:
+        self.current_path, self.current_raw, self.body = None, "", []
+
+    def _close_unterminated(self) -> None:
+        if self.block_open:
+            self.mark_broken(self.current_path, self.current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
+
+    def on_start(self, start: re.Match, line: str) -> None:
+        self.in_malformed = False
+        self._close_unterminated()
+        self.current_raw = start.group(1) or " "
+        self.current_path = normalize_path(start.group(1))
+        self.marker_indented = line != line.lstrip()
+        self.body = []
+
+    def on_end(self, end: re.Match) -> None:
+        closing_path = normalize_path(end.group(1)) if end.group(1) else None
+        current_path = self.current_path
+        if self.in_malformed:
+            self.in_malformed = False
+        elif (current_path and closing_path and closing_path != current_path
+              and not current_path.endswith("/" + closing_path)):
+            # "<<<FIN_FICHIER: App.tsx>>>" pour "src/components/App.tsx" reste le même fichier.
+            self.mark_broken(current_path, self.current_raw, f"fermé par la balise de fin d'un autre fichier ({closing_path})")
+        elif current_path:
+            self._store_file(current_path)
+        elif self.current_raw:
+            self.mark_broken(None, self.current_raw, "chemin invalide")
+        else:
+            self.mark_broken(None, "(balise orpheline)", "<<<FIN_FICHIER>>> sans balise <<<FICHIER: ...>>> d'ouverture")
+        self._reset_block()
+
+    def _store_file(self, path: str) -> None:
+        body = self.body
+        if self.marker_indented:
+            body = textwrap.dedent("\n".join(body)).split("\n")
+        lines, problem = _strip_outer_fence(body, extension(path) in PROSE_EXTENSIONS)
+        if problem:
+            self.mark_broken(path, self.current_raw, problem)
+            return
+        content = "\n".join(lines)
+        self.files[path] = content + "\n" if content and not content.endswith("\n") else content
+        self.broken.pop(path, None)
+
+    def on_malformed(self, stripped: str) -> None:
+        self.mark_broken(None, stripped[:80], "balise mal formée, attendu : <<<FICHIER: chemin/du/fichier>>>")
+        if self.block_open:
+            # Une balise mal formée en plein fichier annonce presque toujours le fichier
+            # SUIVANT : continuer ferait absorber son contenu par le fichier en cours.
+            self.mark_broken(self.current_path, self.current_raw, "balise mal formée rencontrée avant <<<FIN_FICHIER>>>")
+        self._reset_block()
+        self.in_malformed = True
+
+    def on_line(self, line: str) -> None:
+        if self.block_open:
+            self.body.append(line)
+
+    def result(self) -> tuple[list[dict], dict[str, str]]:
+        self._close_unterminated()
+        return [{"path": p, "content": c} for p, c in self.files.items()], self.broken
+
+
 def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     """(fichiers extraits, fichiers annoncés mais inexploitables, avec la raison).
 
@@ -133,75 +222,22 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     fait foi — y compris si elle est inexploitable : une version antérieure (souvent une
     citation du code d'origine) n'est alors jamais committée à sa place.
     """
-    files: dict[str, str] = {}
-    broken: dict[str, str] = {}
-    current_path: str | None = None
-    current_raw = ""
-    body: list[str] = []
-    # Vrai entre une balise mal formée et sa <<<FIN_FICHIER>>> : ce contenu n'appartient à aucun
-    # fichier exploitable, et sa balise de fin n'est pas une balise orpheline.
-    in_malformed = False
-    # Balise d'ouverture indentée (fichiers écrits dans une liste Markdown) : l'indentation
-    # COMMUNE à toutes les lignes du contenu est alors retirée (voir textwrap.dedent) — jamais
-    # un préfixe fixe retiré ligne par ligne, qui décalerait seulement une partie des lignes.
-    marker_indented = False
-
-    def mark_broken(path: str | None, raw: str, reason: str) -> None:
-        key = path or raw.strip() or "(chemin vide)"
-        files.pop(key, None)
-        broken[key] = reason
-
+    parser = _FileSectionParser()
     for line in (text or "").splitlines():
         stripped = undecorate(line.strip())
         start = FILE_START.match(stripped)
         if start:
-            in_malformed = False
-            if current_raw or current_path:
-                mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
-            current_raw = start.group(1) or " "
-            current_path = normalize_path(start.group(1))
-            marker_indented = line != line.lstrip()
-            body = []
+            parser.on_start(start, line)
             continue
         end = FILE_END.match(stripped)
         if end:
-            closing_path = normalize_path(end.group(1)) if end.group(1) else None
-            if in_malformed:
-                in_malformed = False
-            elif (current_path and closing_path and closing_path != current_path
-                  and not current_path.endswith("/" + closing_path)):
-                # "<<<FIN_FICHIER: App.tsx>>>" pour "src/components/App.tsx" reste le même fichier.
-                mark_broken(current_path, current_raw, f"fermé par la balise de fin d'un autre fichier ({closing_path})")
-            elif current_path:
-                if marker_indented:
-                    body = textwrap.dedent("\n".join(body)).split("\n")
-                lines, problem = _strip_outer_fence(body, extension(current_path) in PROSE_EXTENSIONS)
-                if problem:
-                    mark_broken(current_path, current_raw, problem)
-                else:
-                    content = "\n".join(lines)
-                    files[current_path] = content + "\n" if content and not content.endswith("\n") else content
-                    broken.pop(current_path, None)
-            elif current_raw:
-                mark_broken(None, current_raw, "chemin invalide")
-            else:
-                mark_broken(None, "(balise orpheline)", "<<<FIN_FICHIER>>> sans balise <<<FICHIER: ...>>> d'ouverture")
-            current_path, current_raw, body = None, "", []
+            parser.on_end(end)
             continue
         if MARKER_LIKE.match(stripped):
-            mark_broken(None, stripped[:80], "balise mal formée, attendu : <<<FICHIER: chemin/du/fichier>>>")
-            if current_raw or current_path:
-                # Une balise mal formée en plein fichier annonce presque toujours le fichier
-                # SUIVANT : continuer ferait absorber son contenu par le fichier en cours.
-                mark_broken(current_path, current_raw, "balise mal formée rencontrée avant <<<FIN_FICHIER>>>")
-            current_path, current_raw, body = None, "", []
-            in_malformed = True
+            parser.on_malformed(stripped)
             continue
-        if current_raw or current_path:
-            body.append(line)
-    if current_raw or current_path:
-        mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
-    return [{"path": p, "content": c} for p, c in files.items()], broken
+        parser.on_line(line)
+    return parser.result()
 
 # Marqueur que diagnostic_task utilise pour signaler un fichier volontairement NON fourni (voir
 # tasksquestion.yaml) : une sortie sans aucun bloc de fichier mais qui l'emploie est un choix

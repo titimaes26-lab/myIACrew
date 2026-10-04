@@ -53,3 +53,21 @@ def test_a_long_diff_is_truncated_with_the_number_of_hidden_lines():
     assert "DIVERGENT" in long_report and "lignes de diff supplémentaires)" in long_report
     short = build_delivery_report([{"path": "src/a.ts", "content": "a\n"}], lambda path: ("b\n", None))
     assert "DIVERGENT" in short and "supplémentaires" not in short
+
+
+def test_a_malformed_marker_does_not_swallow_the_closing_of_the_next_valid_block():
+    files, broken = analyst_blocks.parse_file_sections("<<<FICHIER mal>>>\nz\n" + OK_FILE)
+    assert [f["path"] for f in files] == ["src/a.ts"] and list(broken) == ["<<<FICHIER mal>>>"]
+
+
+def test_a_later_valid_version_of_a_path_clears_its_earlier_broken_entry():
+    files, broken = analyst_blocks.parse_file_sections("<<<FICHIER: src/a.ts>>>\ncoupé\n" + OK_FILE)
+    assert [f["path"] for f in files] == ["src/a.ts"] and broken == {}
+
+
+def test_a_side_effect_import_of_a_missing_file_is_reported_only_when_the_folder_can_be_listed():
+    files = [{"path": "src/a.ts", "content": 'import "./styles";\nexport const a = 1;\n'}]
+    problems = analyst_imports.find_import_problems(files, list_dir=lambda directory: set())
+    assert len(problems) == 1 and "'./styles'" in problems[0]
+    assert analyst_imports.find_import_problems(files, list_dir=lambda directory: None) == []
+    assert analyst_imports.find_import_problems(files, list_dir=None) == []
