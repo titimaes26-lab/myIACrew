@@ -462,3 +462,48 @@ def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engin
     asyncio.run(scenario())
     saved = _saved(engine, ids[0])
     assert len(calls) == 1 and saved.status == "failed" and "interrompue" in saved.result
+
+
+def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, monkeypatch):
+    assert main._MAX_CONCURRENT_EXECUTIONS == 1 and main._execution_semaphore._value == 1
+    running, peak, order = 0, 0, []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        order.append("start")
+        await asyncio.sleep(0.05)
+        order.append("end")
+        running -= 1
+        return type("R", (), {"raw": "ok"})()
+
+    class FakeCrew:
+        run_dynamic_crew = fake_run
+
+    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    steps = []
+    original = main._persist_current_step
+    monkeypatch.setattr(main, "_persist_current_step", lambda execution_id, step: (steps.append(step), original(execution_id, step))[1])
+
+    def new_execution():
+        with Session(engine) as db:
+            conversation = Conversation(user_id="u1", title="t")
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+            entry = ExecutionHistory(user_request="x", workflow="BUGFIX", status="running", user_id="u1", conversation_id=conversation.id)
+            db.add(entry)
+            db.commit()
+            db.refresh(entry)
+            return entry.id, conversation.id
+
+    async def scenario():
+        data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
+        launches = [main._execute_crew_and_persist(*new_execution(), data, False, False, "", None, "prompt", "ctx", None) for _ in range(3)]
+        await asyncio.gather(*launches)
+
+    asyncio.run(scenario())
+    assert peak == 1                                   # jamais deux crews en même temps
+    assert order == ["start", "end"] * 3               # les suivants attendent leur tour
+    assert steps.count("queued") >= 3                  # chacun annonce « queued » avant d'attendre

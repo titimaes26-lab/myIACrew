@@ -25,7 +25,7 @@ from crewquestion import (
     AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
 )
 from database import (
-    create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
+    create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint, _env_int,
 )
 from agent_metrics import (
     ExecutionMetrics, agent_run_view, list_executions, split_by_period, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
@@ -74,12 +74,15 @@ _active_execution_ids: set[int] = set()
 # maintenir ouvertes simultanément. Valeur volontairement basse : chaque exécution instancie son
 # propre AppDevelopmentCrew (voir _execute_crew_and_persist), coûteux en mémoire sur ce service à
 # ressources limitées (voir _CONTAINER_MEMORY_LIMIT_MB plus bas).
+# 1 par défaut (MAX_CONCURRENT_EXECUTIONS) : le quota Gemini de l'offre gratuite (15 requêtes par minute) est partagé
+# par tout le projet ; deux crews en parallèle le saturent (voir llm_limiter.py, qui étale les requêtes mais ne les
+# supprime pas). Les exécutions suivantes attendent leur tour (étape « queued »). À relever avec une offre payante.
 # Portée : UN SEUL process (un asyncio.Semaphore n'est jamais partagé entre workers/instances).
 # Suffisant tant que ce service tourne en un seul worker Uvicorn sur une seule instance Render
 # (le cas aujourd'hui) — passer à plusieurs workers ou à plusieurs instances romprait cette
-# limite globale sans avertissement (chaque process aurait alors sa PROPRE limite de 2, portant
-# le vrai plafond à 2 * nombre de process).
-_MAX_CONCURRENT_EXECUTIONS = 2
+# limite globale sans avertissement (chaque process aurait alors sa PROPRE limite, portant
+# le vrai plafond à cette valeur * nombre de process).
+_MAX_CONCURRENT_EXECUTIONS = _env_int("MAX_CONCURRENT_EXECUTIONS", 1, 1)
 _execution_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXECUTIONS)
 
 # Délai (best-effort, voir on_shutdown) accordé aux exécutions de crew encore en tâche de fond
@@ -816,7 +819,7 @@ async def _execute_crew_and_persist(
     de tout indenter d'un niveau ici, pour un diff plus lisible que le simple ajout de ce garde-fou
     de concurrence globale ne justifierait pas autrement.
 
-    "queued" persisté AVANT d'acquérir le sémaphore (jamais après) : si les 2 emplacements sont
+    "queued" persisté AVANT d'acquérir le sémaphore (jamais après) : si les emplacements sont
     déjà occupés par d'autres exécutions, potentiellement longues de plusieurs minutes (voir
     _MAX_CONCURRENT_EXECUTIONS), cette exécution-ci peut rester bloquée ici un bon moment AVANT que
     le crew ne soit même instancié — current_step resterait alors None tout ce temps, ce que
