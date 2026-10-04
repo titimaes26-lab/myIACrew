@@ -9,7 +9,7 @@ from tools import check_syntax_content
 
 log = get_logger("github")
 
-# Toutes les branches de travail créées par ce service (voir main.execute_workflow) commencent par ce préfixe : c'est
+# Toutes les branches de travail créées par ce service (voir routes_execute.execute_workflow) commencent par ce préfixe : c'est
 # la SEULE zone où les agents ont le droit d'écrire. Ni `main`, ni `test`, ni une branche de production : le nom de
 # branche d'un appel d'outil vient du modèle, qu'une consigne glissée dans le dépôt cible pourrait détourner.
 WORK_BRANCH_PREFIX = "crewai/"
@@ -22,7 +22,7 @@ _WORK_BRANCH_NAME = re.compile(r"crewai/[A-Za-z0-9_](?:(?:[A-Za-z0-9._-]|/(?!/))
 # que le préfixe). Absente d'un thread qui n'a pas hérité du contexte, la règle du préfixe reste en vigueur.
 _write_scope: ContextVar[str | None] = ContextVar("write_scope", default=None)
 
-# Signal d'arrêt de l'exécution en cours : posé quand elle dépasse sa durée maximale (voir main.py). Le thread du crew,
+# Signal d'arrêt de l'exécution en cours : posé quand elle dépasse sa durée maximale (voir execution.py). Le thread du crew,
 # lui, continue de tourner (Python ne sait pas le tuer) : sans ce signal, il pourrait écrire sur GitHub alors que le
 # créneau est rendu et qu'une relance écrit sur la même branche.
 _write_cancelled: ContextVar[threading.Event | None] = ContextVar("write_cancelled", default=None)

@@ -14,7 +14,7 @@ class DeliveryIssue(NamedTuple):
     GITHUB_TOKEN/les permissions" est un diagnostic juste (branche introuvable ou API injoignable) ;
     False quand la branche ET ses nouveaux commits sont confirmés mais qu'il manque une PR à jour
     (l'écriture a bien fonctionné, le problème est ailleurs — l'agent n'a pas terminé sa procédure).
-    Un type structuré plutôt qu'un simple texte à parser par préfixe côté appelant (main.py) : un
+    Un type structuré plutôt qu'un simple texte à parser par préfixe côté appelant (execution_outcomes.py) : un
     futur reformulation de `message` ne pourrait alors plus faire dériver silencieusement ce choix
     de conseil affiché.
     """
@@ -23,7 +23,7 @@ class DeliveryIssue(NamedTuple):
 
 class DeliveredPullRequest(NamedTuple):
     """Info de la Pull Request confirmée par verify_github_delivery en cas de succès (voir plus
-    bas), pour que main.py puisse l'ajouter de façon DÉTERMINISTE (URL réellement observée sur
+    bas), pour que execution_outcomes.py puisse l'ajouter de façon DÉTERMINISTE (URL réellement observée sur
     GitHub) au résumé de l'exécution, plutôt que de compter sur le rapport — non vérifié — du
     Développeur pour la mentionner (voir tasksquestion.yaml, qa_task : "tu n'as pas d'outil pour
     vérifier toi-même qu'une Pull Request a réellement été ouverte").
@@ -41,10 +41,10 @@ def verify_github_delivery(
     work_branch réutilisé (voir plus bas). Renvoie (DeliveredPullRequest, None) si confirmé,
     sinon (None, DeliveryIssue) expliquant ce qui manque — jamais les deux à la fois.
 
-    Appelée par main.py une fois le crew terminé, jamais en se fiant au texte produit par l'agent
+    Appelée par execution_outcomes.py une fois le crew terminé, jamais en se fiant au texte produit par l'agent
     développeur : qa_task (tasksquestion.yaml) le dit elle-même explicitement, la QA n'a aucun
     outil pour confirmer qu'une PR a réellement été ouverte, donc rien côté agents ne peut détecter
-    un rapport de "succès" où github_write.github_create_branch/github_write.github_write_file/github_open_delivery_pull_request
+    un rapport de "succès" où github_create_branch/github_write_file/github_open_delivery_pull_request
     auraient échoué en silence (erreur retournée comme simple texte à l'agent, jamais une
     exception) ou n'auraient tout simplement jamais été appelés.
 
@@ -59,7 +59,7 @@ def verify_github_delivery(
     pousse rien de nouveau parce que le travail demandé était déjà entièrement livré) s'est avéré
     bien plus fréquent en pratique sur ce type d'usage conversationnel multi-tours.
 
-    Limite assumée : si github_snapshot.get_branch_head_sha (appelé par main.py AVANT le crew) a lui-même échoué
+    Limite assumée : si github_snapshot.get_branch_head_sha (appelé par execution_context.capture_branch_sha AVANT le crew) a lui-même échoué
     sur un souci transitoire, sha_before vaut None — traité ici comme "branche neuve, tout commit
     trouvé est forcément nouveau" plutôt que comme "repère non fiable". Sur un work_branch réutilisé
     qui avait déjà une PR d'un tour précédent, ce cas limite (deux échecs indépendants combinés :
@@ -127,13 +127,11 @@ def verify_github_delivery(
     # pr_check_confirmed distingue "on a réellement listé les PR et aucune ne correspond" de "la
     # liste elle-même a échoué (deux tentatives), donc on ne SAIT PAS s'il en existe une" — sans
     # cette distinction, les messages d'échec plus bas affirmeraient à tort qu'aucune PR ne
-    # correspond. Réessayé une fois (même raisonnement que github_snapshot.get_branch_head_sha plus haut, symétrique
-    # depuis que le succès peut désormais dépendre de CET appel, pas seulement de github_snapshot.get_branch_head_sha
-    # ci-dessus) : cette vérification arrive juste après la rafale d'appels github_* du Développeur,
-    # le moment le plus probable pour heurter un rate-limit secondaire transitoire côté GitHub.
+    # correspond. Réessayé une fois (même raisonnement que github_snapshot.get_branch_head_sha, symétrique
+    # depuis que le succès peut désormais dépendre de CET appel, pas seulement de github_snapshot.get_branch_head_sha) :
+    # cette vérification arrive juste après la rafale d'appels github_* du Développeur, le moment le plus probable pour heurter un rate-limit secondaire transitoire côté GitHub.
     #
-    # Le second essai n'est PAS conditionné à une exception (contrairement à github_snapshot.get_branch_head_sha
-    # plus haut) : get_pulls() est un endpoint de LISTE, avec un délai de cohérence éventuelle
+    # Le second essai n'est PAS conditionné à une exception (contrairement à github_snapshot.get_branch_head_sha) : get_pulls() est un endpoint de LISTE, avec un délai de cohérence éventuelle
     # connu côté GitHub (une PR tout juste créée — a fortiori déjà fusionnée, comme sur un repo
     # avec auto-merge activé — peut mettre quelques secondes à apparaître dans ses résultats,
     # alors qu'elle existe déjà bel et bien et serait immédiatement visible via un accès direct
@@ -146,7 +144,7 @@ def verify_github_delivery(
     # réponse définitive à part entière, que le second essai (déclenché quand même, voir plus
     # bas) ne doit PAS pouvoir invalider s'il échoue lui-même sur un aléa transitoire — sinon une
     # absence de PR déjà confirmée au 1er essai basculerait à tort en "non vérifiée" (et le
-    # message d'erreur orienterait à tort l'utilisateur vers GITHUB_TOKEN, voir main.py,
+    # message d'erreur orienterait à tort l'utilisateur vers GITHUB_TOKEN, voir execution_outcomes.py,
     # likely_access_problem) simplement parce que ce second essai, purement optionnel à ce
     # stade, a lui-même heurté un souci réseau.
     pr_check_confirmed = False
@@ -199,7 +197,7 @@ def verify_github_delivery(
             f"commit qu'avant le lancement de cette exécution, et {pr_status_phrase} : {conclusion}.",
             # not pr_check_confirmed : la vérification de PR a échoué deux fois de suite (API
             # injoignable), un vrai souci de connectivité/permissions — le conseil GITHUB_TOKEN
-            # de main.py est alors pertinent, contrairement au cas "confirmé absente" (False).
+            # d'execution_outcomes.py est alors pertinent, contrairement au cas "confirmé absente" (False).
             not pr_check_confirmed,
         )
 

@@ -64,7 +64,7 @@ class GitHubVerificationUnavailable(Exception):
     """Levée par get_branch_head_sha quand l'API GitHub n'a PAS pu confirmer si {branch} existe
     ou non (erreur réseau, rate-limit, credentials temporairement invalides...) — distinct d'une
     branche confirmée absente (404, cas normal au tout premier tour sur un work_branch neuf).
-    Son appelant dans main.py traite spécifiquement ce cas comme "repère indisponible" (best-effort,
+    Son appelant (execution_context.capture_branch_sha) traite spécifiquement ce cas comme "repère indisponible" (best-effort,
     n'empêche pas le lancement du crew) plutôt que de le confondre avec "branche inexistante"."""
 
 def get_branch_head_sha(owner: str, repo: str, branch: str) -> str | None:
@@ -76,9 +76,9 @@ def get_branch_head_sha(owner: str, repo: str, branch: str) -> str | None:
     elle est le plus utile — un work_branch réutilisé qui a déjà des commits/une PR d'un tour
     précédent.
 
-    Appelée par main.py AVANT de lancer le crew, pour donner à verify_github_delivery un point de
+    Appelée par execution_context.capture_branch_sha AVANT de lancer le crew, pour donner à verify_github_delivery un point de
     référence : sans lui, un work_branch réutilisé d'un tour précédent de la même conversation
-    (voir main.py, réutilisation de work_branch entre tours) ferait passer la vérification pour
+    (voir execution_context.previous_work_branch, réutilisation de work_branch entre tours) ferait passer la vérification pour
     "confirmée" même si CE tour n'a lui-même rien poussé, simplement parce qu'une branche et une
     Pull Request d'un tour PRÉCÉDENT existent toujours.
     """

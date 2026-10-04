@@ -16,7 +16,7 @@ log = get_logger("github")
 # pousse explicitement vers github_write_file (contenu complet) comme stratégie de repli.
 #
 # ContextVar (pas un simple dict au niveau module) : un work_branch est réutilisé entre
-# TOURS d'une même conversation (voir main.py), donc un simple global se souviendrait à
+# TOURS d'une même conversation (voir execution_context.previous_work_branch), donc un simple global se souviendrait à
 # tort d'échecs d'un tour précédent (déjà résolus, potentiellement via github_write_file,
 # qui ne réinitialise pas ce compteur) et déclencherait une fausse alerte "échec répété" dès
 # la première tentative d'un tour suivant sur ce même fichier — même raisonnement que
