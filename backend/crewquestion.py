@@ -34,6 +34,7 @@ from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tasks.task_output import TaskOutput
 from crewai.tools import tool
 from logs import get_logger
+from summary import delivery_facts, fallback_summary
 from tools import check_syntax
 
 log = get_logger("crew")
@@ -513,11 +514,14 @@ def _build_summary_prompt(user_request: str, summary_input: str) -> str:
         "Voici le résultat produit par une équipe d'agents IA pour répondre à la "
         f"demande suivante :\n\n{truncated_request}\n\n"
         f"Résultat complet :\n---\n{summary_input}\n---\n\n"
-        "Rédige, en français, un résumé de 4 à 6 phrases clair et concret de ce qui a été "
-        "livré (décisions clés, ce qui a été produit) ET, quand cette justification est "
-        "présente dans le résultat ci-dessus, du POURQUOI des choix importants qui ont été "
-        "faits (ex: pourquoi tel découpage de composants, pourquoi telle approche plutôt "
-        "qu'une autre). N'invente rien qui ne soit pas déjà présent dans le résultat "
+        "Rédige, en français, un résumé clair et concret en 3 blocs, avec exactement ces titres :\n"
+        "### Ce qui a été fait\n(2 à 3 phrases : décisions clés, ce qui a été produit)\n"
+        "### Pourquoi ces choix\n(1 à 2 phrases, uniquement si le résultat ci-dessus justifie des choix importants ; "
+        "sinon écris « Non précisé dans le résultat. »)\n"
+        "### À faire ensuite\n(1 à 3 puces : réserves de la QA, éléments non livrés, vérifications à faire ; "
+        "sinon écris « Rien de particulier. »)\n\n"
+        "Les chiffres (étapes, nombre de fichiers, verdict QA) sont déjà affichés ailleurs : ne les répète pas. "
+        "N'invente rien qui ne soit pas déjà présent dans le résultat "
         "ci-dessus : ni un fait (ex: un fichier livré qui ne l'a pas été), ni une raison "
         "absente — si le résultat ne justifie pas un choix, décris-le sans inventer de "
         "justification."
@@ -560,6 +564,12 @@ async def _generate_summary(user_request: str, result) -> str | None:
     except Exception as e:
         log.warning(f"Génération du résumé ignorée : {type(e).__name__}: {e}")
         return None
+
+def _compose_summary_body(sections, request_type, scope, summary: str | None) -> str:
+    """Corps du « ## Résumé » : faits calculés en Python (jamais par le modèle), puis la synthèse du modèle
+    ou, si elle a échoué, un résumé de repli sans modèle. Vide quand il n'y a rien à dire."""
+    parts = (delivery_facts(sections, request_type, scope), summary or fallback_summary(sections))
+    return "\n\n".join(part for part in parts if part)
 
 MAX_PRIOR_TURN_SUMMARY_CHARS = 800
 MAX_PRIOR_TURN_RESULT_CHARS = 500
@@ -1919,8 +1929,9 @@ class AppDevelopmentCrew():
         # maximale (min_interval_seconds, voir QuotaManager) systématique au lieu d'une
         # pause proportionnée au temps déjà écoulé depuis le dernier appel Gemini réel.
         summary = await _generate_summary(inputs.get('user_request', ''), result)
-        if summary:
-            formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary}"
+        summary_body = _compose_summary_body(list(_iter_task_sections(result)), request_type, scope, summary)
+        if summary_body:
+            formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary_body}"
 
         quota_mgr.last_execution_time = time.time()
         return formatted
