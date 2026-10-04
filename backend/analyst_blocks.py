@@ -77,7 +77,7 @@ def _strip_outer_fence(body: list[str], prose: bool) -> tuple[list[str], str | N
     fichier et restent intacts."""
     first = next((n for n, line in enumerate(body) if line.strip()), None)
     last = next((n for n in range(len(body) - 1, -1, -1) if body[n].strip()), None)
-    if first is None or first == last:
+    if first is None or last is None or first == last:
         return body, None
     opening = FENCE_LINE.match(body[first].strip())
     if not opening:
