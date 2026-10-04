@@ -23,13 +23,13 @@ from crewquestion import (
 )
 import database
 from database import (
-    create_db_and_tables, get_session, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint, _env_int,
+    create_db_and_tables, get_session, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
 )
 from agent_metrics import (
     ExecutionMetrics, build_agent_run_rows, flush_events, step_for_role,
 )
 from auth import get_current_user, close_http_client
-from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
+from orphans import sweep_stale_executions
 from logs import get_logger
 from qa_report import final_verdict
 from limits import check_qualify_rate, check_user_execution_quota, record_execution_launch
@@ -43,6 +43,7 @@ from github_tools import (
     track_write_scope, WORK_BRANCH_PREFIX,
 )
 from delivery import render_partial_delivery_block
+import execution_state
 import memory_monitor
 from routes_metrics import router as metrics_router
 from error_handlers import CORS_ALLOW_CREDENTIALS, CORS_ALLOW_ORIGINS, register_error_handlers
@@ -53,56 +54,10 @@ log = get_logger("main")
 # 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
 app = FastAPI(title="CrewAI App Development API")
 
-# Références fortes vers les exécutions de crew en tâche de fond (voir _execute_crew_and_persist,
-# lancée via asyncio.create_task dans execute_workflow) : un Task asyncio sans référence conservée
-# ailleurs peut être ramassé par le garbage collector AVANT sa fin (piège classique documenté dans
-# la doc asyncio elle-même) puisque asyncio.create_task ne retient qu'une référence FAIBLE en
-# interne — une exécution de plusieurs minutes s'interromprait alors silencieusement dès le
-# prochain passage du GC. task.add_done_callback(_background_tasks.discard) retire l'entrée une
-# fois la tâche terminée, pour que cet ensemble ne grossisse pas indéfiniment sur la durée de vie
-# du process.
-_background_tasks: set[asyncio.Task] = set()
-# Identifiants des exécutions réellement en cours dans CE process : le balayage des orphelines
-# (orphans.py) ne les touche jamais, même après un long silence.
-_active_execution_ids: set[int] = set()
-# Exécutions arrêtées pour durée maximale dépassée : leur thread de crew continue de tourner (Python ne sait pas le tuer)
-# et appelle encore les callbacks de persistance ; ceux-ci ne doivent plus rien écrire sur une ligne déjà en échec
-# (message d'échec mêlé à des sections d'agents, étape courante, points de reprise). Quelques entiers par arrêt.
-_abandoned_execution_ids: set[int] = set()
-
-# Limite le nombre d'exécutions de crew simultanées, TOUTES conversations confondues (le
-# garde-fou par conversation dans execute_workflow n'empêche qu'UNE MÊME conversation d'avoir
-# deux exécutions en vol, jamais plusieurs conversations différentes en parallèle). Nécessaire
-# depuis que /api/execute ne bloque plus pour toute la durée d'une exécution (voir plus bas) :
-# un client qui enchaîne des demandes sur plusieurs conversations différentes ne se heurte plus
-# naturellement à la limite qu'imposait le nombre de connexions HTTP lentes qu'il pouvait
-# maintenir ouvertes simultanément. Valeur volontairement basse : chaque exécution instancie son
-# propre AppDevelopmentCrew (voir _execute_crew_and_persist), coûteux en mémoire sur ce service à
-# ressources limitées (voir _CONTAINER_MEMORY_LIMIT_MB plus bas).
-# 1 par défaut (MAX_CONCURRENT_EXECUTIONS) : le quota Gemini de l'offre gratuite (15 requêtes par minute) est partagé
-# par tout le projet ; deux crews en parallèle le saturent (voir llm_limiter.py, qui étale les requêtes mais ne les
-# supprime pas). Les exécutions suivantes attendent leur tour (étape « queued »). À relever avec une offre payante.
-# Portée : UN SEUL process (un asyncio.Semaphore n'est jamais partagé entre workers/instances).
-# Suffisant tant que ce service tourne en un seul worker Uvicorn sur une seule instance Render
-# (le cas aujourd'hui) — passer à plusieurs workers ou à plusieurs instances romprait cette
-# limite globale sans avertissement (chaque process aurait alors sa PROPRE limite, portant
-# le vrai plafond à cette valeur * nombre de process).
-_MAX_CONCURRENT_EXECUTIONS = _env_int("MAX_CONCURRENT_EXECUTIONS", 1, 1)
-# Étape persistée tant qu'une exécution attend son créneau (jamais une clé réelle de WORKFLOW_STEPS côté frontend).
-QUEUED_STEP = "queued"
-
-# Durée maximale d'UN crew (hors attente dans la file et hors vérification de livraison), EXECUTION_TIMEOUT_S, 20 min par
-# défaut. Avec un seul créneau, une exécution bloquée (appel qui ne revient pas, boucle d'un agent) retiendrait le service
-# pour tous : son battement de cœur continue, le balayage des orphelines ne la libère pas. Au-delà, la tâche est annulée,
-# l'exécution passe en échec (EXECUTION_TIMEOUT, réessayable) et le créneau est rendu. Limite : le crew tourne dans un
-# thread que Python ne sait pas tuer ; il peut finir de s'exécuter (et consommer du quota) après l'annulation, sans effet
-# sur l'exécution déjà marquée en échec.
-_EXECUTION_TIMEOUT_S = _env_int("EXECUTION_TIMEOUT_S", 1200, 60)
-_execution_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXECUTIONS)
 
 # Délai (best-effort, voir on_shutdown) accordé aux exécutions de crew encore en tâche de fond
 # pour se terminer avant que le process ne s'arrête. Constante de module (comme
-# _MAX_CONCURRENT_EXECUTIONS ci-dessus), pas locale à on_shutdown, pour rester visible/réutilisable
+# execution_state.MAX_CONCURRENT_EXECUTIONS ci-dessus), pas locale à on_shutdown, pour rester visible/réutilisable
 # sans dupliquer sa valeur (ex: un futur endpoint de santé qui voudrait l'exposer).
 _SHUTDOWN_DRAIN_TIMEOUT_S = 20
 
@@ -151,7 +106,7 @@ def on_startup():
     # redéploiement). Best-effort : ne doit jamais empêcher le service de démarrer.
     try:
         with Session(database.engine) as session:
-            swept = sweep_stale_executions(session, active_ids=_active_execution_ids)
+            swept = sweep_stale_executions(session, active_ids=execution_state.active_execution_ids)
         if swept:
             log.info(f"Démarrage : {len(swept)} exécution(s) orpheline(s) marquée(s) interrompue(s) : {swept}")
     except Exception as e:
@@ -162,7 +117,7 @@ def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     # Best-effort, PAS une garantie : une exécution de crew tourne désormais en tâche de fond
-    # asyncio (_background_tasks), invisible pour le mécanisme de "graceful shutdown" d'Uvicorn —
+    # asyncio (execution_state.background_tasks), invisible pour le mécanisme de "graceful shutdown" d'Uvicorn —
     # celui-ci ne suit et n'attend que les requêtes HTTP en vol, jamais des Task créées par
     # l'application elle-même. Sans cette attente explicite ici, un redéploiement Render (SIGTERM)
     # pendant une exécution en cours laisserait sa ligne bloquée sur "running" pour toujours (voir
@@ -173,10 +128,10 @@ async def on_shutdown():
     # pourrait couvrir. Chaque seconde accordée reste néanmoins strictement plus utile que zéro :
     # une exécution sur le point de se terminer a ainsi une vraie chance de persister son résultat
     # avant l'arrêt, plutôt qu'aucune.
-    if _background_tasks:
+    if execution_state.background_tasks:
         log.info(f"Arrêt du service : attente (best-effort, jusqu'à {_SHUTDOWN_DRAIN_TIMEOUT_S}s) de "
-            f"{len(_background_tasks)} exécution(s) de crew encore en tâche de fond...")
-        await asyncio.wait(list(_background_tasks), timeout=_SHUTDOWN_DRAIN_TIMEOUT_S)
+            f"{len(execution_state.background_tasks)} exécution(s) de crew encore en tâche de fond...")
+        await asyncio.wait(list(execution_state.background_tasks), timeout=_SHUTDOWN_DRAIN_TIMEOUT_S)
     await close_http_client()
 
 
@@ -211,28 +166,6 @@ AUTO_RETRY_DELAY_S = float(os.getenv("AUTO_RETRY_DELAY_S", "90"))
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
 
-
-def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) -> None:
-    """Recharge db_entry depuis la base avant d'y réassigner des champs — voir ses appelants.
-
-    Nécessaire avant de réassigner current_step à None (succès ou échec) : sans ce refresh, la
-    Session de CETTE requête ignore les écritures faites entretemps par _persist_current_step via
-    SA PROPRE Session (voir plus bas), et SQLAlchemy — comparant à sa valeur en mémoire périmée
-    (None depuis la création de db_entry, jamais relue depuis) plutôt qu'à la valeur réellement en
-    base (ex: 'qa') — omettrait purement et simplement cette colonne de l'UPDATE suivant.
-
-    Un pépin ici (ex: connexion DB coupée par le pooler Postgres de Supabase après une longue
-    exécution FEATURE/DESIGN_AND_DEV pendant laquelle cette Session est restée inactive) NE DOIT
-    PAS empêcher d'enregistrer l'issue réelle de l'exécution : rollback() remet la Session dans un
-    état utilisable pour le commit() qui suit (sans lui, celui-ci échouerait à son tour avec une
-    erreur DIFFÉRENTE — sur la transaction invalidée, pas la connexion), et l'erreur n'est que
-    loggée ; les assignations faites par l'appelant juste après restent valables dans tous les cas.
-    """
-    try:
-        session.refresh(db_entry)
-    except Exception as e:
-        session.rollback()
-        log.warning(f"échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}")
 
 # --- TRACKER D'AGENTS PERSISTÉS POUR IDEMPOTENCE ---
 # Structure: {execution_id: set(agent_names_persisted)}
@@ -275,42 +208,6 @@ def _validate_agent_data(
 
     return agent_name, agent_output, duration_seconds
 
-def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
-    """Invoqué par run_dynamic_crew (voir crewquestion.py) à chaque changement d'étape.
-
-    step_key=None efface la progression affichée (fin d'exécution, ou pause avant une nouvelle
-    tentative suite à une erreur de quota — voir l'appel correspondant dans crewquestion.py).
-
-    Ouvre sa propre Session plutôt que de réutiliser celle de la requête HTTP en cours : ce
-    callback est appelé par CrewAI depuis le thread d'arrière-plan de kickoff_async (pas le
-    thread de la requête FastAPI qui, lui, est simplement suspendu sur l'await), et une Session
-    SQLAlchemy n'est pas conçue pour être partagée entre threads même sans accès concurrent réel.
-
-    Best-effort, volontairement : appelé à la fois AVANT le try/except de run_dynamic_crew (pour
-    annoncer la toute première étape) et depuis task_callback pendant kickoff_async, donc une
-    exception ici non rattrapée remonterait soit sans passer par ce try/except du tout, soit
-    empoisonnerait CrewStepError en désignant à tort l'agent en cours comme responsable de
-    l'échec — dans les deux cas, une simple panne d'affichage de la progression ferait échouer
-    (ou mal diagnostiquer) une exécution par ailleurs saine.
-    """
-    # Appelé à CHAQUE changement d'étape (donc plusieurs fois par exécution) : le point le plus
-    # régulier disponible pour observer la tendance mémoire pendant une exécution DESIGN_AND_DEV/
-    # FEATURE, qui peut enchaîner 4 tâches sur plusieurs minutes. Voir _current_memory_mb.
-    if execution_id in _abandoned_execution_ids:
-        return
-    memory_monitor.log_memory(f"execution_id={execution_id}, étape={step_key!r}")
-    try:
-        with Session(database.engine) as step_session:
-            entry = step_session.get(ExecutionHistory, execution_id)
-            if entry is not None:
-                entry.current_step = step_key
-                # Signe de vie : c'est ce qui distingue une exécution lente d'une exécution orpheline
-                # (voir orphans.sweep_stale_executions).
-                entry.updated_at = datetime.now(timezone.utc)
-                step_session.add(entry)
-                step_session.commit()
-    except Exception as e:
-        log.warning(f"échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}")
 
 async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branch: str, sha_before) -> str:
     """Bloc « Travail déjà présent sur GitHub » d'un échec. Ne lève jamais et reste borné dans le
@@ -324,58 +221,6 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
         reason = "délai dépassé" if isinstance(e, (asyncio.TimeoutError, TimeoutError)) else (str(e) or type(e).__name__)
         return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
 
-def _set_attempts(execution_id: int, attempts: int) -> None:
-    """Nombre de tentatives d'une exécution (2 dès qu'une relance automatique est décidée). Best-effort."""
-    try:
-        with Session(database.engine) as attempts_session:
-            attempts_session.exec(
-                sql_update(ExecutionHistory).where(ExecutionHistory.id == execution_id).values(attempts=attempts)
-            )
-            attempts_session.commit()
-    except Exception as e:
-        log.warning(f"nombre de tentatives non enregistré (execution_id={execution_id}) : {type(e).__name__}: {e}")
-
-def _touch_execution(execution_id: int) -> bool:
-    """Signe de vie (updated_at) d'une exécution en cours. Best-effort ; True si écrit sans erreur.
-    Un seul UPDATE conditionnel (status='running') : un battement tardif ne peut pas écraser le
-    updated_at final d'une exécution déjà terminée (la durée affichée s'en déduit)."""
-    try:
-        with Session(database.engine) as heartbeat_session:
-            heartbeat_session.exec(
-                sql_update(ExecutionHistory)
-                .where(ExecutionHistory.id == execution_id, ExecutionHistory.status == "running")
-                .values(updated_at=datetime.now(timezone.utc))
-            )
-            heartbeat_session.commit()
-        return True
-    except Exception as e:
-        log.warning(f"battement de l'exécution {execution_id} impossible : {type(e).__name__}: {e}")
-        return False
-
-async def _heartbeat(execution_id: int) -> None:
-    """Écrit un signe de vie toutes les HEARTBEAT_SECONDS tant que l'exécution tourne, même pendant
-    une longue étape ou une pause de quota (sinon une instance voisine la croirait morte)."""
-    while True:
-        await asyncio.sleep(HEARTBEAT_SECONDS)
-        if not await asyncio.to_thread(_touch_execution, execution_id):
-            # Échec (base occupée, coupure brève) : un nouvel essai rapide plutôt que d'attendre un
-            # battement entier, pour ne pas laisser updated_at vieillir jusqu'au seuil des orphelines.
-            await asyncio.sleep(HEARTBEAT_RETRY_SECONDS)
-            await asyncio.to_thread(_touch_execution, execution_id)
-
-def _track_execution_task(task: asyncio.Task, execution_id: int) -> None:
-    """Un seul endroit pour tout le suivi d'une tâche de fond : référence forte (anti-GC, voir
-    _background_tasks), identifiant actif (jamais balayé comme orphelin) et battement de cœur."""
-    heartbeat = asyncio.create_task(_heartbeat(execution_id))
-    _background_tasks.add(task)
-    _active_execution_ids.add(execution_id)
-
-    def _done(_task: asyncio.Task) -> None:
-        heartbeat.cancel()
-        _background_tasks.discard(_task)
-        _active_execution_ids.discard(execution_id)
-
-    task.add_done_callback(_done)
 
 def _persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics) -> None:
     """Une ligne AgentRun par agent mesuré (voir agent_metrics). Best-effort : une mesure qui ne
@@ -404,9 +249,9 @@ def _persist_completed_agent(
     frontend suffit alors, que la section vienne du polling progressif ou du résultat final.
 
     Utilise un tracker d'idempotence pour éviter les doublons si retry_on_rate_limit_async relance le crew.
-    Similaire à _persist_current_step : ouvre sa propre Session thread-safe et best-effort.
+    Similaire à execution_state.persist_current_step : ouvre sa propre Session thread-safe et best-effort.
     """
-    if execution_id in _abandoned_execution_ids:
+    if execution_id in execution_state.abandoned_execution_ids:
         log.info(f"execution_id={execution_id}: agent '{agent_name}' ignoré (exécution arrêtée).")
         return
 
@@ -482,22 +327,6 @@ def _delete_checkpoints_for(execution_id: int) -> None:
     except Exception as e:
         log.warning(f"purge des points de reprise impossible (execution_id={execution_id}) : {type(e).__name__}: {e}")
 
-def _fail_execution(execution_id: int, message: str) -> None:
-    """Marque une exécution « failed » (interne) quand plus aucun autre chemin ne peut le faire. Best-effort."""
-    try:
-        with Session(database.engine) as fail_session:
-            entry = fail_session.get(ExecutionHistory, execution_id)
-            if entry is not None and entry.status == "running":
-                entry.status = "failed"
-                entry.result = message
-                entry.current_step = None
-                entry.error_code = ErrorCode.INTERNAL_ERROR
-                entry.error_retryable = False
-                entry.updated_at = datetime.now(timezone.utc)
-                fail_session.add(entry)
-                fail_session.commit()
-    except Exception:
-        pass
 
 def _failed_before_development(exc: BaseException, request_type: str, scope: Optional[str] = None) -> bool:
     """Vrai si l'échec est celui d'une étape reprenable (design, architecture, diagnostic) : seul cas où
@@ -551,7 +380,7 @@ async def _execute_crew_and_persist(
     conversation_context: str,
     resume_outputs: Optional[dict[str, str]] = None,
 ) -> None:
-    """Acquiert _execution_semaphore (voir sa définition : borne le nombre d'exécutions de crew
+    """Acquiert execution_state.execution_semaphore (voir sa définition : borne le nombre d'exécutions de crew
     simultanées, TOUTES conversations confondues) avant de lancer _run_crew_and_persist, qui porte
     toute la logique réelle (voir sa propre docstring) — séparée dans sa propre fonction plutôt que
     de tout indenter d'un niveau ici, pour un diff plus lisible que le simple ajout de ce garde-fou
@@ -559,7 +388,7 @@ async def _execute_crew_and_persist(
 
     "queued" persisté AVANT d'acquérir le sémaphore (jamais après) : si les emplacements sont
     déjà occupés par d'autres exécutions, potentiellement longues de plusieurs minutes (voir
-    _MAX_CONCURRENT_EXECUTIONS), cette exécution-ci peut rester bloquée ici un bon moment AVANT que
+    execution_state.MAX_CONCURRENT_EXECUTIONS), cette exécution-ci peut rester bloquée ici un bon moment AVANT que
     le crew ne soit même instancié — current_step resterait alors None tout ce temps, ce que
     StepIndicator (frontend) interprète comme "aucun signal réel encore reçu" et comblerait par une
     estimation basée sur le temps écoulé, faisant défiler puis "terminer" toutes les étapes du
@@ -568,8 +397,8 @@ async def _execute_crew_and_persist(
     on_step_change une fois le crew réellement lancé (voir _run_crew_and_persist plus bas) l'écrase
     naturellement avec la vraie première étape, sans action supplémentaire ici.
     """
-    await asyncio.to_thread(_persist_current_step, db_entry_id, QUEUED_STEP)
-    async with _execution_semaphore:
+    await asyncio.to_thread(execution_state.persist_current_step, db_entry_id, execution_state.QUEUED_STEP)
+    async with execution_state.execution_semaphore:
         retry_outputs = await _run_crew_and_persist(
             db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
             work_branch, normalized_base_branch, final_prompt, conversation_context,
@@ -580,10 +409,10 @@ async def _execute_crew_and_persist(
         # de base) pour ne bloquer ni un emplacement d'exécution ni une connexion pendant 90 s. « queued »
         # (et non None) pendant l'attente : None ferait simuler une progression par StepIndicator.
         try:
-            await asyncio.to_thread(_persist_current_step, db_entry_id, QUEUED_STEP)
-            await asyncio.to_thread(_set_attempts, db_entry_id, 2)
+            await asyncio.to_thread(execution_state.persist_current_step, db_entry_id, execution_state.QUEUED_STEP)
+            await asyncio.to_thread(execution_state.set_attempts, db_entry_id, 2)
             await asyncio.sleep(AUTO_RETRY_DELAY_S)
-            async with _execution_semaphore:
+            async with execution_state.execution_semaphore:
                 await _run_crew_and_persist(
                     db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
                     work_branch, normalized_base_branch, final_prompt, conversation_context,
@@ -592,7 +421,7 @@ async def _execute_crew_and_persist(
         except BaseException as e:
             # Annulation pendant l'attente (arrêt du service) ou erreur imprévue avant la 2e tentative :
             # la ligne ne doit pas rester « running » et le suivi d'idempotence ne doit pas fuir.
-            _fail_execution(db_entry_id, f"Exécution interrompue pendant l'attente de la nouvelle tentative : {type(e).__name__}")
+            execution_state.fail_execution(db_entry_id, f"Exécution interrompue pendant l'attente de la nouvelle tentative : {type(e).__name__}")
             _cleanup_persisted_agents(db_entry_id)
             raise
 
@@ -762,11 +591,11 @@ async def _run_crew(
         with track_execution_metrics() as run_metrics:
             state.metrics = run_metrics
             try:
-                async with asyncio.timeout(_EXECUTION_TIMEOUT_S) as deadline:
+                async with asyncio.timeout(execution_state.EXECUTION_TIMEOUT_S) as deadline:
                     return await crew.run_dynamic_crew(
                         inputs=inputs,
                         request_type=request_type,
-                        on_step_change=lambda step_key: _persist_current_step(execution_id, step_key),
+                        on_step_change=lambda step_key: execution_state.persist_current_step(execution_id, step_key),
                         on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(
                             execution_id, agent_name, output, duration),
                         resume_outputs=resume_outputs,
@@ -778,14 +607,14 @@ async def _run_crew(
                 if not deadline.expired():
                     raise
                 # Le thread du crew survit à l'annulation : il ne doit plus rien écrire (base ni GitHub).
-                _abandoned_execution_ids.add(execution_id)
+                execution_state.abandoned_execution_ids.add(execution_id)
                 if cancel_event is not None:
                     cancel_event.set()
                 waited = run_metrics.total_wait_time
-                detail = f"durée maximale d'une exécution dépassée ({_EXECUTION_TIMEOUT_S / 60:g} min)"
+                detail = f"durée maximale d'une exécution dépassée ({execution_state.EXECUTION_TIMEOUT_S / 60:g} min)"
                 if waited > 0:
                     detail += f", dont {waited / 60:.1f} min d'attente du quota du modèle"
-                raise ExecutionTimeoutError(detail, quota_wait_seconds=waited, limit_seconds=_EXECUTION_TIMEOUT_S) from None
+                raise ExecutionTimeoutError(detail, quota_wait_seconds=waited, limit_seconds=execution_state.EXECUTION_TIMEOUT_S) from None
     finally:
         # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette attente, les derniers
         # appels LLM pourraient manquer aux métriques lues ensuite.
@@ -875,7 +704,7 @@ def _commit_outcome(session: Session, db_entry: ExecutionHistory, conversation: 
 async def _persist_success(
     session: Session, db_entry: ExecutionHistory, conversation: Conversation, raw_result: str, state: _RunState,
 ) -> None:
-    _safe_refresh(session, db_entry, "succès")
+    execution_state.safe_refresh(session, db_entry, "succès")
     db_entry.result = raw_result
     db_entry.status = "success"
     db_entry.qa_verdict = final_verdict(raw_result)
@@ -937,7 +766,7 @@ async def _persist_failure(
         detail += "\n\n" + await _partial_delivery_block(
             data.repo_owner, data.repo_name, work_branch, base_branch or "main", state.sha_before,
         )
-    _safe_refresh(session, db_entry, "échec")
+    execution_state.safe_refresh(session, db_entry, "échec")
     # Travail déjà accompli : les sections des agents terminés sont dans `result` jusqu'à ce qu'il soit écrasé
     # ci-dessous. Ajouté APRÈS le bloc GitHub : le frontend le retire en premier (splitPartialWork).
     completed = [(name, text) for name, text in _parse_completed_agents(db_entry.result or "").items()]
@@ -1202,7 +1031,7 @@ def _ensure_conversation_idle(session: Session, conversation_id: int) -> str:
     "running" (crash serveur en cours d'exécution) est balayé (orphans.sweep_stale_executions) s'il n'a plus donné signe
     de vie : il ne doit pas bloquer la conversation pour toujours."""
     running_ids, conversation_context = _prior_turns(session, conversation_id)
-    if running_ids and sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation_id):
+    if running_ids and sweep_stale_executions(session, active_ids=execution_state.active_execution_ids, conversation_id=conversation_id):
         session.expire_all()
         running_ids, conversation_context = _prior_turns(session, conversation_id)
     if running_ids:
@@ -1266,7 +1095,7 @@ async def execute_workflow(
     # Plafonds par utilisateur (exécutions simultanées, exécutions par heure) : un compte ne sature pas les autres.
     # AVANT toute écriture : un refus ne laisse pas de conversation vide. Quelques lectures légères en base (balayage
     # compris), comme les autres accès à `session` de ce point d'accès.
-    check_user_execution_quota(session, user.get("id"), _active_execution_ids)
+    check_user_execution_quota(session, user.get("id"), execution_state.active_execution_ids)
 
     if conversation is None:
         conversation = Conversation(
@@ -1341,13 +1170,13 @@ async def execute_workflow(
     # aucune fenêtre où une telle coupure prive l'utilisateur de voir le résultat final : le
     # sondage de progression déjà existant côté frontend (useConversation.ts) prend le relais dès
     # que l'exécution quitte "running" en base, indépendamment de cette connexion d'origine.
-    # _background_tasks (voir sa définition) retient une référence forte le temps de l'exécution,
+    # execution_state.background_tasks (voir sa définition) retient une référence forte le temps de l'exécution,
     # pour ne pas risquer que le garbage collector ne l'interrompe en cours de route.
     task = asyncio.create_task(_execute_crew_and_persist(
         db_entry.id, conversation.id, data, has_repo_target, should_verify_github_delivery,
         work_branch, normalized_base_branch, final_prompt, conversation_context, resume_outputs,
     ))
-    _track_execution_task(task, db_entry.id)
+    execution_state.track_execution_task(task, db_entry.id)
 
     return {
         "status": "running", "id": db_entry.id, "conversation_id": conversation.id,
@@ -1478,7 +1307,7 @@ def _queue_ahead(session: Session, execution_id: int, current_step: Optional[str
     ).all()
     return sum(
         1 for row_id, step, created in rows
-        if row_id != execution_id and (step not in (None, QUEUED_STEP) or _aware_utc(created) < mine)
+        if row_id != execution_id and (step not in (None, execution_state.QUEUED_STEP) or _aware_utc(created) < mine)
     )
 
 
@@ -1504,7 +1333,7 @@ def get_conversation_progress(
 
     # Libère une exécution morte : le frontend voit alors « plus rien en cours » et resynchronise le tour
     # (désormais « failed »/INTERRUPTED) au lieu de sonder indéfiniment.
-    sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation_id)
+    sweep_stale_executions(session, active_ids=execution_state.active_execution_ids, conversation_id=conversation_id)
 
     statement = (
         select(
@@ -1527,7 +1356,7 @@ def get_conversation_progress(
         "status": row[1],
         "current_step": row[2],
         "completed_agents": completed_agents,
-        "queue_ahead": _queue_ahead(session, row[0], row[2], row[4]) if row[2] == QUEUED_STEP else None,
+        "queue_ahead": _queue_ahead(session, row[0], row[2], row[4]) if row[2] == execution_state.QUEUED_STEP else None,
     }
 
 @app.get("/api/repo-targets")
@@ -1616,7 +1445,7 @@ def delete_history_entry(
     """Supprime une exécution de l'historique de l'utilisateur courant."""
     log.debug("suppression de l'exécution %s demandée", execution_id)
     # Une exécution orpheline (plus de signe de vie) devient « failed » donc supprimable.
-    sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"), ids=[execution_id])
+    sweep_stale_executions(session, active_ids=execution_state.active_execution_ids, user_id=user.get("id"), ids=[execution_id])
     session.expire_all()
     entry = session.get(ExecutionHistory, execution_id)
     if not entry:
@@ -1660,7 +1489,7 @@ def bulk_delete_history(
     # Hors plage d'un entier SQL : forcément inconnu (et fatal pour la requête IN sous Postgres/SQLite).
     valid_ids = [i for i in ids if 0 < i <= _SQL_INT_MAX]
     if valid_ids:
-        sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"), ids=valid_ids)
+        sweep_stale_executions(session, active_ids=execution_state.active_execution_ids, user_id=user.get("id"), ids=valid_ids)
         session.expire_all()
         rows = session.exec(
             select(ExecutionHistory).where(

@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import execution_state  # noqa: E402
 import database  # noqa: E402
 from database import Conversation, ExecutionHistory  # noqa: E402
 from delivery import render_partial_delivery_block  # noqa: E402
@@ -104,7 +105,7 @@ def test_step_change_is_a_heartbeat(monkeypatch):
         entry = _running(db)
         before = entry.updated_at
         entry_id = entry.id
-    main._persist_current_step(entry_id, "design")
+    execution_state.persist_current_step(entry_id, "design")
     with Session(engine) as db:
         assert db.get(ExecutionHistory, entry_id).updated_at.replace(tzinfo=None) > before.replace(tzinfo=None) + timedelta(seconds=60)
 
@@ -231,11 +232,11 @@ def test_tracked_task_registers_active_id_and_releases_everything_when_done():
         async def work():
             await asyncio.sleep(0.01)
         task = asyncio.create_task(work())
-        main._track_execution_task(task, 4242)
-        assert 4242 in main._active_execution_ids and task in main._background_tasks
+        execution_state.track_execution_task(task, 4242)
+        assert 4242 in execution_state.active_execution_ids and task in execution_state.background_tasks
         await task
         await asyncio.sleep(0)
-        return 4242 in main._active_execution_ids, task in main._background_tasks
+        return 4242 in execution_state.active_execution_ids, task in execution_state.background_tasks
     assert asyncio.run(scenario()) == (False, False)
 
 
@@ -251,8 +252,8 @@ def test_heartbeat_touches_only_running_rows(monkeypatch):
         db.commit()
         ids = (alive.id, done.id)
         before = alive.updated_at.replace(tzinfo=None)
-    main._touch_execution(ids[0])
-    main._touch_execution(ids[1])
+    execution_state.touch_execution(ids[0])
+    execution_state.touch_execution(ids[1])
     with Session(engine) as db:
         assert db.get(ExecutionHistory, ids[0]).updated_at.replace(tzinfo=None) > before + timedelta(seconds=60)
         assert db.get(ExecutionHistory, ids[1]).updated_at.replace(tzinfo=None) <= before + timedelta(seconds=1)
@@ -265,12 +266,12 @@ def test_heartbeat_retries_quickly_after_a_failed_write(monkeypatch):
         calls.append(execution_id)
         return len(calls) > 1  # le premier battement échoue
 
-    monkeypatch.setattr(main, "_touch_execution", flaky)
-    monkeypatch.setattr(main, "HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(main, "HEARTBEAT_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(execution_state, "touch_execution", flaky)
+    monkeypatch.setattr(execution_state, "HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(execution_state, "HEARTBEAT_RETRY_SECONDS", 0.01)
 
     async def scenario():
-        task = asyncio.create_task(main._heartbeat(7))
+        task = asyncio.create_task(execution_state.heartbeat_loop(7))
         await asyncio.sleep(0.15)
         task.cancel()
 
@@ -281,8 +282,8 @@ def test_heartbeat_retries_quickly_after_a_failed_write(monkeypatch):
 def test_touch_reports_failure_instead_of_raising(monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("database is locked")
-    monkeypatch.setattr(main, "Session", broken)
-    assert main._touch_execution(1) is False
+    monkeypatch.setattr(execution_state, "Session", broken)
+    assert execution_state.touch_execution(1) is False
 
 
 # --- Balayages concurrents (points d'accès exécutés dans des threads) ----------------------------------------------

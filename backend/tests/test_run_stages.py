@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import main  # noqa: E402
+import execution_state  # noqa: E402
 import database  # noqa: E402
 import memory_monitor  # noqa: E402
 from crewquestion import CrewStepError  # noqa: E402
@@ -118,7 +119,7 @@ def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
     entry = SimpleNamespace(id=1, result=None, status="running", current_step="qa", error_code=None,
                             error_retryable=None, updated_at=None, api_calls_count=None)
     conversation = SimpleNamespace(updated_at=None)
-    monkeypatch.setattr(main, "_safe_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
     monkeypatch.setattr(main, "_cleanup_persisted_agents", lambda *a: None)
     error = RuntimeError("boum")
     asyncio.run(main._persist_failure(
@@ -145,7 +146,7 @@ def _persist_failure_with_result(monkeypatch, previous_result):
 
     entry = SimpleNamespace(id=1, result=previous_result, status="running", current_step="qa", error_code=None,
                             error_retryable=None, updated_at=None, api_calls_count=None)
-    monkeypatch.setattr(main, "_safe_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
     monkeypatch.setattr(main, "_cleanup_persisted_agents", lambda *a: None)
     error = RuntimeError("boum")
     asyncio.run(main._persist_failure(

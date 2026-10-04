@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import execution_state  # noqa: E402
 import database  # noqa: E402
 from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
 
@@ -333,14 +334,14 @@ def test_non_transient_failure_is_not_retried(engine, monkeypatch):
 
 def test_the_wait_before_the_second_attempt_does_not_hold_an_execution_slot(engine, monkeypatch):
     seen = []
-    original = main._persist_current_step
+    original = execution_state.persist_current_step
 
     def spy(execution_id, step_key):
         if step_key == "queued":
-            seen.append(main._execution_semaphore._value)
+            seen.append(execution_state.execution_semaphore._value)
         return original(execution_id, step_key)
 
-    monkeypatch.setattr(main, "_persist_current_step", spy)
+    monkeypatch.setattr(execution_state, "persist_current_step", spy)
     calls = []
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
@@ -352,7 +353,7 @@ def test_the_wait_before_the_second_attempt_does_not_hold_an_execution_slot(engi
     _launch_with(engine, monkeypatch, fake_run)
     assert len(calls) == 2
     # "queued" est écrit avant la 1re acquisition ET avant la 2de : à ces deux instants, aucun emplacement pris.
-    assert seen == [main._MAX_CONCURRENT_EXECUTIONS, main._MAX_CONCURRENT_EXECUTIONS]
+    assert seen == [execution_state.MAX_CONCURRENT_EXECUTIONS, execution_state.MAX_CONCURRENT_EXECUTIONS]
 
 
 def test_checkpoints_are_deleted_when_the_execution_succeeds(engine, monkeypatch):
@@ -467,7 +468,7 @@ def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engin
 
 def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, monkeypatch):
     # Valeur fixée ici : le test ne dépend pas de MAX_CONCURRENT_EXECUTIONS dans l'environnement de CI ou de dev.
-    monkeypatch.setattr(main, "_execution_semaphore", asyncio.Semaphore(1))
+    monkeypatch.setattr(execution_state, "execution_semaphore", asyncio.Semaphore(1))
     running, peak, order = 0, 0, []
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
@@ -485,8 +486,8 @@ def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, mo
 
     monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
     steps = []
-    original = main._persist_current_step
-    monkeypatch.setattr(main, "_persist_current_step", lambda execution_id, step: (steps.append(step), original(execution_id, step))[1])
+    original = execution_state.persist_current_step
+    monkeypatch.setattr(execution_state, "persist_current_step", lambda execution_id, step: (steps.append(step), original(execution_id, step))[1])
 
     def new_execution():
         with Session(engine) as db:
@@ -512,8 +513,8 @@ def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, mo
 
 
 def test_a_stuck_crew_is_stopped_at_the_deadline_marked_failed_and_the_slot_is_released(engine, monkeypatch):
-    monkeypatch.setattr(main, "_EXECUTION_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(main, "_execution_semaphore", asyncio.Semaphore(1))
+    monkeypatch.setattr(execution_state, "EXECUTION_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(execution_state, "execution_semaphore", asyncio.Semaphore(1))
     calls = []
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
@@ -525,11 +526,11 @@ def test_a_stuck_crew_is_stopped_at_the_deadline_marked_failed_and_the_slot_is_r
     assert len(calls) == 1                                    # pas de seconde tentative automatique
     assert saved.status == "failed" and saved.error_code == "EXECUTION_TIMEOUT" and saved.error_retryable is True
     assert "durée maximale" in saved.result
-    assert main._execution_semaphore._value == 1              # le créneau est rendu : la file peut avancer
+    assert execution_state.execution_semaphore._value == 1              # le créneau est rendu : la file peut avancer
 
 
 def test_a_timeout_raised_by_the_crew_itself_is_not_taken_for_the_global_deadline(engine, monkeypatch):
-    monkeypatch.setattr(main, "_EXECUTION_TIMEOUT_S", 600)
+    monkeypatch.setattr(execution_state, "EXECUTION_TIMEOUT_S", 600)
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         raise TimeoutError("délai d'un appel LLM")
@@ -569,8 +570,8 @@ def test_queue_position_counts_running_executions_and_older_queued_ones(engine):
 
 def _run_crew_with_deadline(monkeypatch, fake_run, cancel_event=None):
     from agent_metrics import _current_metrics  # noqa: F401
-    monkeypatch.setattr(main, "_EXECUTION_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(main, "_abandoned_execution_ids", set())
+    monkeypatch.setattr(execution_state, "EXECUTION_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(execution_state, "abandoned_execution_ids", set())
 
     class FakeCrew:
         run_dynamic_crew = fake_run
@@ -588,13 +589,13 @@ def test_a_stopped_execution_signals_its_thread_and_ignores_its_later_persistenc
 
     event = threading.Event()
     error = _run_crew_with_deadline(monkeypatch, stuck, event)
-    assert event.is_set() and 4242 in main._abandoned_execution_ids and error.quota_wait_seconds == 0
+    assert event.is_set() and 4242 in execution_state.abandoned_execution_ids and error.quota_wait_seconds == 0
 
     # le thread survivant appelle encore ces callbacks : rien ne doit être écrit sur la ligne déjà en échec
     execution_id = _new_failed_execution(engine, "Échec : message d'échec")
-    main._abandoned_execution_ids.add(execution_id)
+    execution_state.abandoned_execution_ids.add(execution_id)
     main._persist_completed_agent(execution_id, DESIGNER, "texte tardif", 1.0)
-    main._persist_current_step(execution_id, "qa")
+    execution_state.persist_current_step(execution_id, "qa")
     saved = _saved(engine, execution_id)
     assert saved.result == "Échec : message d'échec" and saved.current_step is None
     with Session(engine) as db:
