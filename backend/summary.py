@@ -12,7 +12,7 @@ from qa_report import final_verdict
 MAX_FALLBACK_LINE_CHARS = 220
 _MARKDOWN_EMPHASIS = re.compile(r"\*\*|__|`")
 # Blocs de code livrés (fichiers, modifications) : leur contenu n'est pas du texte à citer dans un résumé.
-_CODE_BLOCK = re.compile(r"^<<<\s*(FICHIER|MODIFICATION)\b.*?^<<<\s*FIN[\s_]+\1\b[^\n]*$", re.IGNORECASE | re.DOTALL | re.MULTILINE)
+_CODE_BLOCK = re.compile(r"^<<<\s*(FICHIER|MODIFICATION)\b.*?^<<<\s*FIN[\s_]+\1\b[^\n]*$|^<<<\s*(?:FICHIER|MODIFICATION)\b.*\Z", re.IGNORECASE | re.DOTALL | re.MULTILINE)
 _NOISE_LINE = re.compile(r"^(#|<|```|---|\|)")
 
 VERDICT_LABELS = {"GO": "GO", "GO_AVEC_RESERVES": "GO avec réserves", "NO_GO": "NO GO"}
