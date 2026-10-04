@@ -44,10 +44,17 @@ describe('useConversation — resynchronisation d’un tour en cours', () => {
   });
 
   it('une exécution disparue de la base (404) sort le tour de l’état « en cours »', async () => {
-    executionResponse = () => new Response('{}', { status: 404 });
+    executionResponse = () => new Response(JSON.stringify({ detail: 'Exécution introuvable.', code: 'NOT_FOUND', retryable: false }), { status: 404 });
     const { result } = await openRunningConversation();
     await waitFor(() => expect(result.current.turns[0].status).toBe('cancelled'));
     expect(result.current.turns[0].result).toMatch(/n'existe plus/);
+  });
+
+  it('un 404 du proxy (redéploiement) ne déclare pas l’exécution supprimée', async () => {
+    executionResponse = () => new Response('Not Found', { status: 404 });
+    const { result } = await openRunningConversation();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(result.current.turns[0].status).toBe('running');
   });
 
   it('une erreur serveur ne casse rien : le tour reste en cours et sera retenté', async () => {

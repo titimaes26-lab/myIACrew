@@ -96,7 +96,15 @@ export function apiClient(apiUrl: string, accessToken: string) {
     // Une exécution avec son résultat complet ; null si elle n'existe plus (ou n'est pas à cet utilisateur).
     getExecution: (executionId: number) =>
       request(`${apiUrl}/api/executions/${executionId}`, { headers: authHeaders(accessToken) })
-        .then((res) => (res.status === 404 ? null : parseJsonOrThrow<ExecutionHistoryEntry>(res))),
+        .then(async (res) => {
+          // Seul le 404 de l'application (code NOT_FOUND) prouve que la ligne n'existe plus : un 404 du
+          // proxy ou de l'hébergeur (redéploiement en cours) est une panne passagère, pas une suppression.
+          if (res.status === 404) {
+            const body = await res.clone().json().catch(() => null);
+            if (body && body.code === 'NOT_FOUND') return null;
+          }
+          return parseJsonOrThrow<ExecutionHistoryEntry>(res);
+        }),
 
     getConversationMessages: (conversationId: number) =>
       request(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
