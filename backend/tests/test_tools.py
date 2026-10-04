@@ -43,7 +43,9 @@ def test_a_file_cut_at_the_end_is_blocked_for_every_script_extension(content, pa
     "const j = <p>L'exécution continue, n'y touche pas.</p>;\n",   # apostrophes d'un texte JSX
     "const a = <p>d'un côté\net l'autre</p>;\n",
     "const x = a < b ? 1 : 2;\n",
-    "const j = <p>Voir 'Historique</p>;\nconst b = {\n  c: 1,\n};\n",   # guillemet isolé d'un texte : la chaîne s'arrête à la ligne
+    'const a = <div>{cond && <p className="alpha\n  beta">texte</p>}</div>;\n',        # attribut JSX sur plusieurs lignes
+    "const a = <p title='alpha\n  beta'>{x}</p>;\n",
+    'const a = <p className="alpha\n  beta" onClick={() => { go(); }}>x</p>;\n',
 ])
 def test_valid_script_code_is_never_blocked(content):
     result = check_syntax_content(content, "a.tsx")

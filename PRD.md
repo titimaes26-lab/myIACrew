@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.63 — Mise à jour le 2026-10-04
+> Version : 1.64 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -59,6 +59,7 @@
 >   déplacés, couverture mypy, organisation des tests et règle des 300 lignes (§6.1).
 
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
+> - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 ---
 
 ## 1. Synthèse & Vision
@@ -213,7 +214,9 @@ qui refuse une fois.
 **Limites assumées** : la validation TypeScript/JavaScript est heuristique (délimiteurs équilibrés, imports, exports) — il n'y a
 ni `tsc` ni build. Seule la signature d'une coupure en fin de fichier (accolade ou `${` jamais refermée, template ou commentaire non
 terminé) bloque un commit : mesurée à 0 faux positif sur `frontend/src` et 1 500 fichiers de bibliothèques, elle attrape environ 89 %
-des fichiers coupés au hasard ; les autres indices (parenthèse ou crochet isolé) restent des conseils ; la vérification de PR côté QA reste celle de l'outil et du backend, pas du LLM.
+des fichiers coupés au hasard ; les autres indices (parenthèse ou crochet isolé) restent des conseils. Limite connue : un guillemet
+simple précédé d'une espace dans un texte JSX (`Voir 'Historique`, impair sur la ligne) peut avaler des accolades et faire
+déclarer un fichier valide « tronqué » ; non observé sur les corpus mesurés ; la vérification de PR côté QA reste celle de l'outil et du backend, pas du LLM.
 
 ### 2.8 Mesure de performance par agent
 
@@ -512,7 +515,7 @@ Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_se
            tokens_known, prompt_tokens, completion_tokens, total_tokens, tool_calls, tool_errors }[]
 GET  /api/history?limit&offset → HistoryListEntry[]  (l'exécution SANS `result` ni `clarifications`, ni champs internes : le résultat s'obtient par GET /api/executions/{id} ou avec la conversation)
 GET  /api/executions/{id} → ExecutionHistory  (résultat complet ; 404 si elle n'est pas à l'utilisateur ; sert à resynchroniser un tour en cours)
-GET  /api/conversations/{id}/messages → ExecutionHistory[]  (100 derniers tours par défaut, résultats compris) · DELETE /api/history/{id}
+GET  /api/conversations/{id}/messages → ExecutionHistory[]  (100 derniers tours par défaut, résultats compris ; l'interface n'a pas encore de « charger plus » : au-delà, les tours plus anciens ne sont pas affichés) · DELETE /api/history/{id}
 POST /api/execute { …, resume_from_execution_id?: number, scope?: 'PETIT' | 'GRAND' }  → { status, id, conversation_id, resumed_steps: string[] }  (reprise : voir 2.9)
 POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [{id, reason: "running"|"not_found"}]}  (un seul commit ; supprime aussi les `agentrun` ; id étranger/inconnu → not_found ; en cours → running)
 ```

@@ -75,11 +75,6 @@ def _scan_delimiters(content: str) -> tuple[list[str], bool]:
             elif ch == in_string:
                 in_string = None
                 last_significant = ch
-            elif ch == '\n' and in_string != '`':
-                # Une chaîne '...' ou "..." ne s'étend jamais sur plusieurs lignes : un guillemet resté ouvert est
-                # un texte (apostrophe d'un texte JSX), pas le début d'une chaîne. Reprise ici plutôt qu'un
-                # décalage de tout le reste du fichier ; une troncature en fin de fichier reste signalée plus bas.
-                in_string = None
             elif ch == '$' and in_string == '`' and i + 1 < n and content[i + 1] == '{':
                 stack.append('${')              # interpolation : du code jusqu'à son « } »
                 in_string = None
