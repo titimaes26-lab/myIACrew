@@ -216,6 +216,28 @@ def test_architecture_prompt_keeps_its_static_instructions_before_the_variable_d
     assert "APERÇU DU REPOSITORY" in static
 
 
+def test_architecture_prompt_stays_short_and_still_names_every_required_section():
+    import pathlib
+    import yaml
+    tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
+    task = tasks["architecture_task"]
+    assert len(task["description"].split()) <= 480
+    text = task["description"] + task["expected_output"]
+    for heading in cq.ARCHITECTURE_REQUIRED_HEADINGS:
+        assert heading in text, heading
+    assert "signatures seules" in task["description"] and "=== Données de cette demande ===" in task["description"]
+    # Le format lu par le garde-fou (« - CRÉER|MODIFIER <chemin> : <rôle> ») doit rester demandé.
+    assert "- CRÉER|MODIFIER <chemin> : <rôle" in task["description"]
+
+
+def test_only_the_architect_output_is_capped_and_make_llm_omits_the_cap_by_default():
+    assert cq.architect_llm.max_tokens == 5000
+    for llm in (cq.qualification_llm, cq.designer_llm, cq.diagnostic_llm, cq.developer_llm, cq.qa_llm):
+        assert llm.max_tokens is None
+    assert cq._make_llm(0.1).max_tokens is None
+    assert cq._make_llm(0.1, max_tokens=123).max_tokens == 123
+
+
 GOOD_ARCH = """## Existant
 Projet vide.
 ## Cible

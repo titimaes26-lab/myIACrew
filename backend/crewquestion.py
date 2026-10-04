@@ -385,8 +385,10 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
 
-def _make_llm(temperature: float, request_timeout: int = 120) -> LLM:
-    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=request_timeout)
+def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
+    # max_tokens borne la SORTIE d'un appel (la génération domine la latence) ; absent, le plafond du fournisseur.
+    extra = {"max_tokens": max_tokens} if max_tokens else {}
+    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=request_timeout, **extra)
 
 # Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
 # vérifier demande de la constance ; seule la conception fonctionnelle gagne à rester créative.
@@ -397,7 +399,7 @@ def _make_llm(temperature: float, request_timeout: int = 120) -> LLM:
 # rapide d'un appel réellement figé sur les agents les plus légers.
 qualification_llm = _make_llm(0.1, request_timeout=45)   # sortie JSON structurée, sans outil
 designer_llm = _make_llm(0.5, request_timeout=90)        # texte de specs + quelques lectures
-architect_llm = _make_llm(0.3, request_timeout=90)       # idem, texte d'architecture
+architect_llm = _make_llm(0.3, request_timeout=90, max_tokens=5000)  # texte d'architecture : ~1000 mots + une ligne de contrat par fichier
 diagnostic_llm = _make_llm(0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
 developer_llm = _make_llm(0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
                                                           # complet de diagnostic_task (potentiellement volumineux,

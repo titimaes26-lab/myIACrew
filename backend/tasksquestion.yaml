@@ -70,56 +70,34 @@ design_task:
 
 architecture_task:
   description: >
-    Pour un workflow DESIGN_AND_DEV ou ANALYSE_ONLY, tu reçois aussi le document de spécifications
-    (Game Design ou spécifications applicatives) produit par la tâche précédente, disponible dans
-    ton contexte. Pour un workflow FEATURE en revanche, cette tâche est la PREMIÈRE du crew (aucune
-    tâche de conception avant) : base-toi alors directement sur la demande ci-dessous, faute de quoi
-    tu ne saurais pas ce qui doit être construit.
-    Définis la structure des fichiers du projet React/Vite.
-    Spécifie la hiérarchie des composants, les props et la gestion d'état.
+    Workflows DESIGN_AND_DEV et ANALYSE_ONLY : le document de spécifications de la tâche précédente est
+    dans ton contexte. Workflow FEATURE : cette tâche est la PREMIÈRE du crew, base-toi directement sur
+    la demande ci-dessous. Définis la structure des fichiers du projet React/Vite, la hiérarchie des
+    composants, les props et la gestion d'état.
 
-    Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
-    (owner, repo et branche à lire : voir « Contexte repository » dans « Données de cette demande »,
-    plus bas) pour analyser l'arborescence réelle du projet.
-    Si un APERÇU DU REPOSITORY figure plus bas (section « Données de cette demande »), il remplace le
-    budget de lecture : ne relis PAS ces fichiers ; au plus 2 lectures supplémentaires, seulement pour un
-    fichier précis qu'il ne couvre pas. Sans aperçu, budget de lecture : 4 lectures AU PLUS, dans cet
-    ordre : un `github_list_directory` à la racine, `package.json`, `tsconfig.json` (s'il existe), puis un
-    `github_list_directory` sur `src` : tu en tires les dépendances réellement installées et les
-    conventions du projet. Pas de repository : aucune lecture, et toute dépendance que tu proposes est
-    à ajouter.
+    Lecture du repository (owner, repo et branche : « Contexte repository », plus bas) avec
+    `github_read_file` et `github_list_directory`. Si un APERÇU DU REPOSITORY figure plus bas, ne relis PAS
+    ces fichiers : au plus 2 lectures de plus, pour un fichier précis qu'il ne couvre pas. Sans aperçu :
+    4 lectures AU PLUS, dans cet ordre : racine, `package.json`, `tsconfig.json` (s'il existe), `src`.
+    Sans repository : aucune lecture, toute dépendance proposée est à ajouter.
 
     Raisonne dans cet ordre :
-    1. Existant : décris l'arborescence et les composants RÉELLEMENT lus (ou "projet vide / aucun
-       repository" s'il n'y en a pas). N'invente jamais un fichier que tu n'as pas vu. Relève aussi
-       les conventions en place (nommage des fichiers et composants, bibliothèque d'état, approche CSS,
-       tests, mode strict de TypeScript) : tu les REPRENDS au lieu d'en imposer d'autres.
-    2. Cible : ce qui change par rapport à l'existant (ajouts, modifications, suppressions), en
-       préférant une évolution ciblée à une refonte.
-    3. Décisions : pour chaque choix structurant (gestion d'état, découpage, bibliothèque), une
-       ligne "Décision : ... | Alternative écartée : ... | Pourquoi : ...".
-    4. Dépendances : tout import d'un paquet absent de `package.json` est listé dans une section
-       "Dépendances à ajouter" (une ligne "paquet : raison"), sinon écris "aucune". Ne propose jamais
-       un paquet déjà couvert par une dépendance installée.
-    5. Contrats d'interface : pour CHAQUE fichier de code, une ligne "chemin : exports avec leurs
-       signatures TypeScript" (types des props, paramètres et retour des fonctions et hooks), pour que
-       l'Analyste écrive chaque fichier isolément avec des imports et des types cohérents.
-    6. Taille : aucun composant UI au-delà d'environ 200 lignes, aucun fichier de logique au-delà
-       d'environ 300 lignes — l'Analyste devra réécrire chaque fichier EN ENTIER sans le tronquer.
-    7. Couverture : un tableau "Exigence | Fichier(s)". Si les specs portent des identifiants (F1,
-       AC-F1-1...), utilise-les ; sinon (workflow FEATURE), numérote toi-même 2 à 5 exigences E1, E2...
-       tirées de la demande. Chaque exigence est couverte par au moins un fichier et aucun fichier
-       n'est orphelin. Signale tout écart.
-    8. Risques : 2 à 3 risques techniques de cette conception, chacun avec sa parade en une ligne.
-    Garde l'ensemble sous environ 1000 mots HORS section "Contrats d'interface" (qui compte une
-    ligne par fichier de code, sans limite globale), titres de section en "##".
+    1. Existant : arborescence et composants RÉELLEMENT lus (ou "projet vide / aucun repository"), et
+       conventions en place (nommage, état, CSS, tests, TypeScript strict) que tu REPRENDS.
+    2. Cible : ce qui change (ajouts, modifications, suppressions), en évolution ciblée plutôt qu'en refonte.
+    3. Décisions : par choix structurant, une ligne "Décision : ... | Alternative écartée : ... | Pourquoi : ...".
+    4. Dépendances à ajouter : une ligne "paquet : raison" par paquet absent de `package.json`, sinon "aucune".
+    5. Contrats d'interface : une ligne par fichier de code, "chemin : exports avec signatures TypeScript"
+       (props, paramètres, retours), signatures seules : ni corps, ni commentaire, ni exemple d'usage.
+    6. Fichiers à créer ou modifier : une ligne "- CRÉER|MODIFIER <chemin> : <rôle en une phrase>" par fichier.
+    7. Couverture : tableau "Exigence | Fichier(s)". Identifiants des specs (F1, AC-F1-1...) s'il y en a,
+       sinon (FEATURE) 2 à 5 exigences E1, E2... tirées de la demande. Chaque exigence a au moins un fichier,
+       aucun fichier n'est orphelin ; signale tout écart.
+    8. Risques : 2 à 3 risques techniques, chacun avec sa parade en une ligne.
+    Environ 1000 mots HORS section "Contrats d'interface", titres de section en "##".
 
-    Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
-    d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
-    auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
-    ne s'est produit. Si tu inclus un exemple de code illustratif (ex: un hook simulant un appel API),
-    indique explicitement qu'il s'agit d'un exemple non exécuté et n'y fais figurer aucune donnée
-    GitHub factice qui pourrait passer pour réelle.
+    Lecture seule : n'invente JAMAIS de commit, branche, Pull Request, numéro de PR, URL ou SHA (rien de tout
+    cela n'a eu lieu). Un exemple de code illustratif est signalé comme non exécuté, sans donnée GitHub factice.
 
     === Données de cette demande ===
     Demande initiale de l'utilisateur :
@@ -136,12 +114,8 @@ architecture_task:
     Aperçu du repository (vide si aucun) :
     {repo_snapshot}
   expected_output: >
-    Des titres "##" dans cet ordre : "Existant" (avec les conventions relevées), "Cible" (arborescence
-    et hiérarchie des composants), "Décisions" (une ligne Décision / Alternative écartée / Pourquoi
-    par choix), "Dépendances à ajouter", "Contrats d'interface" (une ligne par fichier de code avec
-    ses signatures TypeScript), "Fichiers à créer ou modifier" (un fichier par ligne au format
-    "- CRÉER|MODIFIER <chemin> : <rôle en une phrase>"), "Couverture" (tableau Exigence | Fichier(s))
-    et "Risques".
+    Des titres "##" dans cet ordre : "Existant", "Cible", "Décisions", "Dépendances à ajouter",
+    "Contrats d'interface", "Fichiers à créer ou modifier", "Couverture", "Risques".
   agent: architect_agent
 
 diagnostic_task:
