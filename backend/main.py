@@ -1056,10 +1056,15 @@ async def _persist_success_safely(
         _cleanup_persisted_agents(db_entry_id)
 
 
+# Assez long pour garder le rapport de l'agent joint à un échec de livraison (voir _delivery_failure_message :
+# ~600 caractères de constat + 3000 de rapport) : tronqué à 500, c'est précisément la cause qui disparaissait.
+_TECHNICAL_DETAIL_CHARS = 3800
+
+
 def _failure_detail(exc: BaseException, info: ErrorInfo) -> str:
     """Message d'échec : cause lisible (sinon texte d'origine) suivie du détail technique tronqué — sans lui,
     ni l'utilisateur ni la base ne diraient POURQUOI (ce que reproche un garde-fou, délai « retry after »)."""
-    technical = str(exc).strip()[:500]
+    technical = str(exc).strip()[:_TECHNICAL_DETAIL_CHARS]
     reason = f"{info.message} (détail : {technical})" if info.message and technical else (info.message or technical)
     if isinstance(exc, CrewStepError):
         return f"Échec à l'étape {exc.step_index}/{exc.total_steps} ({exc.agent_role}) : {reason}"

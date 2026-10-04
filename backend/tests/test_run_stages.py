@@ -73,7 +73,11 @@ def test_failure_detail_names_the_step_and_keeps_the_technical_text():
     error = CrewStepError(2, 5, "Architecte", RuntimeError("429 quota " + "z" * 600))
     detail = main._failure_detail(error, classify_exception(error))
     assert detail.startswith("Échec à l'étape 2/5 (Architecte) : Le quota du modèle IA")
-    assert "(détail : 429 quota" in detail and len(detail) < 800
+    assert "(détail : 429 quota" in detail and len(detail) < 800 + 3800
+    # Régression : le rapport de l'agent joint à un échec de livraison ne doit pas être coupé à 500 caractères.
+    issue = SimpleNamespace(message="aucune PR", likely_access_problem=False)
+    delivery = RuntimeError(main._delivery_failure_message(issue, "RAPPORT-FINAL " + "r" * 2000 + " FIN-DU-RAPPORT"))
+    assert "FIN-DU-RAPPORT" in main._failure_detail(delivery, classify_exception(delivery))
     plain = RuntimeError("bug interne")
     assert main._failure_detail(plain, classify_exception(plain)) == "bug interne"
 
