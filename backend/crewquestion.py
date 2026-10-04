@@ -423,22 +423,35 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
 
 DIAGNOSTIC_PLAN_MAX_STEPS = 5
-DIAGNOSTIC_STEP_MAX_ITERATIONS = 5
+DIAGNOSTIC_STEP_MAX_ITERATIONS = 8   # défaut CrewAI : 15 ; assez pour lister puis lire quelques fichiers dans une étape
+_REASONING_EFFORTS: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
 
 
-def _diagnostic_reasoning_effort() -> str:
+def _diagnostic_reasoning_effort() -> Literal["low", "medium", "high"]:
     """Effort de planification du diagnostic (DIAGNOSTIC_REASONING_EFFORT : low | medium | high) ; « low » par défaut,
     y compris pour une valeur illisible."""
     value = os.getenv("DIAGNOSTIC_REASONING_EFFORT", "").strip().lower()
-    return value if value in ("low", "medium", "high") else "low"
+    for effort in _REASONING_EFFORTS:
+        if value == effort:
+            return effort
+    return "low"
+
+
+def _diagnostic_step_max_iterations() -> int:
+    """Itérations du modèle par étape du plan (DIAGNOSTIC_STEP_MAX_ITERATIONS) ; entier >= 1, sinon le défaut."""
+    try:
+        value = int(os.getenv("DIAGNOSTIC_STEP_MAX_ITERATIONS", ""))
+    except ValueError:
+        return DIAGNOSTIC_STEP_MAX_ITERATIONS
+    return value if value >= 1 else DIAGNOSTIC_STEP_MAX_ITERATIONS
 
 
 def _diagnostic_planning_config() -> PlanningConfig:
     return PlanningConfig(
-        reasoning_effort=_diagnostic_reasoning_effort(),  # type: ignore[arg-type]
+        reasoning_effort=_diagnostic_reasoning_effort(),
         max_attempts=1,
         max_steps=DIAGNOSTIC_PLAN_MAX_STEPS,
-        max_step_iterations=DIAGNOSTIC_STEP_MAX_ITERATIONS,
+        max_step_iterations=_diagnostic_step_max_iterations(),
     )
 
 
@@ -1127,9 +1140,12 @@ class AppDevelopmentCrew():
             llm=diagnostic_llm, max_iter=7, verbose=True,
             # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus critique du pipeline,
             # dont tout le code livré dépend. Un seul appel de plan ; en effort « low », l'observation de chaque étape
-            # se fait par heuristique, SANS appel LLM : l'ancien `reasoning=True` (effort « medium ») ajoutait un appel
+            # se fait par heuristique, SANS appel LLM. L'ancien `reasoning=True` (effort « medium ») ajoutait un appel
             # d'observation par étape, un replan complet sur échec (jusqu'à 3) et jusqu'à 15 itérations par étape, hors
-            # `max_rpm` — la première source des 429 Gemini. Réglable sans déploiement : DIAGNOSTIC_REASONING_EFFORT.
+            # `max_rpm` (d'après le code de CrewAI) : une source importante des 429 Gemini. Contrepartie : une étape en
+            # échec n'est plus replanifiée (l'heuristique la marque terminée) ; les contrôles de qualité et la seconde
+            # tentative automatique restent le filet. Réglable sans déploiement : DIAGNOSTIC_REASONING_EFFORT et
+            # DIAGNOSTIC_STEP_MAX_ITERATIONS.
             planning_config=_diagnostic_planning_config(),
         )
 

@@ -30,7 +30,7 @@ def test_diagnostic_plans_once_and_observes_without_extra_llm_calls(monkeypatch)
     assert config.observe_steps is None            # la valeur « low » suffit à désactiver l'observation LLM
     assert config.max_attempts == 1
     assert config.max_steps == cq.DIAGNOSTIC_PLAN_MAX_STEPS == 5
-    assert config.max_step_iterations == cq.DIAGNOSTIC_STEP_MAX_ITERATIONS == 5
+    assert config.max_step_iterations == cq.DIAGNOSTIC_STEP_MAX_ITERATIONS == 8
     assert agent.max_iter == 7                      # inchangé
 
 
@@ -42,6 +42,15 @@ def test_diagnostic_effort_is_configurable_and_defaults_to_low(monkeypatch, valu
     monkeypatch.setenv("DIAGNOSTIC_REASONING_EFFORT", value)
     assert cq._diagnostic_reasoning_effort() == expected
     assert cq._diagnostic_planning_config().reasoning_effort == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("", 8), ("5", 5), (" 12 ", 12), ("1", 1), ("0", 8), ("-3", 8), ("beaucoup", 8), ("2.5", 8),
+])
+def test_step_iterations_are_configurable_with_a_safe_default(monkeypatch, value, expected):
+    monkeypatch.setenv("DIAGNOSTIC_STEP_MAX_ITERATIONS", value)
+    assert cq._diagnostic_step_max_iterations() == expected
+    assert cq._diagnostic_planning_config().max_step_iterations == expected
 
 
 def test_only_the_diagnostic_agent_plans():
