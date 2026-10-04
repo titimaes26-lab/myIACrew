@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
+import crew_workflow  # noqa: E402
 import crew_retry  # noqa: E402
 import schemas  # noqa: E402
 import routes_conversations  # noqa: E402
@@ -23,9 +24,9 @@ from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa
 
 
 def test_workflow_step_keys_are_the_single_source_of_the_pipeline():
-    assert cq.workflow_step_keys("BUGFIX") == ["diagnostic", "development", "qa"]
-    assert cq.workflow_step_keys("ANALYSE_ONLY") == ["design", "architecture"]
-    assert cq.workflow_step_keys("INCONNU") == cq.WORKFLOW_STEP_KEYS["DESIGN_AND_DEV"]
+    assert crew_workflow.workflow_step_keys("BUGFIX") == ["diagnostic", "development", "qa"]
+    assert crew_workflow.workflow_step_keys("ANALYSE_ONLY") == ["design", "architecture"]
+    assert crew_workflow.workflow_step_keys("INCONNU") == crew_workflow.WORKFLOW_STEP_KEYS["DESIGN_AND_DEV"]
 
 
 @pytest.mark.parametrize("saved, expected", [
@@ -36,7 +37,7 @@ def test_workflow_step_keys_are_the_single_source_of_the_pipeline():
     ({"design": "d", "architecture": "a", "development": "dev"}, ["design", "architecture"]),  # development jamais reprise
 ])
 def test_resumable_prefix_is_a_contiguous_prefix_of_resumable_steps(saved, expected):
-    assert cq.resumable_prefix(cq.workflow_step_keys("DESIGN_AND_DEV"), saved) == expected
+    assert crew_workflow.resumable_prefix(crew_workflow.workflow_step_keys("DESIGN_AND_DEV"), saved) == expected
 
 
 class _FakeCrew:
@@ -254,7 +255,7 @@ DESIGNER = "Lead Product / Game Designer"
 
 
 def _step_error(index, role, message="503 UNAVAILABLE: high demand", total=5):
-    return cq.CrewStepError(index, total, role, RuntimeError(message))
+    return crew_workflow.CrewStepError(index, total, role, RuntimeError(message))
 
 
 def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV", resume_outputs=None):

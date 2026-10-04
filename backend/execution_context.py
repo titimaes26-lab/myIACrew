@@ -9,9 +9,8 @@ from sqlmodel import Session, col, func, select
 
 import database
 from agent_metrics import ExecutionMetrics, step_for_role
-from crewquestion import (
-    AGENT_SECTION_REGEX_PATTERN, MAX_PRIOR_TURNS_IN_CONTEXT, build_conversation_context, workflow_step_keys,
-)
+from crewquestion import MAX_PRIOR_TURNS_IN_CONTEXT, build_conversation_context
+from crew_workflow import AGENT_SECTION_REGEX_PATTERN, workflow_step_keys
 from database import Conversation, ExecutionHistory
 from github_tools import GitHubVerificationUnavailable, build_repo_snapshot, get_branch_head_sha
 from logs import get_logger

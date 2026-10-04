@@ -19,7 +19,7 @@ import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
 import memory_monitor  # noqa: E402
-from crewquestion import CrewStepError  # noqa: E402
+from crew_workflow import CrewStepError  # noqa: E402
 from errors import classify_exception  # noqa: E402
 from github_tools import GitHubVerificationUnavailable  # noqa: E402
 
@@ -428,7 +428,7 @@ def test_the_crew_runs_inside_the_read_cache_and_receives_the_snapshot(engine, m
 # --- Petite FEATURE : architecture sautée -----------------------------------------------------------
 
 def test_a_small_feature_skips_the_architecture_step_only_for_feature():
-    from crewquestion import workflow_step_keys
+    from crew_workflow import workflow_step_keys
     assert workflow_step_keys("FEATURE") == ["architecture", "diagnostic", "development", "qa"]
     assert workflow_step_keys("FEATURE", "GRAND") == ["architecture", "diagnostic", "development", "qa"]
     assert workflow_step_keys("FEATURE", "PETIT") == ["diagnostic", "development", "qa"]

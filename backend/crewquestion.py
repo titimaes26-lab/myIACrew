@@ -21,11 +21,6 @@ os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY or ""
 os.environ["LITELLM_NUM_RETRIES"] = "7"
 os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 
-# --- CONSTANTES DE FORMAT MARKDOWN POUR LES AGENTS (PARTAGÉES AVEC MAIN.PY) ---
-AGENT_SECTION_SEPARATOR = "\n\n---\n\n"
-AGENT_SECTION_REGEX_PATTERN = r'\n\n---\n\n## '
-MAX_AGENT_OUTPUT_SIZE = 10_000_000  # 10MB par agent
-MAX_AGENT_NAME_LENGTH = 200
 
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.agent.planning_config import PlanningConfig
@@ -36,6 +31,7 @@ from crewai.tools import tool
 from logs import get_logger
 from summary import delivery_facts, fallback_summary
 import crew_retry
+import crew_workflow
 import llm_limiter
 from tools import check_syntax
 
@@ -97,101 +93,6 @@ register_event_listeners()
 # les autres exécutions en parallèle ni les appels internes de CrewAI.
 llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
 
-# Étapes de chaque workflow, dans l'ordre (clés alignées sur WORKFLOW_STEPS côté frontend) : source
-# unique, utilisée par run_dynamic_crew ET par main.py (reprise d'une exécution en échec).
-WORKFLOW_STEP_KEYS = {
-    "ANALYSE_ONLY": ["design", "architecture"],
-    "BUGFIX": ["diagnostic", "development", "qa"],
-    "FEATURE": ["architecture", "diagnostic", "development", "qa"],
-    "DESIGN_AND_DEV": ["design", "architecture", "diagnostic", "development", "qa"],
-}
-
-# Seules ces étapes peuvent être reprises d'une exécution précédente : leur sortie est un TEXTE sans
-# effet de bord. development écrit sur GitHub et qa en dépend : on les rejoue toujours.
-RESUMABLE_STEPS = ("design", "architecture", "diagnostic")
-
-# Rôle porté par CrewStepError quand l'échec survient APRÈS la dernière étape (agrégation du résultat).
-FINALIZATION_ROLE = "finalisation du résultat"
-
-
-def workflow_step_keys(request_type: str, scope: Optional[str] = None) -> list[str]:
-    # Tout type inconnu retombe sur le workflow complet, comme run_dynamic_crew l'a toujours fait.
-    keys = list(WORKFLOW_STEP_KEYS.get(request_type, WORKFLOW_STEP_KEYS["DESIGN_AND_DEV"]))
-    # Une petite FEATURE saute l'architecture : le Diagnostic part directement de la demande et du repo.
-    if request_type == "FEATURE" and scope == "PETIT":
-        keys.remove("architecture")
-    return keys
-
-
-def resumable_prefix(step_keys: list[str], saved_outputs: dict[str, str]) -> list[str]:
-    """Étapes réutilisables d'une exécution précédente : le PRÉFIXE continu des étapes du workflow qui
-    sont reprenables ET sauvegardées. Jamais une étape isolée après un trou : chaque étape lit les
-    précédentes en contexte, sauter l'une d'elles puis en réutiliser une suivante serait incohérent."""
-    prefix: list[str] = []
-    for key in step_keys:
-        if key in RESUMABLE_STEPS and (saved_outputs.get(key) or "").strip():
-            prefix.append(key)
-        else:
-            break
-    return prefix
-
-
-class CrewStepError(Exception):
-    """Erreur levée quand le crew échoue à une étape précise (voir run_dynamic_crew).
-
-    Conserve le message de l'exception d'origine (str(e) identique) pour que
-    crew_retry.retry_on_rate_limit_async continue de détecter les erreurs de quota/rate-limit
-    normalement, tout en exposant l'étape et l'agent en cours au moment de l'échec.
-    """
-    def __init__(self, step_index: int, total_steps: int, agent_role: str, original: Exception):
-        self.step_index = step_index
-        self.total_steps = total_steps
-        self.agent_role = agent_role.strip()
-        super().__init__(str(original))
-
-def _iter_task_sections(result):
-    """Génère (agent_name, raw) pour chaque tâche exécutée.
-
-    Logique de repli partagée entre _format_crew_result (affichage) et
-    _build_summary_input (résumé), pour que les deux ne puissent pas diverger
-    silencieusement en n'étant corrigés que d'un seul côté.
-    """
-    tasks_output = getattr(result, "tasks_output", None) or []
-    for task_output in tasks_output:
-        agent_name = (getattr(task_output, "agent", None) or "Agent").strip()
-        raw = getattr(task_output, "raw", None)
-        raw = raw if raw is not None else str(task_output)
-        yield agent_name, raw
-
-def _format_crew_result(result, task_durations: Optional[dict[str, float]] = None) -> str:
-    """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
-
-    result.raw ne reflète que la sortie de la dernière tâche du crew. Pour un workflow
-    à plusieurs tâches (ex: ANALYSE_ONLY = design_task puis architecture_task), le
-    contenu produit par les tâches précédentes serait sinon silencieusement perdu et
-    jamais renvoyé à l'utilisateur.
-
-    task_durations : mapping optionnel agent_name -> secondes d'exécution (voir
-    run_dynamic_crew, construit depuis Task.execution_duration). Quand une durée est
-    connue pour un agent, elle est encodée juste après son heading via le même marqueur
-    HTML que celui écrit par _persist_completed_agent (main.py), pour que le frontend
-    n'ait qu'une seule logique d'extraction à implémenter, que la section vienne du
-    polling progressif ou de ce résultat final.
-
-    Format final: sections séparées par AGENT_SECTION_SEPARATOR ("\n\n---\n\n")
-    """
-    tasks_output = getattr(result, "tasks_output", None)
-    if not tasks_output or len(tasks_output) <= 1:
-        return str(result.raw) if hasattr(result, "raw") else str(result)
-
-    sections = []
-    for agent_name, raw in _iter_task_sections(result):
-        duration = (task_durations or {}).get(agent_name)
-        if duration is not None:
-            sections.append(f"## {agent_name}\n<!--agent-duration:{duration:.2f}-->\n\n{raw}")
-        else:
-            sections.append(f"## {agent_name}\n\n{raw}")
-    return AGENT_SECTION_SEPARATOR.join(sections)
 
 # --- PYDANTIC MODEL & LLM ---
 RequestType = Literal["ANALYSE_ONLY", "BUGFIX", "FEATURE", "DESIGN_AND_DEV"]
@@ -472,7 +373,7 @@ def _build_summary_input(result) -> str:
     rapport dépassant le budget, alors que le résumé demandé à summary_llm cherche justement
     ce genre de rationale (voir _build_summary_prompt).
     """
-    sections = list(_iter_task_sections(result))
+    sections = list(crew_workflow._iter_task_sections(result))
     if not sections:
         raw = getattr(result, "raw", None)
         text = raw if raw is not None else str(result)
@@ -1615,7 +1516,7 @@ class AppDevelopmentCrew():
             'design': self.design_task, 'architecture': self.architecture_task,
             'diagnostic': self.diagnostic_task, 'development': self.development_task, 'qa': self.qa_task,
         }
-        selected = [(key, factories[key]()) for key in workflow_step_keys(request_type, scope)]
+        selected = [(key, factories[key]()) for key in crew_workflow.workflow_step_keys(request_type, scope)]
 
         # Contexte EXPLICITE par tâche au lieu du défaut CrewAI (toutes les sorties précédentes) :
         # chaque agent reçoit ce dont il a besoin pour raisonner, et pas plus. Le Développeur ne
@@ -1656,11 +1557,11 @@ class AppDevelopmentCrew():
         max_retries, base_delay = 5, 15.0
         retries = 0
 
-        # Reprise d'une exécution précédente : les étapes déjà réussies (préfixe, voir resumable_prefix)
+        # Reprise d'une exécution précédente : les étapes déjà réussies (préfixe, voir crew_workflow.resumable_prefix)
         # sont posées comme TERMINÉES, exactement comme si on_task_complete les avait vues passer — leur
         # sortie reste donc le contexte des étapes suivantes sans être recalculée (ni repayée en quota).
         def _apply_resume() -> None:
-            for key in resumable_prefix(step_keys, resume_outputs or {}):
+            for key in crew_workflow.resumable_prefix(step_keys, resume_outputs or {}):
                 task_obj = tasks_by_key[key]
                 raw = resume_outputs[key]
                 role = (task_obj.agent.role or "Agent").strip()
@@ -1745,7 +1646,7 @@ class AppDevelopmentCrew():
                     # Validation et nettoyage des données feront faits dans _persist_completed_agent (main.py)
                     if on_task_output_complete is not None:
                         agent_name = (task_obj.agent.role or "Agent").strip()
-                        # Extraire la sortie brute (même logique que _format_crew_result)
+                        # Extraire la sortie brute (même logique que crew_workflow._format_crew_result)
                         raw_output = getattr(task_output, "raw", None)
                         raw_output = raw_output if raw_output is not None else str(task_output)
                         # Validation basique: éviter les None
@@ -1839,18 +1740,18 @@ class AppDevelopmentCrew():
                         agent_role = remaining[attempt_completed][1].agent.role
                     else:
                         step_index = total_steps
-                        agent_role = FINALIZATION_ROLE
+                        agent_role = crew_workflow.FINALIZATION_ROLE
                     if on_step_change is not None:
                         # Plus aucune étape n'est réellement en cours à cet instant : sans ce
                         # nettoyage, ExecutionHistory.current_step resterait affiché comme "suivi
                         # en direct" (StepIndicator.tsx) sur la dernière étape connue alors que
                         # rien n'est concrètement en train de s'exécuter — un message "Échec à
                         # l'étape X/Y" bien plus précis (step_index/agent_role ci-dessus) existe
-                        # déjà pour indiquer où ça s'est arrêté (voir CrewStepError,
+                        # déjà pour indiquer où ça s'est arrêté (voir crew_workflow.CrewStepError,
                         # parseFailureDetail côté frontend), current_step n'a donc pas besoin de
                         # faire doublon comme trace diagnostique.
                         await asyncio.to_thread(on_step_change, None)
-                    raise CrewStepError(step_index, total_steps, agent_role, e) from e
+                    raise crew_workflow.CrewStepError(step_index, total_steps, agent_role, e) from e
         finally:
             # _evict_memoized_cache_entries(self) + t.callback = None : une SEULE fois pour
             # TOUTE l'exécution (succès ou échec définitif), pas à chaque tentative de la boucle
@@ -1889,7 +1790,7 @@ class AppDevelopmentCrew():
         # Résultat final reconstruit depuis les sorties accumulées par on_task_complete au fil de
         # TOUTES les tentatives (et pas depuis le CrewOutput de la seule DERNIÈRE tentative, qui
         # ne couvrirait que les tâches de ce sous-crew en cas de reprise) : dans l'ordre ORIGINAL
-        # des étapes (step_keys), pour que _format_crew_result/_generate_summary — qui ne lisent
+        # des étapes (step_keys), pour que crew_workflow._format_crew_result/_generate_summary — qui ne lisent
         # que .tasks_output et .raw, voir leurs docstrings — reconstruisent le même résultat
         # combiné qu'une exécution sans aucun échec.
         class _CombinedCrewResult:
@@ -1904,13 +1805,13 @@ class AppDevelopmentCrew():
         # lui-même, jamais réinitialisés entre tentatives puisque `selected_tasks` n'est construit
         # qu'une seule fois en tête de fonction). Ignore les agents sans durée connue (tâche
         # jamais exécutée après un échec définitif en cours de route) plutôt que d'y mettre None
-        # explicitement dans le dict, pour que _format_crew_result n'ait qu'un seul test.
+        # explicitement dans le dict, pour que crew_workflow._format_crew_result n'ait qu'un seul test.
         task_durations = {
             t.agent.role.strip(): t.execution_duration
             for t in selected_tasks
             if t.execution_duration is not None
         }
-        formatted = _format_crew_result(result, task_durations)
+        formatted = crew_workflow._format_crew_result(result, task_durations)
 
         # last_execution_time n'est délibérément pas remis à jour avant cet appel :
         # on_task_complete() (task_callback ci-dessus) l'a déjà fait à la fin de la
@@ -1919,7 +1820,7 @@ class AppDevelopmentCrew():
         # maximale (min_interval_seconds, voir crew_retry.QuotaManager) systématique au lieu d'une
         # pause proportionnée au temps déjà écoulé depuis le dernier appel Gemini réel.
         summary = await _generate_summary(inputs.get('user_request', ''), result)
-        summary_body = _compose_summary_body(list(_iter_task_sections(result)), request_type, scope, summary)
+        summary_body = _compose_summary_body(list(crew_workflow._iter_task_sections(result)), request_type, scope, summary)
         if summary_body:
             formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary_body}"
 

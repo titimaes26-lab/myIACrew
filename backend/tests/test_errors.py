@@ -116,7 +116,7 @@ def test_qualify_failure_is_classified_without_leaking_details(client, monkeypat
 
 def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
     from sqlalchemy.pool import StaticPool
-    from crewquestion import CrewStepError
+    from crew_workflow import CrewStepError
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(database, "engine", engine)
@@ -149,7 +149,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
 
 
 def test_classify_follows_the_cause_chain_of_a_step_error():
-    from crewquestion import CrewStepError
+    from crew_workflow import CrewStepError
     try:
         try:
             raise asyncio.TimeoutError()
