@@ -77,6 +77,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // Aperçu avant lancement : la demande qualifiée attend « Lancer » (voir confirmLaunch). Un état (et non un ref) :
   // Studio désactive « Relancer » tant qu'il existe.
   const [pendingLaunch, setPendingLaunch] = useState<PendingLaunch | null>(null);
+  const launchingRef = useRef(false);
+  const tempIdCounterRef = useRef(0);
   const [confirmBeforeLaunch, setConfirmBeforeLaunchState] = useState(readConfirmLaunch);
   const setConfirmBeforeLaunch = useCallback((value: boolean) => {
     setConfirmBeforeLaunchState(value);
@@ -451,7 +453,9 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // « Lancer » depuis l'aperçu, avec le type et la taille éventuellement corrigés par l'utilisateur.
   const confirmLaunch = async (choice: LaunchChoice) => {
     const pending = pendingLaunch;
-    if (!pending) return;
+    // launchingRef : un second clic avant le rendu suivant enverrait un deuxième /api/execute (409, tour en échec).
+    if (!pending || launchingRef.current) return;
+    launchingRef.current = true;
     setPendingLaunch(null);
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -475,6 +479,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
     } catch (err: unknown) {
       reportSendError(err, pending.tempId, myGeneration);
     } finally {
+      launchingRef.current = false;
       abortControllerRef.current = null;
       setSending(false);
     }
@@ -515,7 +520,9 @@ export function useConversation(accessToken: string, apiUrl: string) {
   };
 
   const sendMessage = async (text: string, repoTarget: RepoTarget) => {
-    const tempId = `temp-${Date.now()}`;
+    // Compteur en plus de l'horodatage : deux envois dans la même milliseconde auraient le même id et le second
+    // retoucherait le tour du premier.
+    const tempId = `temp-${Date.now()}-${++tempIdCounterRef.current}`;
     // Même normalisation que le backend (champ repository vide ou d'espaces = absent) : qualification et
     // exécution doivent s'accorder sur l'existence d'un repository cible.
     const repoOwner = repoTarget.owner?.trim() ?? '';

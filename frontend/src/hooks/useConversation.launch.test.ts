@@ -60,6 +60,17 @@ describe('useConversation — aperçu avant lancement', () => {
     expect(result.current.pendingLaunch).toBeNull();
   });
 
+  it('deux clics rapides sur « Lancer » n’envoient qu’une exécution', async () => {
+    const { result } = renderHook(() => useConversation('t', ''));
+    await send(result);
+    await act(async () => {
+      const first = result.current.confirmLaunch({ workflow: 'FEATURE', scope: 'PETIT' });
+      const second = result.current.confirmLaunch({ workflow: 'FEATURE', scope: 'PETIT' });
+      await Promise.all([first, second]);
+    });
+    expect(executeCalls()).toHaveLength(1);
+  });
+
   it('un autre type choisi dans l’aperçu remplace celui de la qualification et n’envoie pas de taille', async () => {
     const { result } = renderHook(() => useConversation('t', ''));
     await send(result);

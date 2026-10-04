@@ -24,8 +24,6 @@ export function failureHint(code: string | null | undefined): string | null {
       return 'Panne temporaire : « Relancer » relance la demande telle quelle, idéalement dans quelques minutes.';
     case 'INTERRUPTED':
       return 'Le serveur a été interrompu pendant l\'exécution : « Relancer » relance la demande et reprend le travail déjà poussé sur la branche.';
-    case 'DELIVERY_FAILED':
-      return 'Rien n\'a été livré sur GitHub : « Relancer » reprend sur la même branche. Si le résultat se répète, lisez le rapport de l\'agent ci-dessous avant de reformuler.';
     case 'GUARDRAIL_FAILED':
       return 'Le résultat n\'a pas passé les contrôles de qualité : reformulez ou précisez la demande avant de réessayer.';
     default:

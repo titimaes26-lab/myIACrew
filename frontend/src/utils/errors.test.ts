@@ -33,7 +33,8 @@ describe('failureHint', () => {
     expect(failureHint('QUOTA_EXHAUSTED')).toContain('Relancer');
     expect(failureHint('INTERRUPTED')).toContain('Relancer');
     expect(failureHint('GUARDRAIL_FAILED')).toContain('reformulez');
-    expect(failureHint('DELIVERY_FAILED')).toContain('rapport de l\'agent');
+    // Un échec de livraison a son propre guide « Que faire ? » (FailureBlock), pas ce conseil générique.
+    expect(failureHint('DELIVERY_FAILED')).toBeNull();
     expect(failureHint('INTERNAL_ERROR')).toBeNull();
     expect(failureHint(null)).toBeNull();
   });

@@ -44,10 +44,15 @@ export default function CopyButton({ text, label = 'Copier', subject }: { text: 
     timer.current = setTimeout(() => setState('idle'), RESET_MS);
   };
 
+  const message = state === 'copied' ? 'Copié' : state === 'failed' ? 'Copie impossible' : '';
   return (
-    <button type="button" className="copy-btn" onClick={onClick} aria-live="polite" aria-label={subject ? `${label} : ${subject}` : label}>
-      <span aria-hidden="true">{state === 'copied' ? '✓' : state === 'failed' ? '⚠️' : '📋'}</span>{' '}
-      <span>{state === 'copied' ? 'Copié' : state === 'failed' ? 'Copie impossible' : label}</span>
-    </button>
+    <>
+      {/* aria-label fixe : le texte qui change dans le bouton ne serait jamais lu, d'où cette zone d'annonce à part. */}
+      <button type="button" className="copy-btn" onClick={onClick} aria-label={subject ? `${label} : ${subject}` : label}>
+        <span aria-hidden="true">{state === 'copied' ? '✓' : state === 'failed' ? '⚠️' : '📋'}</span>{' '}
+        <span aria-hidden="true">{message || label}</span>
+      </button>
+      <span className="sr-only" role="status" aria-live="polite">{message}</span>
+    </>
   );
 }

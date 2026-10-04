@@ -71,6 +71,8 @@ describe('ResultSections', () => {
     const button = await screen.findByRole('button', { name: 'Copier : QA' });
     await act(async () => { button.click(); });
     expect(button).toHaveTextContent('Copié');
+    // Annoncé aux lecteurs d'écran par une zone dédiée (le nom accessible du bouton ne change pas).
+    expect(screen.getByRole('status')).toHaveTextContent('Copié');
     await act(async () => { vi.advanceTimersByTime(2500); });
     expect(button).toHaveTextContent('Copier');
 
@@ -78,5 +80,6 @@ describe('ResultSections', () => {
     document.execCommand = vi.fn().mockReturnValue(false);
     await act(async () => { button.click(); });
     expect(button).toHaveTextContent('Copie impossible');
+    expect(screen.getByRole('status')).toHaveTextContent('Copie impossible');
   });
 });

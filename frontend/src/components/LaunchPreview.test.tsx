@@ -49,6 +49,21 @@ describe('LaunchPreview', () => {
     expect(controls.onAlwaysConfirmChange).toHaveBeenCalledWith(false);
   });
 
+  it('met le focus sur « Lancer » à l’apparition, sauf si l’utilisateur écrit déjà ailleurs', () => {
+    setup();
+    expect(screen.getByRole('button', { name: /Lancer/ })).toHaveFocus();
+  });
+
+  it('ne vole pas le focus d’une zone de saisie en cours de frappe', () => {
+    const area = document.createElement('textarea');
+    document.body.appendChild(area);
+    area.value = 'prochaine demande';
+    area.focus();
+    setup();
+    expect(area).toHaveFocus();
+    area.remove();
+  });
+
   it('désactive les actions pendant un lancement', () => {
     setup(undefined, { disabled: true });
     expect(screen.getByRole('button', { name: /Lancer/ })).toBeDisabled();

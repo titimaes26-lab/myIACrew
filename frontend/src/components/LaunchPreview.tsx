@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { LaunchChoice, LaunchControls, LaunchPreview as LaunchPreviewData } from '../types';
 import { WORKFLOW_TYPE_OPTIONS } from '../constants/workflowTypes';
 import { stepShortLabel, workflowSteps } from '../constants/workflowSteps';
@@ -15,9 +15,18 @@ export default function LaunchPreview({ preview, controls }: { preview: LaunchPr
   const [scope, setScope] = useState<Scope>(preview.scope ?? 'GRAND');
   const effectiveScope = workflow === 'FEATURE' ? scope : undefined;
   const steps = workflowSteps(workflow, effectiveScope);
+  const root = useRef<HTMLElement>(null);
+
+  // L'aperçu apparaît sans action de l'utilisateur : le focus passe sur « Lancer » (Entrée confirme), sauf si l'utilisateur
+  // est déjà en train d'écrire autre chose.
+  useEffect(() => {
+    const active = document.activeElement;
+    const idle = !active || active === document.body || (active instanceof HTMLTextAreaElement && active.value === '');
+    if (idle) root.current?.querySelector<HTMLButtonElement>('.launch-preview__actions button')?.focus();
+  }, []);
 
   return (
-    <section className="launch-preview" aria-label="Aperçu avant lancement">
+    <section ref={root} className="launch-preview" aria-label="Aperçu avant lancement">
       <p className="launch-preview__title">🚀 Prêt à lancer ?</p>
       <div className="launch-preview__grid">
         <label className="launch-preview__field">

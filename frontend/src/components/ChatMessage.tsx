@@ -110,7 +110,10 @@ function ChatMessage({ turn, onRetry, retryDisabled, launch }: ChatMessageProps)
               que turn.status reste 'running' en interne (le sondage de progression continue) —
               purement pour ne pas afficher "En cours..." indéfiniment à l'utilisateur après son
               clic sur "Annuler". */}
-          {turn.status === 'running' && turn.dismissedLocally ? '🚫 Annulé' : STATUS_LABEL[turn.status]}
+          {turn.status === 'running' && turn.dismissedLocally
+            ? '🚫 Annulé'
+            // L'aperçu avant lancement réutilise le statut « clarifying » : il ne demande aucune précision, il attend un « Lancer ».
+            : turn.launchPreview ? '🚀 En attente de confirmation' : STATUS_LABEL[turn.status]}
           {turn.workflow ? ` · ${turn.workflow}` : ''}
           {` · ${formatTime(turn.createdAt)}`}
           {duration ? ` · ${duration}` : ''}
