@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import execution_context  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
 from database import Conversation, ExecutionHistory  # noqa: E402
@@ -163,7 +164,7 @@ def test_failed_execution_reports_what_github_already_has(monkeypatch):
         run_dynamic_crew = fake_run
 
     monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
-    monkeypatch.setattr(main, "get_branch_head_sha", lambda *a: "sha0")
+    monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: "sha0")
     monkeypatch.setattr(
         main, "describe_partial_delivery",
         lambda *a: PartialDelivery("crewai/b", True, True, 1, None, None),

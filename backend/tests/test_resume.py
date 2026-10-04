@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import execution_context  # noqa: E402
 import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
@@ -179,7 +180,7 @@ def test_completed_agent_persists_a_checkpoint_only_for_resumable_steps(engine):
 def test_resumable_outputs_returns_the_reusable_prefix(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db)
-        assert main._resumable_outputs(db, _data(entry), "u1", conversation.id) == {
+        assert execution_context.resumable_outputs(db, _data(entry), "u1", conversation.id) == {
             "design": "sortie design", "architecture": "sortie architecture"}
 
 
@@ -200,7 +201,7 @@ def test_resume_is_refused_when_the_previous_execution_does_not_match(engine, ch
             db.commit()
         elif change == "other_repo":
             data_kwargs.update(repo_owner="o", repo_name="r")
-        assert main._resumable_outputs(db, _data(entry, **data_kwargs), user, conv_id) == {}
+        assert execution_context.resumable_outputs(db, _data(entry, **data_kwargs), user, conv_id) == {}
 
 
 def test_resume_is_refused_when_the_scope_differs(engine):
@@ -208,8 +209,8 @@ def test_resume_is_refused_when_the_scope_differs(engine):
         conversation, entry = _failed_with_checkpoints(db, workflow="FEATURE", steps=("diagnostic",), scope="PETIT")
         same = _data(entry, target_workflow="FEATURE", scope="PETIT")
         other = _data(entry, target_workflow="FEATURE", scope="GRAND")
-        assert main._resumable_outputs(db, same, "u1", conversation.id) == {"diagnostic": "sortie diagnostic"}
-        assert main._resumable_outputs(db, other, "u1", conversation.id) == {}
+        assert execution_context.resumable_outputs(db, same, "u1", conversation.id) == {"diagnostic": "sortie diagnostic"}
+        assert execution_context.resumable_outputs(db, other, "u1", conversation.id) == {}
 
 
 @pytest.mark.parametrize("previous_scope, new_scope, allowed", [
@@ -224,7 +225,7 @@ def test_resume_only_distinguishes_a_small_feature_from_the_full_path(engine, pr
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db, workflow="FEATURE", steps=("architecture", "diagnostic"), scope=previous_scope)
         data = _data(entry, target_workflow="FEATURE", scope=new_scope)
-        saved = main._resumable_outputs(db, data, "u1", conversation.id)
+        saved = execution_context.resumable_outputs(db, data, "u1", conversation.id)
     assert bool(saved) is allowed
 
 
@@ -232,7 +233,7 @@ def test_no_resume_id_means_no_resume(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db)
         data = _data(entry, resume_from_execution_id=None)
-        assert main._resumable_outputs(db, data, "u1", conversation.id) == {}
+        assert execution_context.resumable_outputs(db, data, "u1", conversation.id) == {}
 
 
 def test_deleting_an_execution_deletes_its_checkpoints(engine):
@@ -371,8 +372,8 @@ def test_checkpoints_are_deleted_when_the_execution_succeeds(engine, monkeypatch
 def test_resume_is_refused_when_the_request_text_differs(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db)
-        assert main._resumable_outputs(db, _data(entry, user_request="une AUTRE demande"), "u1", conversation.id) == {}
-        assert main._resumable_outputs(db, _data(entry, user_request="  x  "), "u1", conversation.id) != {}
+        assert execution_context.resumable_outputs(db, _data(entry, user_request="une AUTRE demande"), "u1", conversation.id) == {}
+        assert execution_context.resumable_outputs(db, _data(entry, user_request="  x  "), "u1", conversation.id) != {}
 
 
 def test_no_automatic_retry_when_a_finished_step_has_no_checkpoint(engine, monkeypatch):
@@ -390,8 +391,8 @@ def test_no_automatic_retry_when_a_finished_step_has_no_checkpoint(engine, monke
 def test_resume_is_refused_when_the_clarifications_differ(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db, clarifications="en mode sombre")
-        assert main._resumable_outputs(db, _data(entry, clarifications="en mode clair"), "u1", conversation.id) == {}
-        assert main._resumable_outputs(db, _data(entry, clarifications="en mode sombre"), "u1", conversation.id) != {}
+        assert execution_context.resumable_outputs(db, _data(entry, clarifications="en mode clair"), "u1", conversation.id) == {}
+        assert execution_context.resumable_outputs(db, _data(entry, clarifications="en mode sombre"), "u1", conversation.id) != {}
 
 
 def test_checkpoint_purge_failure_never_fails_a_successful_execution(engine, monkeypatch):
@@ -576,7 +577,7 @@ def _run_crew_with_deadline(monkeypatch, fake_run, cancel_event=None):
 
     class FakeCrew:
         run_dynamic_crew = fake_run
-    state = main._RunState()
+    state = execution_context.RunState()
     with pytest.raises(main.ExecutionTimeoutError) as err:
         asyncio.run(main._run_crew(FakeCrew(), state, 4242, "BUGFIX", {}, None, None, cancel_event))
     return err.value

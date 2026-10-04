@@ -2,31 +2,27 @@ import asyncio
 import threading
 import os
 import uuid
-import re
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from dataclasses import dataclass
 from contextlib import nullcontext
 from typing import Any, List, Optional
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import defer
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, select
 
 from crewquestion import (
-    AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
-    build_conversation_context, track_execution_metrics, workflow_step_keys, resumable_prefix, RESUMABLE_STEPS,
-    FINALIZATION_ROLE,
-    AGENT_SECTION_REGEX_PATTERN,
+    AppDevelopmentCrew, CrewStepError, QualificationResult,
+    track_execution_metrics, workflow_step_keys, resumable_prefix,
 )
 import database
 from database import (
     create_db_and_tables, get_session, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
 )
 from agent_metrics import (
-    ExecutionMetrics, flush_events, step_for_role,
+    flush_events,
 )
 from auth import get_current_user, close_http_client
 from orphans import sweep_stale_executions
@@ -38,11 +34,11 @@ from errors import (
     AppError, DeliveryError, ErrorCode, ErrorInfo, ExecutionTimeoutError, classify_exception, http_status_for,
 )
 from github_tools import (
-    verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
-    check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue, build_repo_snapshot, track_read_cache,
+    verify_github_delivery, describe_partial_delivery, check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue, track_read_cache,
     track_write_scope, WORK_BRANCH_PREFIX,
 )
 from delivery import render_partial_delivery_block
+import execution_context
 import execution_persistence
 import execution_state
 import memory_monitor
@@ -181,40 +177,6 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
         return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
 
 
-def _failed_before_development(exc: BaseException, request_type: str, scope: Optional[str] = None) -> bool:
-    """Vrai si l'échec est celui d'une étape reprenable (design, architecture, diagnostic) : seul cas où
-    une relance automatique ne réécrit rien sur GitHub. Faux pour tout échec hors étape (création du crew,
-    vérification de livraison) ou à partir du développement."""
-    if not isinstance(exc, CrewStepError):
-        return False
-    keys = workflow_step_keys(request_type, scope)
-    return 1 <= exc.step_index <= len(keys) and keys[exc.step_index - 1] in RESUMABLE_STEPS and exc.agent_role != FINALIZATION_ROLE
-
-def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id, conversation_id: int) -> dict[str, str]:
-    """Sorties réutilisables pour `data.resume_from_execution_id`, ou {} si cette exécution n'est pas
-    reprenable : elle doit être en échec, de CETTE conversation et de CET utilisateur, avec le même
-    workflow et le même repository cible (sinon ses étapes ne correspondent pas à celles de la nouvelle)."""
-    if data.resume_from_execution_id is None:
-        return {}
-    previous = session.get(ExecutionHistory, data.resume_from_execution_id)
-    if (
-        previous is None or previous.user_id != user_id or previous.conversation_id != conversation_id
-        or previous.status != "failed" or previous.workflow != data.target_workflow
-        # Seule « PETIT » change les étapes : GRAND, absent (ancienne ligne, clarification) = parcours complet.
-        or (previous.scope == "PETIT") != (data.scope == "PETIT")
-        # Même demande : réutiliser design/architecture/code d'une AUTRE demande ferait committer du code pour
-        # la mauvaise demande.
-        or (previous.user_request or "").strip() != data.user_request.strip()
-        or (previous.clarifications or "").strip() != (data.clarifications or "").strip()
-        or (previous.repo_owner or None) != data.repo_owner or (previous.repo_name or None) != data.repo_name
-        or (previous.base_branch or None) != ((data.base_branch or "main") if data.repo_owner and data.repo_name else None)
-    ):
-        return {}
-    saved = execution_persistence.load_checkpoints(session, previous.id)
-    prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
-    return {key: saved[key] for key in prefix}
-
-
 async def _execute_crew_and_persist(
     db_entry_id: int,
     conversation_id: int,
@@ -272,163 +234,9 @@ async def _execute_crew_and_persist(
             execution_persistence.cleanup_persisted_agents(db_entry_id)
             raise
 
-@dataclass
-class _RunState:
-    """État d'UNE tentative d'exécution, lu par le chemin d'échec même quand le crew a planté en route :
-    SHA de la branche de travail AVANT le crew (None tant que non capturé) et métriques de la tentative."""
-    sha_before: Optional[str] = None
-    metrics: Optional[ExecutionMetrics] = None
-
-
-def _repo_instructions(
-    has_repo_target: bool, data: "WorkflowExecutionInput", work_branch: str,
-    base_branch: Optional[str], branch_exists: bool,
-) -> str:
-    """Consignes de cible données aux agents (repository, branches, ou espace de travail local)."""
-    if not has_repo_target:
-        return (
-            "Aucun repository GitHub cible fourni : travaille uniquement dans l'espace de travail local de "
-            "cette conversation (chemins de fichiers relatifs, lus avec read_a_files_content). Cet espace est "
-            "VIDE au premier tour d'une conversation : ne présume jamais qu'un fichier non livré par un tour "
-            "précédent de cette même conversation existe déjà. N'utilise aucun outil github_* SAUF "
-            "github_commit_analyst_files et qa_verify_delivered_files, qui agissent alors sur cet espace."
-        )
-    header = (
-        f"Repository GitHub cible : {data.repo_owner}/{data.repo_name}\n"
-        f"Branche de base : {base_branch}\n"
-        f"Branche de travail à créer et utiliser pour toute écriture : {work_branch}\n"
-    )
-    # branch_exists vient d'un appel GitHub LIVE fait avant le crew, pas du statut d'un tour précédent (un
-    # tour « failed » peut avoir réellement poussé des commits). « Inconnu » est traité comme « n'existe
-    # pas » : lire la branche de base en attendant est le choix le moins risqué.
-    if branch_exists:
-        return header + (
-            "Cette branche de travail EXISTE DÉJÀ sur GitHub (réutilisée d'un tour précédent de cette "
-            f"conversation) : pour toute lecture, lis-la directement avec branch={work_branch}."
-        )
-    return header + (
-        "Cette branche de travail N'EXISTE PAS ENCORE sur GitHub (sera créée par la tâche de commit qui "
-        f"suit) : pour toute lecture, lis sur branch={base_branch} en attendant."
-    )
-
-
-def _crew_inputs(
-    data: "WorkflowExecutionInput", conversation_id: int, final_prompt: str, conversation_context: str,
-    work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool, repo_snapshot: str = "",
-    previous_plan: str = "",
-) -> dict:
-    return {
-        'user_request': final_prompt,
-        'conversation_context': conversation_context,
-        'repo_owner': data.repo_owner or '',
-        'repo_name': data.repo_name or '',
-        # `or 'main'` : base_branch est None sans repository cible, et les tâches interpolent toujours {base_branch}.
-        'base_branch': base_branch or 'main',
-        'work_branch': work_branch,
-        # Isole l'espace de travail LOCAL de chaque conversation (mode sans repository cible).
-        'conversation_id': str(conversation_id),
-        'repo_instructions': _repo_instructions(has_repo_target, data, work_branch, base_branch, branch_exists),
-        # Aperçu du repo lu en Python (vide : l'agent lit lui-même avec ses outils).
-        'repo_snapshot': repo_snapshot,
-        # Plan d'architecture du tour précédent de la conversation (vide : l'Architecte part de zéro).
-        'previous_plan': previous_plan,
-    }
-
-
-async def _prefetch_repo_snapshot(
-    data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool,
-    resume_outputs: Optional[dict[str, str]] = None,
-) -> str:
-    """Aperçu du repo pour l'Architecte ET le Diagnostic (racine, résumé de package.json/tsconfig.json, src), lu en
-    Python plutôt que par leurs appels d'outils : autant de tours de LLM en moins, et la même vue pour les deux.
-    Seulement avec un repository cible et si l'une de ces deux étapes va réellement tourner (pas réutilisée par une
-    reprise, pas sautée par une petite FEATURE).
-    Best-effort : toute erreur renvoie "" et l'agent lit lui-même (même règle de branche que _repo_instructions)."""
-    if not has_repo_target:
-        return ""
-    steps = workflow_step_keys(data.target_workflow, data.scope)
-    if not any(step in steps and step not in (resume_outputs or {}) for step in ("architecture", "diagnostic")):
-        return ""
-    branch = work_branch if branch_exists else (base_branch or "main")
-    try:
-        return await asyncio.to_thread(build_repo_snapshot, data.repo_owner, data.repo_name, branch)
-    except Exception as e:
-        log.warning(f"aperçu du repository non lu ({type(e).__name__}: {e}) : l'agent lira lui-même.")
-        return ""
-
-
-MAX_PREVIOUS_PLAN_CHARS = 6000
-_AGENT_DURATION_MARKER = re.compile(r"<!--agent-duration:[0-9.]+-->\s*")
-
-
-def _previous_architecture_plan(
-    session: Session, data: "WorkflowExecutionInput", has_repo_target: bool, user_id, conversation_id: int, current_id: int,
-) -> str:
-    """Plan de l'Architecte du dernier tour RÉUSSI de cette conversation qui en a produit un (parmi les 3 derniers),
-    sur le même repository cible, ou "". Sert de base à l'Architecte (il ne décrit alors que ce qui change) ; il peut
-    être périmé, la consigne lui demande de le confronter à l'aperçu du repository."""
-    target = (data.repo_owner, data.repo_name) if has_repo_target else (None, None)
-    rows = session.exec(
-        select(ExecutionHistory)
-        .where(ExecutionHistory.conversation_id == conversation_id)
-        .where(ExecutionHistory.user_id == user_id)
-        .where(ExecutionHistory.id != current_id)
-        .where(ExecutionHistory.status == "success")
-        .order_by(col(ExecutionHistory.created_at).desc())
-        .limit(3)
-    ).all()
-    for row in rows:
-        if (row.repo_owner or None, row.repo_name or None) != target:
-            continue
-        if "architecture" not in workflow_step_keys(row.workflow, row.scope):
-            continue
-        for agent_name, content in _parse_completed_agents(row.result or "").items():
-            if step_for_role(agent_name) != "architecture":
-                continue
-            body = content.split("\n", 1)[1] if content.startswith("## ") and "\n" in content else content
-            body = _AGENT_DURATION_MARKER.sub("", body).strip()
-            if body:
-                cut = "\n[… tronqué]" if len(body) > MAX_PREVIOUS_PLAN_CHARS else ""
-                return body[:MAX_PREVIOUS_PLAN_CHARS] + cut
-    return ""
-
-
-async def _load_previous_plan(
-    data: "WorkflowExecutionInput", has_repo_target: bool, user_id, conversation_id: int, current_id: int,
-    resume_outputs: Optional[dict[str, str]],
-) -> str:
-    """Plan du tour précédent à donner à l'Architecte, ou "" : seulement si son étape va réellement tourner (ni
-    sautée par une petite FEATURE, ni réutilisée par une reprise). Best-effort : une erreur donne ""."""
-    if "architecture" not in workflow_step_keys(data.target_workflow, data.scope) or "architecture" in (resume_outputs or {}):
-        return ""
-
-    def read() -> str:
-        with Session(database.engine) as plan_session:
-            return _previous_architecture_plan(plan_session, data, has_repo_target, user_id, conversation_id, current_id)
-
-    try:
-        return await asyncio.to_thread(read)
-    except Exception as e:
-        log.warning(f"plan du tour précédent non lu ({type(e).__name__}: {e}) : l'Architecte part de zéro.")
-        return ""
-
-
-async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, has_repo_target: bool) -> Optional[str]:
-    """SHA de la branche de travail AVANT le crew : repère de verify_github_delivery pour distinguer « cette
-    exécution a poussé un commit » de « une branche/PR d'un tour précédent existe toujours ». None = branche
-    absente OU vérification indisponible : traité pareil (best-effort), une panne réseau n'empêche pas le crew."""
-    # Pour TOUT run avec repository cible (pas seulement ceux qui vérifient la livraison) : les consignes
-    # données aux agents dépendent de l'existence de la branche, ANALYSE_ONLY compris.
-    if not has_repo_target:
-        return None
-    try:
-        return await asyncio.to_thread(get_branch_head_sha, data.repo_owner, data.repo_name, work_branch)
-    except GitHubVerificationUnavailable:
-        return None
-
 
 async def _run_crew(
-    crew: AppDevelopmentCrew, state: _RunState, execution_id: int, request_type: str, inputs: dict,
+    crew: AppDevelopmentCrew, state: execution_context.RunState, execution_id: int, request_type: str, inputs: dict,
     resume_outputs: Optional[dict[str, str]], scope: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> Any:
@@ -530,7 +338,7 @@ def _with_pull_request_line(raw_result: str, delivered_pr: Optional[DeliveredPul
     return f"{raw_result}\n\n**Pull Request {state_label} :** {delivered_pr.html_url}"
 
 
-def _record_run_metrics(session: Session, db_entry: ExecutionHistory, state: _RunState) -> None:
+def _record_run_metrics(session: Session, db_entry: ExecutionHistory, state: execution_context.RunState) -> None:
     if state.metrics is None:
         return
     db_entry.api_calls_count = state.metrics.api_calls_count
@@ -549,7 +357,7 @@ def _commit_outcome(session: Session, db_entry: ExecutionHistory, conversation: 
 
 
 async def _persist_success(
-    session: Session, db_entry: ExecutionHistory, conversation: Conversation, raw_result: str, state: _RunState,
+    session: Session, db_entry: ExecutionHistory, conversation: Conversation, raw_result: str, state: execution_context.RunState,
 ) -> None:
     execution_state.safe_refresh(session, db_entry, "succès")
     db_entry.result = raw_result
@@ -567,7 +375,7 @@ async def _persist_success(
 
 async def _persist_success_safely(
     db_entry_id: int, conversation_id: int, session: Session, db_entry: ExecutionHistory,
-    conversation: Conversation, raw_result: str, state: _RunState,
+    conversation: Conversation, raw_result: str, state: execution_context.RunState,
 ) -> None:
     """_persist_success, avec UNE reprise sur une Session neuve si la première tentative échoue (connexion
     périmée après une longue exécution). Si la reprise échoue aussi, l'erreur est journalisée et la ligne
@@ -604,7 +412,7 @@ def _failure_detail(exc: BaseException, info: ErrorInfo) -> str:
 async def _persist_failure(
     session: Session, db_entry: ExecutionHistory, conversation: Conversation, exc: BaseException, info: ErrorInfo,
     data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], should_verify: bool,
-    state: _RunState,
+    state: execution_context.RunState,
 ) -> None:
     detail = _failure_detail(exc, info)
     # Écritures GitHub partielles : l'échec peut venir après qu'une branche, des commits ou une PR ont DÉJÀ
@@ -616,7 +424,7 @@ async def _persist_failure(
     execution_state.safe_refresh(session, db_entry, "échec")
     # Travail déjà accompli : les sections des agents terminés sont dans `result` jusqu'à ce qu'il soit écrasé
     # ci-dessous. Ajouté APRÈS le bloc GitHub : le frontend le retire en premier (splitPartialWork).
-    completed = [(name, text) for name, text in _parse_completed_agents(db_entry.result or "").items()]
+    completed = [(name, text) for name, text in execution_context.parse_completed_agents(db_entry.result or "").items()]
     partial = partial_work_block(completed)
     if partial:
         detail += "\n\n" + partial
@@ -640,11 +448,11 @@ async def _retry_outputs_if_transient(
     les étapes réussies sont reprises. Plus tard (développement, QA, vérification), l'utilisateur relance :
     il faudrait réécrire sur GitHub et repayer ces étapes. Sans le point de reprise de CHAQUE étape déjà
     réussie, relancer les repayerait pour rien. L'attente se fait chez l'appelant, hors sémaphore."""
-    # isinstance (en plus de _failed_before_development) : `exc.step_index` ci-dessous ne dépend ainsi pas
+    # isinstance (en plus de execution_context.failed_before_development) : `exc.step_index` ci-dessous ne dépend ainsi pas
     # d'un couplage implicite entre ces deux conditions.
     if not isinstance(exc, CrewStepError):
         return None
-    if not (auto_retry_allowed and info.retryable and _failed_before_development(exc, data.target_workflow, data.scope)):
+    if not (auto_retry_allowed and info.retryable and execution_context.failed_before_development(exc, data.target_workflow, data.scope)):
         return None
     saved = await asyncio.to_thread(execution_persistence.load_checkpoints_for, db_entry_id)
     prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
@@ -699,7 +507,7 @@ async def _run_crew_and_persist(
     Étapes : capturer le SHA de référence et instancier le crew → lancer (_run_crew) → vérifier la livraison
     GitHub → persister le succès ; toute exception passe par le chemin d'échec (_persist_failure).
     """
-    state = _RunState()
+    state = execution_context.RunState()
     try:
         with Session(database.engine) as session:
             db_entry = session.get(ExecutionHistory, db_entry_id)
@@ -719,7 +527,7 @@ async def _run_crew_and_persist(
                 # « failed » au lieu de la laisser « running ».
                 crew, state.sha_before = await asyncio.gather(
                     asyncio.to_thread(AppDevelopmentCrew),
-                    _capture_branch_sha(data, work_branch, has_repo_target),
+                    execution_context.capture_branch_sha(data, work_branch, has_repo_target),
                 )
                 memory_monitor.log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
                 # Cache de lecture GitHub partagé par l'aperçu et les agents de CETTE exécution (voir track_read_cache) ;
@@ -727,11 +535,11 @@ async def _run_crew_and_persist(
                 cancel_event = threading.Event()
                 with track_read_cache(), (track_write_scope(work_branch, cancel_event) if work_branch else nullcontext()):
                     branch_exists = state.sha_before is not None
-                    repo_snapshot = await _prefetch_repo_snapshot(
+                    repo_snapshot = await execution_context.prefetch_repo_snapshot(
                         data, work_branch, normalized_base_branch, has_repo_target, branch_exists, resume_outputs)
-                    previous_plan = await _load_previous_plan(
+                    previous_plan = await execution_context.load_previous_plan(
                         data, has_repo_target, db_entry.user_id, conversation_id, db_entry.id, resume_outputs)
-                    inputs = _crew_inputs(
+                    inputs = execution_context.crew_inputs(
                         data, conversation_id, final_prompt, conversation_context, work_branch,
                         normalized_base_branch, has_repo_target, branch_exists, repo_snapshot, previous_plan,
                     )
@@ -773,66 +581,6 @@ async def _run_crew_and_persist(
 def read_root():
     return {"status": "API CrewAI opérationnelle"}
 
-def _prior_turns(session: Session, conversation_id: int) -> tuple[list[int], str]:
-    """(identifiants des tours encore « running », rappel des derniers tours) d'une conversation. Seuls les
-    MAX_PRIOR_TURNS_IN_CONTEXT derniers tours sont lus en entier (pour leur résumé) ; le nombre total sert à signaler
-    ceux qui sont omis. Même contenu que lire toute la conversation, sans charger les résultats des tours anciens."""
-    in_conversation = ExecutionHistory.conversation_id == conversation_id
-    running_ids = [
-        row_id for row_id in session.exec(
-            select(ExecutionHistory.id).where(in_conversation).where(ExecutionHistory.status == "running")
-        ).all() if row_id is not None
-    ]
-    total = session.exec(select(func.count()).select_from(ExecutionHistory).where(in_conversation)).one()
-    recent = session.exec(
-        select(ExecutionHistory).where(in_conversation)
-        .order_by(col(ExecutionHistory.created_at).desc(), col(ExecutionHistory.id).desc())
-        .limit(MAX_PRIOR_TURNS_IN_CONTEXT)
-    ).all()
-    return running_ids, build_conversation_context(list(reversed(recent)), total_count=total)
-
-
-def _previous_work_branch(
-    session: Session, conversation_id: int, owner: Optional[str], repo: Optional[str], base_branch: Optional[str],
-) -> str:
-    """Branche de travail du dernier tour de la conversation sur le même repository et la même branche de base,
-    quel que soit son statut (« failed » compris : « Relancer » continue sur la même branche et la même PR), ou ""."""
-    found = session.exec(
-        select(ExecutionHistory.work_branch)
-        .where(ExecutionHistory.conversation_id == conversation_id)
-        .where(col(ExecutionHistory.work_branch).is_not(None))
-        .where(col(ExecutionHistory.work_branch) != "")
-        .where(ExecutionHistory.repo_owner == owner)
-        .where(ExecutionHistory.repo_name == repo)
-        .where(ExecutionHistory.base_branch == base_branch)
-        .order_by(col(ExecutionHistory.created_at).desc(), col(ExecutionHistory.id).desc())
-        .limit(1)
-    ).first()
-    return found or ""
-
-
-def _load_qualification_context(conversation_id: int, user_id) -> str | None:
-    """Rappel des tours précédents pour /api/qualify, ou None si la conversation est introuvable
-    ou n'appartient pas à cet utilisateur. Synchrone (accès DB bloquant) : à appeler via
-    asyncio.to_thread, avec sa propre Session, pour ne pas bloquer la boucle asyncio."""
-    with Session(database.engine) as session:
-        conversation = session.get(Conversation, conversation_id)
-        if not conversation or conversation.user_id != user_id:
-            return None
-        # Seuls les MAX_PRIOR_TURNS_IN_CONTEXT derniers tours servent au contexte : inutile de
-        # relire tous les résultats (souvent volumineux) d'une longue conversation à chaque
-        # qualification — le nombre total suffit pour signaler les tours omis.
-        total = session.exec(
-            select(func.count()).select_from(ExecutionHistory)
-            .where(ExecutionHistory.conversation_id == conversation.id)
-        ).one()
-        recent = session.exec(
-            select(ExecutionHistory)
-            .where(ExecutionHistory.conversation_id == conversation.id)
-            .order_by(col(ExecutionHistory.created_at).desc())
-            .limit(MAX_PRIOR_TURNS_IN_CONTEXT)
-        ).all()
-        return build_conversation_context(list(reversed(recent)), total_count=total)
 
 @app.post("/api/qualify", response_model=QualificationResult)
 async def qualify_request(data: UserRequestInput, user: dict = Depends(get_current_user)):
@@ -842,7 +590,7 @@ async def qualify_request(data: UserRequestInput, user: dict = Depends(get_curre
     check_qualify_rate(user.get("id"))
     conversation_context = ""
     if data.conversation_id is not None:
-        loaded = await asyncio.to_thread(_load_qualification_context, data.conversation_id, user.get("id"))
+        loaded = await asyncio.to_thread(execution_context.load_qualification_context, data.conversation_id, user.get("id"))
         if loaded is None:
             raise HTTPException(status_code=404, detail="Conversation introuvable.")
         conversation_context = loaded
@@ -877,10 +625,10 @@ def _ensure_conversation_idle(session: Session, conversation_id: int) -> str:
     concurrency) — l'une des deux échouerait avec un SHA obsolète au lieu d'une erreur claire. Un tour resté bloqué à
     "running" (crash serveur en cours d'exécution) est balayé (orphans.sweep_stale_executions) s'il n'a plus donné signe
     de vie : il ne doit pas bloquer la conversation pour toujours."""
-    running_ids, conversation_context = _prior_turns(session, conversation_id)
+    running_ids, conversation_context = execution_context.prior_turns(session, conversation_id)
     if running_ids and sweep_stale_executions(session, active_ids=execution_state.active_execution_ids, conversation_id=conversation_id):
         session.expire_all()
-        running_ids, conversation_context = _prior_turns(session, conversation_id)
+        running_ids, conversation_context = execution_context.prior_turns(session, conversation_id)
     if running_ids:
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
     return conversation_context
@@ -954,7 +702,7 @@ async def execute_workflow(
         session.refresh(conversation)
 
     # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
-    resume_outputs = _resumable_outputs(session, data, user.get("id"), conversation.id)
+    resume_outputs = execution_context.resumable_outputs(session, data, user.get("id"), conversation.id)
 
     # Normalisé une seule fois : utilisé à la fois pour comparer aux tours précédents et
     # pour ce qui est stocké sur ce tour, afin que les deux restent cohérents (sinon un
@@ -973,7 +721,7 @@ async def execute_workflow(
         # l'ouverture de la PR a échoué — voir verify_github_delivery) : _run_crew_and_persist
         # interroge directement l'API GitHub (repo_branch_sha_before, live) pour ce signal, plus
         # fiable qu'une heuristique basée sur ce champ.
-        work_branch = _previous_work_branch(session, conversation.id, data.repo_owner, data.repo_name, normalized_base_branch)
+        work_branch = execution_context.previous_work_branch(session, conversation.id, data.repo_owner, data.repo_name, normalized_base_branch)
         if not work_branch:
             work_branch = f"{WORK_BRANCH_PREFIX}{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
 
@@ -1085,65 +833,6 @@ def get_conversation_messages(
     return session.exec(statement).all()
 
 
-def _parse_completed_agents(result_text: str) -> dict[str, str]:
-    """Découpe le résultat combiné du crew en sections par agent.
-
-    Format attendu:
-    - Sections séparées par la frontière littérale: '\n\n---\n\n## AgentName'
-    - Chaque section: '## AgentName\n\n...contenu...'
-    - Le résumé final (optionnel) est marqué par '<!--crew-summary-->' et n'est PAS retourné
-    - Cette fonction ignore le résumé et les sections après le marqueur de résumé
-
-    Exemple:
-        Input: "## Agent1\n\n...content1...\n\n---\n\n## Agent2\n\n...content2...\n\n<!--crew-summary-->\n\n## Résumé\n\n..."
-        Output: {"Agent1": "## Agent1\n\n...content1...", "Agent2": "## Agent2\n\n...content2..."}
-
-    Args:
-        result_text: String markdown du résultat du crew complet ou partiel
-
-    Returns:
-        dict[str, str]: {nom_agent: contenu_formaté_avec_heading}
-    """
-    if not result_text:
-        return {}
-
-    # Chercher le sentinel résumé : '<!--crew-summary-->' (marqueur du résumé final)
-    agents = {}
-    summary_marker = "<!--crew-summary-->"
-
-    # Isoler la partie agents (avant le résumé)
-    if summary_marker in result_text:
-        agents_part = result_text[:result_text.index(summary_marker)]
-    else:
-        agents_part = result_text
-
-    # Découper par frontière AGENT_SECTION_REGEX_PATTERN
-    # Cette frontière contient '\n\n---\n\n## ' donc le split supprime ce texte entre sections
-    sections = re.split(AGENT_SECTION_REGEX_PATTERN, agents_part)
-
-    for section in sections:
-        if not section.strip():
-            continue
-
-        lines = section.split('\n', 1)
-        if len(lines) >= 2:
-            agent_name = lines[0].strip()
-            content = lines[1]
-        else:
-            agent_name = lines[0].strip()
-            content = ""
-
-        # Retirer les marqueurs ## du heading si présents (première section les conserve du split)
-        if agent_name.startswith('##'):
-            agent_name = agent_name[2:].strip()
-
-        # Ne pas traiter comme agent si le heading ne ressemble pas à un rôle
-        # (ex: un heading du contenu d'un agent, pas une vraie frontière)
-        if agent_name and len(agent_name) > 2:
-            agents[agent_name] = f"## {agent_name}\n\n{content}" if content else f"## {agent_name}"
-
-    return agents
-
 def _queue_ahead(session: Session, execution_id: int, current_step: Optional[str], created_at: datetime) -> int:
     """Nombre d'exécutions (tous utilisateurs) devant celle-ci : celles qui tournent réellement (étape réelle) et celles
     en attente créées avant elle. Un décompte seulement, rien d'autre d'une exécution d'un autre compte."""
@@ -1196,7 +885,7 @@ def get_conversation_progress(
 
     completed_agents = {}
     if row[3]:  # if result is not None
-        completed_agents = _parse_completed_agents(row[3])
+        completed_agents = execution_context.parse_completed_agents(row[3])
 
     return {
         "id": row[0],
