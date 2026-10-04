@@ -13,6 +13,10 @@ pipeline. Ce module extrait ces fichiers une fois pour toutes, pour que :
   github_commit_analyst_files, crew_tools.py) ;
 - la QA compare le contenu RÉELLEMENT présent sur la branche à celui rédigé par l'Analyste,
   sans devoir le faire "à l'œil" (voir build_delivery_report).
+
+Ce module garde le contrôle d'une sortie (review_diagnostic_output) et le rapport de livraison ; la lecture des
+balises, des modifications ciblées, des imports et des raccourcis vit dans analyst_blocks, analyst_edits,
+analyst_imports et analyst_placeholders.
 """
 import difflib
 import re
