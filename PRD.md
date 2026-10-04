@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.47 — Mise à jour le 2026-10-04
+> Version : 1.48 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -26,6 +26,7 @@
 > - 1.45 (10-04) : verrouillage complet des dépendances (`requirements.lock`), CI en Python 3.11 et 3.12, une seule validation de jeton à la fois par jeton.
 > - 1.46 (10-04) : l'issue d'une validation (succès, 401, 503) est partagée entre requêtes simultanées, veille des failles (job `audit`, Dependabot), cohérence requirements/verrou testée.
 > - 1.47 (10-04) : `useConversation.ts` (728 lignes) découpé en hooks dédiés (dossier `hooks/conversation/`), comportement inchangé.
+> - 1.48 (10-04) : `sendMessage` et l'effet de sondage découpés en fonctions nommées (`progressMerge`), `useSendOutcomes` stable, tests unitaires des pièces extraites.
 
 ---
 
@@ -174,7 +175,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 
 | Couche | Rôle | Fichiers clés |
 |---|---|---|
-| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts` (état partagé et navigation, 167 lignes) assemblé à partir de `hooks/conversation/` (`useProgressPolling`, `useLaunchPreview`, `useSendMessage`, `sendOutcomes`, `turnMapping`), `hooks/useMetricsSummary.ts` ; résultat et échec : `ResultSections`, `FailureBlock`, `CopyButton` ; lancement : `LaunchPreview` ; progression : `StepIndicator`, `hooks/useStepStats`, `utils/estimateRemaining` ; notification : `hooks/useCompletionNotice`, `hooks/useNotifyPreference` ; aide : `InfoTip` (`components/metrics`) |
+| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts` (état partagé et navigation, 167 lignes) assemblé à partir de `hooks/conversation/` (`useProgressPolling` + `progressMerge` (fonctions pures testées), `useLaunchPreview`, `useSendMessage` (trois chemins : réponse à une clarification, type choisi, qualification automatique), `sendOutcomes`, `turnMapping`), `hooks/useMetricsSummary.ts` ; résultat et échec : `ResultSections`, `FailureBlock`, `CopyButton` ; lancement : `LaunchPreview` ; progression : `StepIndicator`, `hooks/useStepStats`, `utils/estimateRemaining` ; notification : `hooks/useCompletionNotice`, `hooks/useNotifyPreference` ; aide : `InfoTip` (`components/metrics`) |
 | Client Supabase | Session, token d'accès | `frontend/src/supabaseClient.ts` |
 | API (Logique HTTP) | Endpoints, validation des entrées, auth, exécution en tâche de fond, persistance, vérification de livraison | `backend/main.py`, `backend/auth.py` |
 | Socle backend | Journalisation, erreurs typées, validation, orphelines, résumé de projet | `backend/logs.py`, `backend/errors.py`, `backend/validation.py`, `backend/orphans.py`, `backend/project_summary.py` |
@@ -336,7 +337,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (749 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (203 tests, 27 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (749 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (221 tests, 30 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : l'aperçu avant lancement et le fil restent utilisables à 390 px ; pas de layout mobile dédié pour le tableau de bord.
 - **Accessibilité** : attributs ARIA sur les contrôles récents (copie annoncée, aperçu en attente de confirmation, focus sur « Lancer ») ; pas d'audit WCAG complet.

@@ -1,10 +1,10 @@
 import { useRef, useState } from 'react';
 import { apiClient } from '../api';
-import type { ChatTurn } from '../types';
+import type { ChatTurn, PendingClarification } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
 import { toDisplayedError } from '../utils/errors';
 import { historyEntryToTurn } from './conversation/turnMapping';
-import { useSendOutcomes, type PendingClarification } from './conversation/sendOutcomes';
+import { useSendOutcomes } from './conversation/sendOutcomes';
 import { useProgressPolling } from './conversation/useProgressPolling';
 import { useLaunchPreview } from './conversation/useLaunchPreview';
 import { useSendMessage } from './conversation/useSendMessage';

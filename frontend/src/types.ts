@@ -247,3 +247,11 @@ export interface AgentRunView {
   tool_calls: number;
   tool_errors: number;
 }
+
+// Demande en attente d'une réponse de clarification : demande d'origine, type provisoire détecté, et `fallback` quand la
+// qualification automatique n'a pas abouti (le type provisoire n'est alors pas un vrai choix).
+export type PendingClarification = {
+  originalRequest: string;
+  workflow: QualificationReport['request_type'];
+  fallback?: boolean;
+};

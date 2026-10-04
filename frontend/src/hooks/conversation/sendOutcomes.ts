@@ -1,10 +1,9 @@
+import { useCallback } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { ExecuteAcceptedResponse } from '../../api';
-import type { ChatTurn, QualificationReport } from '../../types';
+import type { ChatTurn, PendingClarification } from '../../types';
 import { toDisplayedError } from '../../utils/errors';
 import { isAbortError } from './turnMapping';
-
-export type PendingClarification = { originalRequest: string; workflow: QualificationReport['request_type']; fallback?: boolean };
 
 export interface OutcomeDeps {
   setTurns: Dispatch<SetStateAction<ChatTurn[]>>;
@@ -15,7 +14,7 @@ export interface OutcomeDeps {
 }
 
 // Issues d'un /api/execute (accepté, échoué ou annulé), partagées par sendMessage et confirmLaunch pour qu'elles ne
-// puissent pas diverger silencieusement.
+// puissent pas diverger silencieusement. Fonctions stables (useCallback) : elles ne lisent que des setters d'état et le ref de génération.
 export function useSendOutcomes({ setTurns, setError, setConversationId, setPendingClarification, conversationGenerationRef }: OutcomeDeps) {
   // Partagé entre les 3 chemins qui aboutissent à un /api/execute accepté (repli manuel,
   // réponse à une clarification, exécution automatique) pour qu'ils ne puissent pas
@@ -26,16 +25,16 @@ export function useSendOutcomes({ setTurns, setError, setConversationId, setPend
   // en base, pour que le sondage de progression (l'effet plus haut) puisse le suivre et, à terme,
   // le resynchroniser avec son résultat final une fois l'exécution terminée côté serveur, même si
   // cette requête d'origine a depuis été interrompue (écran verrouillé, onglet fermé).
-  const applyExecuteAccepted = (tempId: string, data: ExecuteAcceptedResponse) => {
+  const applyExecuteAccepted = useCallback((tempId: string, data: ExecuteAcceptedResponse) => {
     setConversationId(data.conversation_id);
     setTurns((t) => t.map((turn) => (turn.id === tempId
       ? { ...turn, id: data.id, resumedSteps: data.resumed_steps?.length ? data.resumed_steps : undefined }
       : turn)));
-  };
+  }, [setConversationId, setTurns]);
 
   // Issue d'un envoi qui a échoué ou été annulé, partagée par sendMessage et confirmLaunch : marque le tour
   // concerné « annulé » ou « en échec », sauf si la conversation affichée a changé entretemps.
-  const reportSendError = (err: unknown, tempId: string, myGeneration: number) => {
+  const reportSendError = useCallback((err: unknown, tempId: string, myGeneration: number) => {
     // Idem : une erreur (y compris une annulation) rattachée à une conversation abandonnée
     // ne doit affecter ni son historique (de toute façon remplacé entretemps) ni, surtout,
     // pendingClarification/error/conversationId de la conversation désormais affichée.
@@ -65,7 +64,7 @@ export function useSendOutcomes({ setTurns, setError, setConversationId, setPend
       ? { ...turn, status: 'failed', result: message, errorCode: shown.code, errorRetryable: shown.retryable, updatedAt: new Date().toISOString() }
       : turn)));
     setError(message);
-  };
+  }, [setTurns, setError, setPendingClarification, conversationGenerationRef]);
 
   return { applyExecuteAccepted, reportSendError };
 }
