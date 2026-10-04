@@ -1,8 +1,15 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.30 — Mise à jour le 2026-10-04
+> Version : 1.31 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants · 1.12 (2026-10-04) qualité du code : CI, lint, types, tests frontend, exécution découpée en étapes · 1.13 (2026-10-04) historique des performances : comparaison à la période précédente, tendances quotidiennes, calcul exact · 1.14 (2026-10-04) historique des performances : tableau des exécutions, chronologie par exécution, coût estimé, raisonnement (relances, reprises) et qualité (verdict QA) · 1.15 (2026-10-04) échec de livraison GitHub identifié (`DELIVERY_FAILED`) avec le rapport de l'agent conservé · 1.16 (2026-10-04) infobulles « ? » expliquant p50 et p95 (légende du graphique de durée et tableaux) · 1.17 (2026-10-04) performance de l'Architecte : aperçu du repository lu en Python, cache de lectures GitHub par exécution (invalidé à chaque écriture ; jamais utilisé par les vérifications de livraison), consignes fixes du prompt placées avant les données variables · 1.18 (2026-10-04) aperçu du repository plafonné et non lu en reprise, compteurs du cache de lectures dans les logs (`[CACHE LECTURE]`) · 1.19 (2026-10-04) consigne de l'Architecte resserrée, sortie plafonnée à 5 000 tokens, contrats d'interface en signatures seules · 1.20 (2026-10-04) plafond de sortie de l'Architecte relevé à 8 192 tokens et réglable, détection d'une sortie tronquée dans le contrôle automatique · 1.21 (2026-10-04) petite FEATURE sans architecture (`scope`), résumé du projet partagé par l'Architecte et le Diagnostic, plan du tour précédent donné à l'Architecte · 1.22 (2026-10-04) reprise insensible à `GRAND` / absent, `tsconfig.json` avec commentaires lu correctement, exemples de qualification avec `scope` · 1.23 (2026-10-04) interface : résultat avec sommaire, « Tout déplier / replier » et copie par section ; échec de livraison expliqué (diagnostic, rapport de l'agent replié, guide d'action) ; aperçu avant lancement (type, taille, étapes, repository) à confirmer ou corriger · 1.24 (2026-10-04) aperçu libellé « en attente de confirmation », focus sur « Lancer », copie annoncée aux lecteurs d'écran, double lancement évité, identifiants de tours uniques · 1.25 (2026-10-04) interface : durée de l'étape en cours et temps restant estimé d'après les médianes par étape des 30 derniers jours ; notification de fin d'exécution (titre de l'onglet, notification du navigateur facultative) · 1.26 (2026-10-04) chrono d'étape remesuré après une pause ou une relance, médianes séparées par compte, notification aussi quand la fenêtre n'a plus le focus (un clic ramène l'onglet) · 1.27 (2026-10-04) revue complète : écriture GitHub limitée aux branches `crewai/…` (et à la branche de travail de l'exécution), points d'accès de base de données exécutés dans des threads, moteur SQL résilient aux connexions coupées · 1.28 (2026-10-04) balayage des orphelines atomique (une seule libération, un seul message), écritures GitHub refusées tracées dans les logs, réserve de connexions SQL réglable (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`) · 1.29 (2026-10-04) journalisation par `logging` (niveaux, `LOG_LEVEL`, sans identifiants ni texte de demande), branches de travail validées par un motif strict, lecture ciblée des tours précédents à l'envoi, liste d'historique sans résultat et lecture d'une exécution à la demande · 1.30 (2026-10-04) logs sur une ligne par événement (messages multi-lignes échappés), niveau de log conservé après la première configuration.
+> Historique (condensé) :
+> - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
+> - 1.3–1.8 (10-02 → 10-03) : mesure de performance par agent et tableau de bord, historique en sélection multiple, erreurs typées, orphelines, validation des entrées, contrôle préalable GitHub.
+> - 1.9–1.16 (10-03 → 10-04) : reprise à l'étape en échec et seconde tentative, système de design, CI/lint/types/tests, historique des performances, `DELIVERY_FAILED`, infobulles p50/p95.
+> - 1.17–1.22 (10-04) : performance de l'Architecte (aperçu du dépôt, cache de lectures, plafond de sortie, `scope` PETIT/GRAND, plan précédent).
+> - 1.23–1.26 (10-04) : interface (sommaire du résultat, aperçu avant lancement, temps restant estimé, notification de fin).
+> - 1.27–1.30 (10-04) : revue complète (écritures limitées à `crewai/…`, endpoints en threads, moteur SQL résilient, balayage atomique, logs `logging` sur une ligne).
+> - 1.31 (10-04) : consolidation du PRD (variantes de workflow, tableaux de modules, variables d'environnement, chiffres de tests).
 
 ---
 
@@ -38,6 +45,8 @@
 | `FEATURE` | `architecture_task` → `diagnostic_task` → `development_task` → `qa_task` |
 | `DESIGN_AND_DEV` (défaut) | `design_task` → `architecture_task` → `diagnostic_task` → `development_task` → `qa_task` |
 
+**Variante PETIT** : pour une `FEATURE` qualifiée `scope = PETIT` (changement local), `architecture_task` est sautée (`FEATURE` → `diagnostic_task` → `development_task` → `qa_task`). Les étapes réellement jouées viennent de `workflow_step_keys(request_type, scope)` (`crewquestion.py`), reprise par le front via `workflowSteps(workflow, scope)`. Une reprise traite `scope` absent comme `GRAND`.
+
 Contexte explicite par tâche (pas toutes les sorties précédentes) : `architecture` reçoit `design` ; `diagnostic` reçoit `design` + `architecture` ; `development` reçoit `diagnostic` ; `qa` reçoit `design` + `diagnostic` + `development`.
 
 ### 2.3 Agents CrewAI
@@ -51,12 +60,14 @@ Contexte explicite par tâche (pas toutes les sorties précédentes) : `architec
 | `developer_agent` | Commit fidèle du code de l'Analyste et ouverture de la PR | écriture seule : commit des fichiers de l'Analyste, branche, `check_syntax`, PR | 6 | 90 s |
 | `qa_agent` | Vérification outillée et verdict | `qa_verify_delivered_files`, lecture, `check_syntax` | 10 | 90 s |
 
+Le plafond de sortie de l'Architecte est de `ARCHITECT_MAX_OUTPUT_TOKENS` (8192 par défaut) ; ses garde-fous sont `_architecture_issues` (structure attendue) et `_truncation_issues` (sortie tronquée). L'Architecte et le Diagnostic reçoivent un résumé déterministe du projet (`project_summary.py`) et l'Architecte le plan du tour précédent.
+
 Séparation voulue : l'Analyste ne peut pas écrire sur GitHub, le Développeur ne peut pas lire ni raisonner — il committe tel quel. Chaque agent rapporte son temps d'exécution (`execution_duration`), affiché dans l'UI.
 
 ### 2.4 Intégration GitHub (repo cible dynamique)
 
 - L'utilisateur choisit le repository (owner/repo) et la branche de base à chaque exécution — rien n'est câblé en dur.
-- Aucune écriture directe sur `main`/`master` (refus côté outils) : branche de travail obligatoire, puis Pull Request.
+- Les écritures sont limitées aux branches `crewai/…` (et, pendant une exécution, à sa seule branche de travail via `track_write_scope`) ; tout autre nom (`main`, `test`…) est refusé sans appel réseau et tracé dans les logs. Branche de travail obligatoire, puis Pull Request.
 - Le commit passe par l'outil `github_commit_analyst_files` : les fichiers de l'Analyste sont extraits **en Python** de sa réponse (balises), sans recopie par un LLM. Les fichiers Python/JSON/YAML invalides sont refusés avant commit.
 - La description de la PR est **générée à partir des faits** (voir 2.7) ; elle est ouverte en brouillon si la livraison est partielle (repli sur une PR normale si le dépôt n'accepte pas les brouillons) et, si une PR existe déjà pour la branche, seule sa zone générée est mise à jour.
 - Sans repository cible, l'écriture se fait dans un espace de travail local isolé par conversation (`LOCAL_WORKSPACE_DIR`), jamais sur le code du serveur.
@@ -132,9 +143,10 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 
 | Couche | Rôle | Fichiers clés |
 |---|---|---|
-| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts`, `hooks/useMetricsSummary.ts` |
+| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts`, `hooks/useMetricsSummary.ts` ; résultat et échec : `ResultSections`, `FailureBlock`, `CopyButton` ; lancement : `LaunchPreview` ; progression : `StepIndicator`, `hooks/useStepStats`, `utils/estimateRemaining` ; notification : `hooks/useCompletionNotice`, `hooks/useNotifyPreference` ; aide : `InfoTip` (`components/metrics`) |
 | Client Supabase | Session, token d'accès | `frontend/src/supabaseClient.ts` |
 | API (Logique HTTP) | Endpoints, validation des entrées, auth, exécution en tâche de fond, persistance, vérification de livraison | `backend/main.py`, `backend/auth.py` |
+| Socle backend | Journalisation, erreurs typées, validation, orphelines, résumé de projet | `backend/logs.py`, `backend/errors.py`, `backend/validation.py`, `backend/orphans.py`, `backend/project_summary.py` |
 | Orchestration agents | Définition et exécution des agents/tâches CrewAI, guardrails, retry | `backend/crewquestion.py`, `backend/agentsquestion.yaml`, `backend/tasksquestion.yaml` |
 | Contrôles de qualité (purs) | Lecture de la sortie de l'Analyste, livraison (commit/PR), rapport QA | `backend/analyst_output.py`, `backend/delivery.py`, `backend/qa_report.py` |
 | Mesure de performance | Collecte par agent (événements CrewAI), agrégats (percentiles, moyennes, tendance) | `backend/agent_metrics.py` |
@@ -148,12 +160,13 @@ Utilisateur (navigateur)
   → Login.tsx (Supabase Auth) → session + access_token
   → Studio.tsx / useConversation : POST /api/qualify (mode auto) puis POST /api/execute
        → main.py : Depends(get_current_user) valide le token auprès de Supabase
-       → /api/execute répond tout de suite ; asyncio.create_task lance _execute_crew_and_persist
+       → /api/execute valide, vérifie GitHub, lit le résumé du dépôt (`_prefetch_repo_snapshot`) puis répond tout de suite ; asyncio.create_task lance _execute_crew_and_persist
             → crewquestion.py : run_dynamic_crew (tâches sélectionnées, contexte par tâche,
               guardrails, retry résumable) ; agents → tools.py / github_tools.py
             → chaque agent terminé est persisté (section + durée) dans ExecutionHistory.result
             → verify_github_delivery : branche et PR à jour confirmées via l'API GitHub
   → useConversation sonde /api/conversations/{id}/progress puis lit /messages
+    (resynchronisation via GET /api/executions/{id})
 ```
 
 L'état frontend est local au hook `useConversation` (pas de store global).
@@ -164,7 +177,7 @@ L'état frontend est local au hook `useConversation` (pas de store global).
 
 ### 4.1 État frontend
 
-Défini dans `frontend/src/types.ts` et `hooks/useConversation.ts` : `ChatTurn` (message, statut `clarifying | running | success | failed | cancelled`, workflow, résumé de l'agent, questions, résultat), `pendingClarification`, `workflowType` (`AUTO` ou une des 4 catégories), `RepoTarget { owner, name, branch }`. Le brouillon de saisie est conservé localement et effacé à la déconnexion.
+Défini dans `frontend/src/types.ts` et `hooks/useConversation.ts` : `ChatTurn` (message, statut `clarifying | running | success | failed | cancelled`, workflow, résumé de l'agent, questions, résultat), `pendingClarification`, `workflowType` (`AUTO` ou une des 4 catégories), `RepoTarget { owner, name, branch }`, `pendingLaunch` (aperçu avant lancement : type, taille, étapes, repository ; confirmation désactivable via `localStorage` `studio.confirmLaunch`). Le type de réponse d'historique (`HistoryListEntry`) ne contient pas le résultat, lu à la demande par `GET /api/executions/{id}`. Le brouillon de saisie est conservé localement et effacé à la déconnexion.
 
 ### 4.2 Contrats API
 
@@ -182,8 +195,9 @@ Response { summary: string; reasoning: string; is_clear: boolean;
 // POST /api/execute  (répond immédiatement ; l'exécution continue en tâche de fond)
 Request  { user_request: string; target_workflow: string; clarifications?: string;
            repo_owner?: string; repo_name?: string; base_branch?: string;
-           conversation_id?: number }
-Response { status: 'running'; id: number; conversation_id: number }
+           conversation_id?: number; scope?: 'PETIT' | 'GRAND';
+           resume_from_execution_id?: number }
+Response { status: 'running'; id: number; conversation_id: number; resumed_steps?: string[] }
 Erreurs  404 conversation introuvable · 409 exécution déjà en cours · 401 non authentifié
 
 // GET /api/conversations/{id}/progress   → sondage pendant une exécution
@@ -291,10 +305,11 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (environ 290 tests) couvrant les contrôles purs, les guardrails et les outils ; typecheck frontend `tsc --noEmit`. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (614 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (184 tests, 25 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
-- **Responsive** : mise en page simple, pas de layout mobile dédié.
-- **Accessibilité** : non ciblée spécifiquement (pas d'audit WCAG).
+- **Responsive** : l'aperçu avant lancement et le fil restent utilisables à 390 px ; pas de layout mobile dédié pour le tableau de bord.
+- **Accessibilité** : attributs ARIA sur les contrôles récents (copie annoncée, aperçu en attente de confirmation, focus sur « Lancer ») ; pas d'audit WCAG complet.
+- **Sécurité (mise à jour)** : les écritures GitHub sont confinées aux branches `crewai/…` ; le `GITHUB_TOKEN` reste partagé par tous les utilisateurs (voir §7).
 
 ---
 
@@ -303,14 +318,35 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **CI** (`.github/workflows/ci.yml`, sur `main`, `test` et chaque pull request) : backend (`ruff check`, `mypy`, `pytest`) et frontend (`eslint`, `tsc -b`, `vitest`, build). Dépendances de développement : `backend/requirements-dev.txt`. En local, `pre-commit` (`.pre-commit-config.yaml`) lance ruff et eslint + tsc avant chaque commit.
 - **Lint backend** (`backend/ruff.toml`) : erreurs réelles seulement (imports et variables inutilisés, noms indéfinis, erreurs de syntaxe, arguments mutables par défaut) ; pas de règles de style, qui réécriraient l'historique sans corriger de bug.
 - **Types backend** (`backend/mypy.ini`) : vérifiés sur les modules récents et purs (`errors`, `validation`, `orphans`, `delivery`, `qa_report`, `agent_metrics`) et sur `main.py`, où seuls les codes `arg-type`, `union-attr`, `operator` et `call-overload` sont désactivés (bruit des clés primaires `Optional[int]` de SQLModel) ; attribut inexistant, variable non annotée, affectation incompatible et retour manquant y restent contrôlés. Les autres gros modules y entreront par étapes. Les outils de développement sont épinglés (`requirements-dev.txt`, dont `types-PyYAML`) et alignés sur le `rev` de ruff du pré-commit, pour qu'une nouvelle version ne casse pas la CI sans changement de code.
-- **Tests frontend** (Vitest + Testing Library, `frontend/vitest.config.ts`, fichiers `*.test.ts(x)` à côté du code) : fonctions pures (échecs, tons, formats, parseurs), hooks (`useHistorySelection`, `useConnectionStatus`) et composants (`HistoryPanel` : sélection multiple, lot partiel, erreurs ; `FailureBlock`, `StepIndicator`).
+- **Tests frontend** (Vitest + Testing Library, `frontend/vitest.config.ts`, fichiers `*.test.ts(x)` à côté du code) : fonctions pures (échecs, tons, formats, parseurs), hooks (`useHistorySelection`, `useConnectionStatus`) et composants (`HistoryPanel` : sélection multiple, lot partiel, erreurs ; `FailureBlock`, `StepIndicator`, `LaunchPreview`, `ResultSections`, `StudioHeader`, `ChatMessage`), hooks de notification, de statistiques d'étapes et de resynchronisation de `useConversation`.
 - **Exécution d'une demande** (`_run_crew_and_persist`, `backend/main.py`) : une suite d'étapes nommées — `_capture_branch_sha`, `_crew_inputs` / `_repo_instructions`, `_run_crew`, `_verify_delivery`, `_persist_success`, `_persist_failure` (`_failure_detail`), `_retry_outputs_if_transient`, `_mark_startup_failure` — au lieu d'une fonction unique de plus de 400 lignes. L'état d'une tentative (SHA de référence, métriques) vit dans `_RunState`, lu par le chemin d'échec même si le crew a planté en route. Le SHA de la branche de travail est capturé pour tout run avec repository cible (`ANALYSE_ONLY` compris : les consignes données aux agents en dépendent). La persistance du succès est hors du `try` du crew : une erreur de validation après coup est retentée une fois sur une Session neuve, puis journalisée — elle ne déclare jamais en échec une exécution déjà livrée (la ligne resterait « running » jusqu'au balayage des orphelines).
+
+### 6.2 Variables d'environnement
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `GEMINI_API_KEY` | — | Clé du modèle |
+| `GEMINI_MODEL` | `gemini/gemini-3.5-flash-lite` | Modèle utilisé |
+| `GITHUB_TOKEN` | — | Accès GitHub (contenu + pull requests) |
+| `DATABASE_URL` | SQLite local | Base Postgres (Supabase) |
+| `SQL_ECHO` | `false` | Trace des requêtes SQL |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` / `DB_POOL_TIMEOUT` | 10 / 10 / 30 | Réserve de connexions (hors SQLite) |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | — | Validation du token côté backend |
+| `LOCAL_WORKSPACE_DIR` | — | Espace de travail local sans repository cible |
+| `LOG_LEVEL` | `INFO` | Niveau de journalisation |
+| `ARCHITECT_MAX_OUTPUT_TOKENS` | 8192 | Plafond de sortie de l'Architecte |
+| `AUTO_RETRY_DELAY_S` | 90 | Attente avant la seconde tentative automatique |
+| `COST_CURRENCY` / `TOKEN_PRICE_INPUT_PER_MILLION` / `TOKEN_PRICE_OUTPUT_PER_MILLION` | `$` / 0 / 0 | Coût estimé du tableau de bord |
+| `VITE_API_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | — | Frontend |
+
+---
 
 ---
 
 ## 7. Questions Ouvertes
 
 - [ ] Faut-il stocker l'URL de la Pull Request générée dans une colonne dédiée de `executionhistory`, plutôt que seulement dans le texte du résultat ?
+- [ ] Autorisation par repository : le `GITHUB_TOKEN` est partagé, tout utilisateur authentifié peut cibler n'importe quel dépôt accessible au jeton. Mécanisme à choisir (liste blanche serveur, table par utilisateur, ou les deux) et comportement par défaut (tout refuser / autoriser avec avertissement).
 - [ ] Le CORS `allow_origins=["*"]` doit-il être restreint au domaine Vercel de production ?
 - [ ] Les fichiers `docs/*.md` écrits sur le disque local de Render ont-ils encore une utilité maintenant que l'écriture se fait directement sur GitHub ?
 - [ ] Faut-il ajouter une vraie compilation (`tsc`, build) dans un bac à sable pour la QA, au lieu des vérifications statiques ?
@@ -331,4 +367,6 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - [x] Schémas des tables `conversation` et `executionhistory`
 - [x] Écrans et navigation listés
 - [x] Mesure de performance par agent et tableau de bord documentés
+- [x] Variables d'environnement consolidées (§6.2)
+- [x] Variantes PETIT/GRAND, écritures confinées et observabilité documentées
 - [x] Questions ouvertes identifiées
