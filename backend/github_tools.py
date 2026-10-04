@@ -128,6 +128,12 @@ def _log_refused_write(branch: object) -> None:
         f"(branche autorisée : {_write_scope.get() or WORK_BRANCH_PREFIX + '…'!r}).")
 
 
+def _log_refused_path(path: object) -> None:
+    """Trace d'une écriture refusée sur un fichier sensible (chemin seulement, jamais de contenu ; repr() contre les
+    retours à la ligne)."""
+    log.warning(f"écriture GitHub refusée sur le fichier sensible {path!r}.")
+
+
 def _reject_protected_branch(branch: str) -> str | None:
     """None si l'écriture sur `branch` peut continuer, sinon le message d'erreur à renvoyer tel quel (aucun appel réseau)."""
     if branch in ("main", "master"):
@@ -147,6 +153,40 @@ def _reject_protected_branch(branch: str) -> str | None:
             f"de travail '{scope}'."
         )
     return None
+
+
+# Fichiers qu'un agent ne doit JAMAIS écrire : un workflow de CI, un fichier d'environnement ou un descripteur de
+# déploiement committé sur la branche de travail peut s'exécuter avec les secrets du dépôt dès le push, avant toute
+# relecture de la Pull Request (consigne glissée dans le dépôt cible comprise). Comparaison insensible à la casse, sur le
+# chemin normalisé (« ./ », « / » initial, « \\ »).
+SENSITIVE_DIRECTORIES = frozenset({".github", ".git", ".circleci", ".husky", ".gitlab"})
+SENSITIVE_FILENAMES = frozenset({
+    ".gitlab-ci.yml", ".travis.yml", "jenkinsfile", "azure-pipelines.yml", "bitbucket-pipelines.yml",
+    "cloudbuild.yaml", "cloudbuild.yml", "dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "vercel.json", "render.yaml", "render.yml", "netlify.toml", "fly.toml", "procfile", ".npmrc",
+})
+
+
+def _reject_sensitive_path(path: str) -> str | None:
+    """None si `path` peut être écrit, sinon le message d'erreur à renvoyer tel quel (aucun appel réseau)."""
+    parts = [part for part in str(path).replace("\\", "/").split("/") if part not in ("", ".")]
+    lowered = [part.lower() for part in parts]
+    sensitive = (
+        not parts
+        or ".." in parts
+        or any(part in SENSITIVE_DIRECTORIES for part in lowered[:-1])
+        or lowered[-1] in SENSITIVE_DIRECTORIES
+        or lowered[-1] in SENSITIVE_FILENAMES
+        or lowered[-1].startswith(".env")
+    )
+    if not sensitive:
+        return None
+    _log_refused_path(path)
+    return (
+        f"ERREUR : écriture refusée sur '{path}' : les fichiers de CI, d'environnement et de déploiement "
+        "(.github/, .env*, Dockerfile, vercel.json…) ne sont jamais modifiés par un agent. Ne retente pas : "
+        "signale ce fichier comme non livré dans ton rapport final, avec cette raison."
+    )
 
 
 def _reject_invalid_syntax(path: str, content: str) -> str | None:
@@ -483,7 +523,7 @@ def github_write_file(owner: str, repo: str, path: str, content: str, branch: st
         branch (str): branche de travail cible (jamais main/master).
         commit_message (str): message de commit.
     """
-    rejection = _reject_protected_branch(branch)
+    rejection = _reject_protected_branch(branch) or _reject_sensitive_path(path)
     if rejection:
         return rejection
     syntax_issue = _reject_invalid_syntax(path, content)
@@ -597,7 +637,7 @@ def write_files_to_branch(
     # seul fichier à risque.
     valid_files, rejected = [], []
     for f in files:
-        issue = _reject_invalid_syntax(f["path"], f["content"])
+        issue = _reject_sensitive_path(f["path"]) or _reject_invalid_syntax(f["path"], f["content"])
         (rejected.append((f["path"], issue)) if issue else valid_files.append(f))
     if rejected_sink is not None:
         rejected_sink.update(dict(rejected))
@@ -605,8 +645,8 @@ def write_files_to_branch(
     if not valid_files:
         lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)
         return (
-            f"ERREUR : les {len(rejected)} fichier(s) de ce lot ont TOUS échoué la vérification "
-            f"syntaxique avant commit, rien n'a été écrit sur GitHub :\n{lines}\n"
+            f"ERREUR : les {len(rejected)} fichier(s) de ce lot ont TOUS été refusés par les contrôles "
+            f"avant commit (chemin sensible ou syntaxe), rien n'a été écrit sur GitHub :\n{lines}\n"
             "Ne retente pas cet appel avec le même contenu (tu n'as aucun moyen de le corriger) : "
             "signale ces fichiers comme non livrés dans ton rapport final, avec leur raison."
         )
@@ -713,7 +753,7 @@ def github_edit_file(
         new_string (str): texte de remplacement.
         commit_message (str): message de commit.
     """
-    rejection = _reject_protected_branch(branch)
+    rejection = _reject_protected_branch(branch) or _reject_sensitive_path(path)
     if rejection:
         return rejection
     try:

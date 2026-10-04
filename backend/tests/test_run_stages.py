@@ -472,6 +472,14 @@ def _plan_result(plan="## Cible\nUn panier", extra=""):
 
 def _history(engine, conversation_id, result, status="success", workflow="FEATURE", scope=None, owner="o", repo="r"):
     with Session(engine) as db:
+        if status == "running":
+            # Une seule exécution « running » par conversation (index unique partiel) : celle créée par
+            # _new_execution laisse la place au tour courant simulé ici.
+            for earlier in db.exec(select(ExecutionHistory).where(
+                ExecutionHistory.conversation_id == conversation_id, ExecutionHistory.status == "running",
+            )).all():
+                earlier.status = "success"
+            db.commit()
         entry = ExecutionHistory(
             user_request="x", workflow=workflow, status=status, user_id="u1", conversation_id=conversation_id,
             repo_owner=owner, repo_name=repo, result=result, scope=scope,

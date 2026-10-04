@@ -32,6 +32,7 @@ describe('failureHint', () => {
   it('renvoie un conseil par cause connue et renvoie au bouton « Relancer »', () => {
     expect(failureHint('QUOTA_EXHAUSTED')).toContain('Relancer');
     expect(failureHint('INTERRUPTED')).toContain('Relancer');
+    expect(failureHint('RATE_LIMITED')).toContain('Limite atteinte');
     expect(failureHint('GUARDRAIL_FAILED')).toContain('reformulez');
     // Un échec de livraison a son propre guide « Que faire ? » (FailureBlock), pas ce conseil générique.
     expect(failureHint('DELIVERY_FAILED')).toBeNull();

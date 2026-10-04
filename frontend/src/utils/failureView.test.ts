@@ -81,3 +81,10 @@ describe('splitPartialWork', () => {
     expect(splitGithubWork(main)).toEqual({ main: 'boum', githubLines: ["Rien n'a été poussé"] });
   });
 });
+
+describe('RATE_LIMITED', () => {
+  it('est une panne passagère avec sa propre cause', () => {
+    expect(isTransientFailure(null, 'RATE_LIMITED')).toBe(true);
+    expect(failureCause('RATE_LIMITED').title).toBe('Trop de demandes');
+  });
+});

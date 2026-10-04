@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 # Récupération de l'URL depuis les variables d'environnement
@@ -55,7 +55,22 @@ class Conversation(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 # Table pour sauvegarder les demandes et rapports CrewAI (un "message" du fil)
+# Une seule exécution « running » par conversation, garanti par la base : le contrôle applicatif (lire les exécutions en
+# cours puis insérer) n'est pas atomique, deux requêtes simultanées (double clic, deux onglets) le passeraient toutes
+# les deux. Index unique PARTIEL (Postgres et SQLite) ; le même est créé sur une base existante par la migration
+# ci-dessous (create_all ne crée pas les index d'une table déjà présente).
+ONE_RUNNING_PER_CONVERSATION_INDEX = "uq_executionhistory_one_running_per_conversation"
+ONE_RUNNING_PER_CONVERSATION_WHERE = "status = 'running'"
+
+
 class ExecutionHistory(SQLModel, table=True):
+    __table_args__ = (
+        Index(
+            ONE_RUNNING_PER_CONVERSATION_INDEX, "conversation_id", unique=True,
+            postgresql_where=text(ONE_RUNNING_PER_CONVERSATION_WHERE),
+            sqlite_where=text(ONE_RUNNING_PER_CONVERSATION_WHERE),
+        ),
+    )
     id: Optional[int] = Field(default=None, primary_key=True)
     user_request: str
     workflow: str
@@ -155,6 +170,10 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS attempts INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS reused_steps INTEGER",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS qa_verdict VARCHAR",
+    # Échoue (journalisé ci-dessous, sans conséquence) si une conversation a déjà plusieurs lignes « running » :
+    # le balayage des orphelines les libère, la migration repasse au prochain démarrage.
+    f"CREATE UNIQUE INDEX IF NOT EXISTS {ONE_RUNNING_PER_CONVERSATION_INDEX} "
+    f"ON executionhistory (conversation_id) WHERE {ONE_RUNNING_PER_CONVERSATION_WHERE}",
 ]
 
 def _run_lightweight_migrations():

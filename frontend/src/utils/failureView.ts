@@ -11,6 +11,7 @@ const CAUSES: Record<string, FailureCause> = {
   LLM_UNAVAILABLE: { icon: '🌩️', title: 'Modèle indisponible ou surchargé' },
   LLM_TIMEOUT: { icon: '⏱️', title: 'Délai du modèle dépassé' },
   GITHUB_UNAVAILABLE: { icon: '🔌', title: 'GitHub injoignable' },
+  RATE_LIMITED: { icon: '🚦', title: 'Trop de demandes' },
   GUARDRAIL_FAILED: { icon: '🛡️', title: 'Contrôle de qualité non respecté' },
   DELIVERY_FAILED: { icon: '📦', title: 'Livraison GitHub non confirmée' },
   INTERRUPTED: { icon: '🔌', title: 'Exécution interrompue' },
@@ -23,7 +24,7 @@ export function failureCause(code: string | null | undefined): FailureCause {
   return (code && CAUSES[code]) || UNKNOWN_CAUSE;
 }
 
-const TRANSIENT_CODES = new Set(['QUOTA_EXHAUSTED', 'LLM_UNAVAILABLE', 'LLM_TIMEOUT', 'GITHUB_UNAVAILABLE', 'INTERRUPTED']);
+const TRANSIENT_CODES = new Set(['QUOTA_EXHAUSTED', 'LLM_UNAVAILABLE', 'LLM_TIMEOUT', 'GITHUB_UNAVAILABLE', 'RATE_LIMITED', 'INTERRUPTED']);
 
 // « Panne temporaire » = un nouvel essai tel quel a une chance de réussir ; tout le reste est un vrai échec
 // (rouge). `retryable` (dit par le serveur) fait foi ; à défaut (ligne ancienne, valeur absente), le code de

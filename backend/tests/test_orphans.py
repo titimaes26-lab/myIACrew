@@ -1,3 +1,4 @@
+import itertools
 import asyncio
 import os
 import sys
@@ -26,7 +27,13 @@ def session():
         yield db
 
 
-def _running(db, age=OLD, user="u1", conversation_id=1, result=None):
+_conversation_ids = itertools.count(100)
+
+
+def _running(db, age=OLD, user="u1", conversation_id=None, result=None):
+    # Une seule exécution « running » par conversation (index unique partiel) : un identifiant distinct par défaut.
+    if conversation_id is None:
+        conversation_id = next(_conversation_ids)
     stamp = datetime.now(timezone.utc) - age
     entry = ExecutionHistory(
         user_request="r", workflow="BUGFIX", status="running", user_id=user, conversation_id=conversation_id,

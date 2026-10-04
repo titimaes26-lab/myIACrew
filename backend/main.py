@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from contextlib import nullcontext
 from typing import Any, List, Literal, NamedTuple, Optional
 from sqlalchemy import case, update as sql_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import defer
 from sqlmodel import SQLModel, Session, col, func, select
 
@@ -34,6 +35,7 @@ import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from logs import get_logger
 from qa_report import final_verdict
+from limits import check_qualify_rate, check_user_execution_quota
 from summary import partial_work_block
 from errors import (
     AppError, DeliveryError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
@@ -1402,6 +1404,7 @@ async def qualify_request(data: UserRequestInput, user: dict = Depends(get_curre
     """Étape 1 : Qualification du besoin"""
     # Tours précédents de la conversation : sans eux, un message de suivi ("corrige ça",
     # "ajoute aussi Y") est qualifié hors contexte, souvent en DESIGN_AND_DEV par défaut.
+    check_qualify_rate(user.get("id"))
     conversation_context = ""
     if data.conversation_id is not None:
         loaded = await asyncio.to_thread(_load_qualification_context, data.conversation_id, user.get("id"))
@@ -1420,6 +1423,11 @@ async def qualify_request(data: UserRequestInput, user: dict = Depends(get_curre
             http_status_for(info.code), info.code,
             info.message or "La qualification de la demande a échoué.", info.retryable,
         )
+
+_CONVERSATION_BUSY_MESSAGE = (
+    "Une exécution est déjà en cours pour cette conversation. Attends qu'elle se termine avant d'envoyer un nouveau message."
+)
+
 
 @app.post("/api/execute")
 async def execute_workflow(
@@ -1500,10 +1508,11 @@ async def execute_workflow(
             session.expire_all()
             running_ids, conversation_context = _prior_turns(session, conversation.id)
     if running_ids:
-        raise HTTPException(
-            status_code=409,
-            detail="Une exécution est déjà en cours pour cette conversation. Attends qu'elle se termine avant d'envoyer un nouveau message.",
-        )
+        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
+
+    # Plafonds par utilisateur (exécutions simultanées, exécutions par heure) : un compte ne sature pas les autres.
+    # Quelques lectures légères en base (balayage compris), comme les autres accès à `session` de ce point d'accès.
+    check_user_execution_quota(session, user.get("id"), _active_execution_ids)
 
     # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
     resume_outputs = _resumable_outputs(session, data, user.get("id"), conversation.id)
@@ -1546,7 +1555,13 @@ async def execute_workflow(
         reused_steps=len(resume_outputs),
     )
     session.add(db_entry)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # Index unique partiel (database.ONE_RUNNING_PER_CONVERSATION_INDEX) : une requête simultanée a pris la place
+        # entre le contrôle ci-dessus et cet insert. Même réponse que le contrôle applicatif.
+        session.rollback()
+        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
     session.refresh(db_entry)
 
     # Compromis de mémoïsation CrewAI (cache module-level sans éviction native, purgé activement

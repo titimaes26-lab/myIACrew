@@ -298,3 +298,46 @@ def test_a_refused_write_is_logged_without_file_content(counting, caplog):
     assert "'test'" in out and "'crewai/b'" in out and "'crewai/a'" in out
     assert "CONTENU-SECRET" not in out and "src/secret.ts" not in out
     assert "\nFAUSSE LIGNE" not in out   # le nom piégé est échappé par repr()
+
+
+# --- Fichiers sensibles (CI, environnement, déploiement) : jamais écrits par un agent ------------------------------
+
+SENSITIVE = [
+    ".github/workflows/ci.yml", "./.github/workflows/deploy.yml", "/.github/CODEOWNERS", ".GITHUB/workflows/x.yml",
+    "sub/.github/workflows/x.yml", ".git/hooks/pre-commit", ".circleci/config.yml", ".husky/pre-push",
+    ".env", ".env.production", "app/.env.local", "Dockerfile", "docker/Dockerfile", "docker-compose.yml",
+    "vercel.json", "render.yaml", "netlify.toml", ".gitlab-ci.yml", "Jenkinsfile", ".npmrc", "src\\..\\x.ts", "a/../b.ts", "",
+]
+ALLOWED = ["src/a.ts", "src/github/api.ts", "docs/.github-notes.md", "environment.ts", "src/env.ts", "README.md", "package.json"]
+
+
+@pytest.mark.parametrize("path", SENSITIVE)
+def test_sensitive_files_are_refused_without_any_network_call(counting, path):
+    refused = gt._reject_sensitive_path(path)
+    assert refused and refused.startswith("ERREUR") and "non livré" in refused
+    assert gt.github_write_file.func("o", "r", path, "x", "crewai/a", "msg").startswith("ERREUR")
+    assert gt.github_edit_file.func("o", "r", path, "crewai/a", "a", "b", "msg").startswith("ERREUR")
+    batch = gt.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": path, "content": "x"}])
+    assert batch.startswith("ERREUR") and "refusés" in batch
+    assert counting.created == []
+
+
+@pytest.mark.parametrize("path", ALLOWED)
+def test_ordinary_files_are_not_mistaken_for_sensitive_ones(path):
+    assert gt._reject_sensitive_path(path) is None
+
+
+def test_the_commit_helper_reports_sensitive_files_in_the_rejection_sink(counting):
+    sink = {}
+    gt.write_files_to_branch(
+        "o", "r", "crewai/a", "msg",
+        [{"path": ".github/workflows/ci.yml", "content": "on: push"}, {"path": "src/a.ts", "content": "export const a = 1;"}],
+        rejected_sink=sink,
+    )
+    assert list(sink) == [".github/workflows/ci.yml"] and "fichiers de CI" in sink[".github/workflows/ci.yml"]
+
+
+def test_a_refused_sensitive_write_is_logged_without_content(counting, caplog):
+    caplog.set_level("INFO", logger="myiacrew")
+    gt.github_write_file.func("o", "r", ".env", "CLE-SECRETE", "crewai/a", "msg")
+    assert "fichier sensible '.env'" in caplog.text and "CLE-SECRETE" not in caplog.text
