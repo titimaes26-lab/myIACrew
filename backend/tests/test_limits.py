@@ -9,9 +9,11 @@ from sqlalchemy.exc import IntegrityError  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
-from database import ExecutionHistory  # noqa: E402
+from database import ExecutionHistory, ExecutionLaunch  # noqa: E402
 from errors import AppError, ErrorCode  # noqa: E402
-from limits import SlidingWindowLimiter, check_qualify_rate, check_user_execution_quota  # noqa: E402
+from limits import (  # noqa: E402
+    MAX_RUNNING_PER_USER, SlidingWindowLimiter, check_qualify_rate, check_user_execution_quota, record_execution_launch,
+)
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -57,19 +59,51 @@ def test_stale_running_row_is_swept_instead_of_counted(session):
     assert session.exec(select(ExecutionHistory)).first().status == "failed"
 
 
-def test_hourly_limit_counts_recent_executions_only(session):
+def _launch(db, user="u1", minutes_ago=0.0):
+    db.add(ExecutionLaunch(user_id=user, created_at=NOW - timedelta(minutes=minutes_ago)))
+    db.commit()
+
+
+def test_hourly_limit_counts_recent_launches_only(session):
     for minutes in (5, 10, 15):
-        _row(session, status="success", created=NOW - timedelta(minutes=minutes))
+        _launch(session, minutes_ago=minutes)
+    _launch(session, user="u2", minutes_ago=1)
     with pytest.raises(AppError) as err:
         check_user_execution_quota(session, "u1", now=NOW, max_running=5, max_per_hour=3)
     assert "3 exécutions par heure" in err.value.message
     check_user_execution_quota(session, "u1", now=NOW, max_running=5, max_per_hour=4)
+    check_user_execution_quota(session, "u3", now=NOW, max_running=5, max_per_hour=1)
 
 
-def test_hourly_limit_ignores_old_executions(session):
+def test_hourly_limit_ignores_old_launches(session):
     for hours in (2, 3, 4):
-        _row(session, status="success", created=NOW - timedelta(hours=hours))
+        _launch(session, minutes_ago=hours * 60)
     check_user_execution_quota(session, "u1", now=NOW, max_running=5, max_per_hour=3)
+
+
+def test_deleting_history_does_not_reset_the_hourly_limit(session):
+    for index in range(3):
+        _row(session, status="success", conversation_id=index + 1, created=NOW - timedelta(minutes=index + 1))
+        _launch(session, minutes_ago=index + 1)
+    for entry in session.exec(select(ExecutionHistory)).all():
+        session.delete(entry)
+    session.commit()
+    with pytest.raises(AppError):
+        check_user_execution_quota(session, "u1", now=NOW, max_running=5, max_per_hour=3)
+
+
+def test_record_launch_adds_a_line_and_purges_old_ones(session):
+    _launch(session, minutes_ago=3 * 60)
+    _launch(session, minutes_ago=30)
+    record_execution_launch(session, "u1", now=NOW)
+    ages = sorted((NOW - row.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60 for row in session.exec(select(ExecutionLaunch)).all())
+    assert ages == [0, 30]
+    record_execution_launch(session, None, now=NOW)
+    assert len(session.exec(select(ExecutionLaunch)).all()) == 2
+
+
+def test_one_concurrent_execution_per_user_by_default():
+    assert MAX_RUNNING_PER_USER == 1
 
 
 def test_no_user_no_check(session):

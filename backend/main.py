@@ -35,7 +35,7 @@ import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from logs import get_logger
 from qa_report import final_verdict
-from limits import check_qualify_rate, check_user_execution_quota
+from limits import check_qualify_rate, check_user_execution_quota, record_execution_launch
 from summary import partial_work_block
 from errors import (
     AppError, DeliveryError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
@@ -1478,6 +1478,11 @@ async def execute_workflow(
             )
             raise AppError(status_code, code, problem.message, retryable)
 
+    # Plafonds par utilisateur (exécutions simultanées, exécutions par heure) : un compte ne sature pas les autres.
+    # AVANT toute écriture : un refus ne laisse pas de conversation vide. Quelques lectures légères en base (balayage
+    # compris), comme les autres accès à `session` de ce point d'accès.
+    check_user_execution_quota(session, user.get("id"), _active_execution_ids)
+
     if conversation is None:
         conversation = Conversation(
             user_id=user.get("id"),
@@ -1509,10 +1514,6 @@ async def execute_workflow(
             running_ids, conversation_context = _prior_turns(session, conversation.id)
     if running_ids:
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
-
-    # Plafonds par utilisateur (exécutions simultanées, exécutions par heure) : un compte ne sature pas les autres.
-    # Quelques lectures légères en base (balayage compris), comme les autres accès à `session` de ce point d'accès.
-    check_user_execution_quota(session, user.get("id"), _active_execution_ids)
 
     # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
     resume_outputs = _resumable_outputs(session, data, user.get("id"), conversation.id)
@@ -1563,6 +1564,7 @@ async def execute_workflow(
         session.rollback()
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
     session.refresh(db_entry)
+    record_execution_launch(session, user.get("id"))
 
     # Compromis de mémoïsation CrewAI (cache module-level sans éviction native, purgé activement
     # par run_dynamic_crew) : voir la docstring de _execute_crew_and_persist, qui construit

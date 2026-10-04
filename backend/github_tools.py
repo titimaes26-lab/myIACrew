@@ -164,7 +164,20 @@ SENSITIVE_FILENAMES = frozenset({
     ".gitlab-ci.yml", ".travis.yml", "jenkinsfile", "azure-pipelines.yml", "bitbucket-pipelines.yml",
     "cloudbuild.yaml", "cloudbuild.yml", "dockerfile", "docker-compose.yml", "docker-compose.yaml",
     "vercel.json", "render.yaml", "render.yml", "netlify.toml", "fly.toml", "procfile", ".npmrc",
+    ".pre-commit-config.yaml", ".gitmodules", ".gitattributes",
 })
+# Modèles d'environnement sans secret : seuls fichiers « .env* » qu'un agent peut écrire.
+SENSITIVE_ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
+
+
+def _is_sensitive_filename(name: str) -> bool:
+    """`name` en minuscules. Nom entier comparé (jamais une simple sous-chaîne : `docker-utils.ts`,
+    `Dockerfile-notes.md` ne sont pas des fichiers de déploiement)."""
+    if name in SENSITIVE_FILENAMES or name in SENSITIVE_DIRECTORIES:
+        return True
+    if name.startswith(".env"):
+        return name not in SENSITIVE_ENV_TEMPLATES
+    return name.startswith(("dockerfile.", "docker-compose.")) or name.endswith(".dockerfile")
 
 
 def _reject_sensitive_path(path: str) -> str | None:
@@ -175,9 +188,7 @@ def _reject_sensitive_path(path: str) -> str | None:
         not parts
         or ".." in parts
         or any(part in SENSITIVE_DIRECTORIES for part in lowered[:-1])
-        or lowered[-1] in SENSITIVE_DIRECTORIES
-        or lowered[-1] in SENSITIVE_FILENAMES
-        or lowered[-1].startswith(".env")
+        or _is_sensitive_filename(lowered[-1])
     )
     if not sensitive:
         return None

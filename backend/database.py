@@ -133,6 +133,14 @@ class AgentRun(SQLModel, table=True):
     tool_errors: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+# Journal des lancements d'exécution, pour le plafond horaire par utilisateur (voir limits.py). Table à part : un
+# utilisateur peut supprimer son historique, ce qui ne doit pas réinitialiser son quota. Purgé au fil de l'eau (2 h).
+# Table NEUVE : create_all la crée sur une base existante.
+class ExecutionLaunch(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+
 # Sortie d'une étape TERMINÉE (design, architecture, diagnostic) d'une exécution : permet de reprendre
 # une exécution en échec à l'étape qui a échoué, sans repayer les étapes déjà réussies (voir
 # crewquestion.resumable_prefix). Table NEUVE : create_all la crée sur une base existante.

@@ -12,14 +12,16 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Collection, Optional
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, delete, select
 
-from database import ExecutionHistory, _env_int
+from database import ExecutionHistory, ExecutionLaunch, _env_int
 from errors import AppError, ErrorCode
 from orphans import _aware, sweep_stale_executions
 
-MAX_RUNNING_PER_USER = _env_int("MAX_USER_RUNNING_EXECUTIONS", 2, 1)
+# 1 par défaut : le sémaphore global autorise 2 exécutions, un compte ne doit pas pouvoir toutes les occuper.
+MAX_RUNNING_PER_USER = _env_int("MAX_USER_RUNNING_EXECUTIONS", 1, 1)
 MAX_EXECUTIONS_PER_HOUR = _env_int("MAX_USER_EXECUTIONS_PER_HOUR", 30, 1)
+LAUNCH_LOG_RETENTION_HOURS = 2
 QUALIFY_PER_MINUTE = _env_int("MAX_USER_QUALIFY_PER_MINUTE", 20, 1)
 
 
@@ -49,16 +51,30 @@ def check_user_execution_quota(
             "Attendez la fin de l'une d'elles avant d'en lancer une autre."
         )
 
-    # Âge jugé en Python (voir orphans) : la max_per_hour-ième exécution la plus récente date de moins d'une heure
-    # <=> au moins max_per_hour exécutions sur la dernière heure.
+    # Journal des lancements (pas l'historique : supprimable). Âge jugé en Python (voir orphans) : le max_per_hour-ième
+    # lancement le plus récent date de moins d'une heure <=> au moins max_per_hour lancements sur la dernière heure.
     recent = session.exec(
-        select(ExecutionHistory.created_at).where(ExecutionHistory.user_id == user_id)
-        .order_by(col(ExecutionHistory.created_at).desc()).limit(max_per_hour)
+        select(ExecutionLaunch.created_at).where(ExecutionLaunch.user_id == user_id)
+        .order_by(col(ExecutionLaunch.created_at).desc()).limit(max_per_hour)
     ).all()
     if len(recent) >= max_per_hour and _aware(recent[-1]) >= now - timedelta(hours=1):
         raise _rate_limited(
             f"Limite atteinte : {max_per_hour} exécutions par heure. Réessayez dans quelques minutes."
         )
+
+
+def record_execution_launch(session: Session, user_id: Optional[str], now: Optional[datetime] = None) -> None:
+    """Note un lancement d'exécution (journal du plafond horaire) et purge ceux de plus de 2 h. Best-effort : un échec
+    d'écriture du journal ne doit jamais empêcher l'exécution déjà acceptée."""
+    if not user_id:
+        return
+    now = now or datetime.now(timezone.utc)
+    try:
+        session.add(ExecutionLaunch(user_id=user_id, created_at=now))
+        session.exec(delete(ExecutionLaunch).where(col(ExecutionLaunch.created_at) < now - timedelta(hours=LAUNCH_LOG_RETENTION_HOURS)))
+        session.commit()
+    except Exception:
+        session.rollback()
 
 
 class SlidingWindowLimiter:

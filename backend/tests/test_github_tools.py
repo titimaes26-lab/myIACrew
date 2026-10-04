@@ -307,8 +307,9 @@ SENSITIVE = [
     "sub/.github/workflows/x.yml", ".git/hooks/pre-commit", ".circleci/config.yml", ".husky/pre-push",
     ".env", ".env.production", "app/.env.local", "Dockerfile", "docker/Dockerfile", "docker-compose.yml",
     "vercel.json", "render.yaml", "netlify.toml", ".gitlab-ci.yml", "Jenkinsfile", ".npmrc", "src\\..\\x.ts", "a/../b.ts", "",
+    "Dockerfile.dev", "app.Dockerfile", "docker-compose.override.yml", ".pre-commit-config.yaml", ".gitmodules", ".gitattributes",
 ]
-ALLOWED = ["src/a.ts", "src/github/api.ts", "docs/.github-notes.md", "environment.ts", "src/env.ts", "README.md", "package.json"]
+ALLOWED = [".env.example", ".env.sample", "app/.env.template", "src/docker-utils.ts", "docs/Dockerfile-notes.md", "src/a.ts", "src/github/api.ts", "docs/.github-notes.md", "environment.ts", "src/env.ts", "README.md", "package.json"]
 
 
 @pytest.mark.parametrize("path", SENSITIVE)

@@ -14,7 +14,7 @@ import github_tools  # noqa: E402
 import main  # noqa: E402
 import validation  # noqa: E402
 from auth import get_current_user  # noqa: E402
-from database import Conversation, ExecutionHistory  # noqa: E402
+from database import Conversation, ExecutionHistory, ExecutionLaunch  # noqa: E402
 from errors import AppError  # noqa: E402
 from github_tools import GitHubAccessProblem, check_github_access  # noqa: E402
 
@@ -180,6 +180,7 @@ def test_execute_refuses_before_creating_anything(engine, monkeypatch):
 def test_execute_skips_the_check_for_analysis_and_without_repo(engine, monkeypatch):
     calls = []
     monkeypatch.setattr(main, "check_github_access", lambda *a: calls.append(a))
+    monkeypatch.setattr("limits.MAX_RUNNING_PER_USER", 5)  # la première exécution simulée reste « running »
 
     async def fake_run(*args, **kwargs):
         return None
@@ -194,6 +195,32 @@ def test_execute_skips_the_check_for_analysis_and_without_repo(engine, monkeypat
             await asyncio.sleep(0)
         assert asyncio.run(scenario())["status"] == "running"
     assert calls == []
+
+
+def test_rate_limited_launch_creates_no_conversation_and_accepted_launch_is_journaled(engine, monkeypatch):
+    monkeypatch.setattr("limits.MAX_RUNNING_PER_USER", 1)
+
+    async def fake_run(*args, **kwargs):
+        return None
+    monkeypatch.setattr(main, "_execute_crew_and_persist", fake_run)
+    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
+
+    def launch():
+        async def scenario():
+            with Session(engine) as db:
+                return await main.execute_workflow(data=data, session=db, user={"id": "u1"})
+        return asyncio.run(scenario())
+
+    assert launch()["status"] == "running"          # la première exécution reste « running »
+    with Session(engine) as db:
+        conversations = len(db.exec(select(Conversation)).all())
+        assert len(db.exec(select(ExecutionLaunch)).all()) == 1
+    with pytest.raises(AppError) as err:
+        launch()                                   # nouvelle conversation demandée : refus AVANT toute écriture
+    assert err.value.status_code == 429
+    with Session(engine) as db:
+        assert len(db.exec(select(Conversation)).all()) == conversations
+        assert len(db.exec(select(ExecutionLaunch)).all()) == 1
 
 
 def test_workflows_follow_the_qualification_literal():
