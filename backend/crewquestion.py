@@ -35,6 +35,7 @@ from crewai.tasks.task_output import TaskOutput
 from crewai.tools import tool
 from logs import get_logger
 from summary import delivery_facts, fallback_summary
+import llm_limiter
 from tools import check_syntax
 
 log = get_logger("crew")
@@ -144,6 +145,19 @@ class QuotaManager:
         self.last_execution_time = time.time()
 
 quota_mgr = QuotaManager()
+
+
+def _record_limiter_wait(wait_seconds: float) -> None:
+    """Attente imposée par le limiteur global Gemini : comptée dans les mesures de l'exécution quand le contexte la voit."""
+    metrics = _current_metrics.get()
+    if metrics is not None:
+        metrics.record_wait(wait_seconds)
+
+
+# Sous TOUS les appels au modèle (agents, planificateur/observateur de CrewAI, qualification, résumé) : plafond commun
+# de requêtes par minute et pause commune après un 429 (voir llm_limiter.py). Le max_rpm d'un crew, lui, ne couvre ni
+# les autres exécutions en parallèle ni les appels internes de CrewAI.
+llm_limiter.install(on_wait=_record_limiter_wait)
 
 # Étapes de chaque workflow, dans l'ordre (clés alignées sur WORKFLOW_STEPS côté frontend) : source
 # unique, utilisée par run_dynamic_crew ET par main.py (reprise d'une exécution en échec).
