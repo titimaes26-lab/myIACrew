@@ -100,7 +100,7 @@ def _backfill_qa_verdicts() -> None:
                 ).all()
                 if not rows:
                     break
-                last_id = rows[-1][0]
+                last_id = rows[-1][0] or last_id
                 for execution_id, result in rows:
                     verdict = final_verdict(result or "")
                     if verdict:
