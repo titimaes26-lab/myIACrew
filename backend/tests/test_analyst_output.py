@@ -3,17 +3,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from analyst_output import (  # noqa: E402
-    FILE_ABSENT,
-    PRESENT_UNREADABLE,
-    apply_edits,
-    build_delivery_report,
-    find_import_problems,
-    find_placeholders,
-    parse_edit_sections,
-    parse_file_sections,
-    review_diagnostic_output,
-)
+from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, apply_edits, build_delivery_report, find_import_problems, find_placeholders, parse_edit_sections, review_diagnostic_output
+from analyst_blocks import parse_file_sections
 
 
 def parse_file_blocks(text):
@@ -130,7 +121,7 @@ def test_legitimate_comments_are_not_placeholders():
 def test_dotfiles_without_real_extension_are_scanned_as_hash_comments():
     # ".env", ".gitignore" etc. commencent par un point qui n'est PAS un séparateur d'extension :
     # ce sont des fichiers sans extension, et ils utilisent quasi toujours "#" comme commentaire.
-    from analyst_output import _extension
+    from analyst_blocks import _extension
 
     assert _extension(".env") == ""
     assert _extension(".eslintrc.json") == "json"
@@ -292,7 +283,7 @@ def test_tab_indented_marker_with_space_indented_content_is_dedented():
 
 
 def test_withdrawal_mentions_inside_indented_file_bodies_are_ignored():
-    from analyst_output import FILE_BLOCKS
+    from analyst_blocks import FILE_BLOCKS
     text = "   <<<FICHIER: README.md>>>\n   - src/b.ts : NON réalisé (suivi)\n   <<<FIN_FICHIER>>>\n"
     assert "NON réalisé" not in FILE_BLOCKS.sub("", text)
 

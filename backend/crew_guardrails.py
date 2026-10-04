@@ -2,7 +2,8 @@
 import re
 from typing import List, Optional
 
-from analyst_output import FILE_BLOCKS, NOT_DELIVERED_MARKER, normalize_path
+from analyst_output import NOT_DELIVERED_MARKER
+from analyst_blocks import FILE_BLOCKS, normalize_path
 from qa_report import QA_VERDICT
 
 _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)

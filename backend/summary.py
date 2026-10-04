@@ -6,7 +6,8 @@ modèle ne peut donc pas les inventer, et ils restent présents quand sa génér
 import re
 from typing import Iterable, Optional
 
-from analyst_output import parse_edit_sections, parse_file_sections
+from analyst_output import parse_edit_sections
+from analyst_blocks import parse_file_sections
 from qa_report import final_verdict
 
 MAX_FALLBACK_LINE_CHARS = 220

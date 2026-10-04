@@ -3,7 +3,8 @@ import os
 import re
 from pathlib import Path
 
-from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, normalize_path
+from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
+from analyst_blocks import normalize_path
 from github_guards import _reject_invalid_syntax
 
 # Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
