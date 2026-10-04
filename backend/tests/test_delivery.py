@@ -8,6 +8,7 @@ import pytest  # noqa: E402
 import crewquestion as cq  # noqa: E402
 import crew_tools  # noqa: E402
 import github_tools as gt  # noqa: E402
+import github_client  # noqa: E402
 from delivery import (  # noqa: E402
     GENERATED_END,
     GENERATED_START,
@@ -112,7 +113,7 @@ class FakeRepo:
 
 def test_open_or_update_pull_request_creates_a_draft_with_a_marked_generated_zone(monkeypatch):
     repo = FakeRepo()
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: repo)
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, name: repo)
     url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: t", "corps", draft=True)
     title, body, head, base, draft = repo.created[0]
     assert url == FakePR.html_url and "(brouillon)" in message and draft is True
@@ -121,7 +122,7 @@ def test_open_or_update_pull_request_creates_a_draft_with_a_marked_generated_zon
 
 def test_draft_unsupported_repository_falls_back_to_a_normal_pull_request(monkeypatch):
     repo = FakeRepo(drafts_supported=False)
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: repo)
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, name: repo)
     url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: t", "corps", draft=True)
     assert url == FakePR.html_url and "brouillons non pris en charge" in message
     assert [c[4] for c in repo.created] == [False]
@@ -130,7 +131,7 @@ def test_draft_unsupported_repository_falls_back_to_a_normal_pull_request(monkey
 def test_existing_pull_request_keeps_its_title_and_human_text_and_only_the_generated_zone_changes(monkeypatch):
     existing = FakePR(body=f"Ma note de relecture\n\n{GENERATED_START}\nancien\n{GENERATED_END}\n\nMerci")
     repo = FakeRepo(existing=existing)
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: repo)
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, name: repo)
     url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "fix: autre titre", "nouveau")
     assert url == FakePR.html_url and "mise à jour" in message and repo.created == []
     assert existing.edits == [{"body": existing.body}] and "title" not in existing.edits[0]
@@ -141,7 +142,7 @@ def test_existing_pull_request_keeps_its_title_and_human_text_and_only_the_gener
 def test_other_422_errors_show_the_real_github_message(monkeypatch):
     from github import GithubException
     error = GithubException(422, {"message": "Validation Failed", "errors": [{"message": "No commits between main and crewai/x"}]}, {})
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, name: FakeRepo(error=error))
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, name: FakeRepo(error=error))
     url, message = gt.open_or_update_pull_request("o", "r", "crewai/x", "main", "t", "b")
     assert url is None and message.startswith("INFO : aucune Pull Request créée")
     assert "Validation Failed" in message and "No commits between main and crewai/x" in message

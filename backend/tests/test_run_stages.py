@@ -8,6 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest  # noqa: E402
+import github_client  # noqa: E402
 
 import routes_execute  # noqa: E402
 import schemas  # noqa: E402
@@ -407,14 +408,13 @@ def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, caplo
 
 
 def test_the_crew_runs_inside_the_read_cache_and_receives_the_snapshot(engine, monkeypatch):
-    import github_tools
     monkeypatch.setattr(execution_context, "build_repo_snapshot", lambda *a: "APERÇU")
     seen: list[dict] = []
     in_cache: list[bool] = []
 
     async def run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         seen.append(inputs)
-        in_cache.append(github_tools._read_cache.get() is not None)
+        in_cache.append(github_client._read_cache.get() is not None)
         return SimpleNamespace(raw="résultat")
 
     monkeypatch.setattr(execution, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
@@ -422,7 +422,7 @@ def test_the_crew_runs_inside_the_read_cache_and_receives_the_snapshot(engine, m
     execution_id, conversation_id = _new_execution(engine, "FEATURE")
     asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
     assert seen[0]["repo_snapshot"] == "APERÇU" and in_cache == [True]
-    assert github_tools._read_cache.get() is None   # le cache ne survit pas à l'exécution
+    assert github_client._read_cache.get() is None   # le cache ne survit pas à l'exécution
 
 
 # --- Petite FEATURE : architecture sautée -----------------------------------------------------------

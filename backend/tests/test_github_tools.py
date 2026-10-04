@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 gt = pytest.importorskip("github_tools")
+import github_client  # noqa: E402
 from github import GithubException  # noqa: E402
 
 
@@ -70,7 +71,7 @@ def test_decode_content_file_blob_fetch_error_is_not_reported_as_unreadable():
 
 def test_github_read_file_uses_blob_fallback_for_large_files(monkeypatch):
     repo = FakeRepo(blob_content="grand fichier\n".encode("utf-8"))
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, r: repo)
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, r: repo)
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
     result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
     assert result == "grand fichier\n"
@@ -78,7 +79,7 @@ def test_github_read_file_uses_blob_fallback_for_large_files(monkeypatch):
 
 def test_github_read_file_does_not_double_prefix_blob_fallback_errors(monkeypatch):
     repo = FakeRepo(blob_error=GithubException(403, {"message": "API rate limit exceeded"}, None))
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, r: repo)
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, r: repo)
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
     result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
     assert result.count("ERREUR") == 1 and "ERREUR : ERREUR" not in result
@@ -124,7 +125,7 @@ def counting(monkeypatch):
             return repo
 
     monkeypatch.setenv("GITHUB_TOKEN", "t")
-    monkeypatch.setattr(gt, "Github", FakeGithub)
+    monkeypatch.setattr(github_client, "Github", FakeGithub)
     repo.created = created
     return repo
 
@@ -136,7 +137,7 @@ def test_without_a_cache_every_read_goes_to_github(counting):
 
 
 def test_cache_serves_repeated_reads_and_builds_the_repo_once(counting):
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         first = gt.github_read_file.func("o", "r", "package.json", "main")
         second = gt.github_read_file.func("o", "r", "package.json", "main")
         gt.github_list_directory.func("o", "r", "", "main")
@@ -147,23 +148,23 @@ def test_cache_serves_repeated_reads_and_builds_the_repo_once(counting):
 
 
 def test_cache_never_keeps_errors_and_is_isolated_per_execution(counting):
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         assert gt.github_read_file.func("o", "r", "absent.ts", "main").startswith("ERREUR_FICHIER_INEXISTANT")
         gt.github_read_file.func("o", "r", "absent.ts", "main")
         assert counting.reads == 2      # l'erreur n'est pas mémorisée
         gt.github_read_file.func("o", "r", "package.json", "main")
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         gt.github_read_file.func("o", "r", "package.json", "main")
     assert counting.reads == 4          # un nouveau contexte repart d'un cache vide
 
 
 def test_a_write_invalidates_only_the_written_branch(counting):
     counting.files[("work", "package.json")] = b'{"name": "work"}'
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         gt.github_read_file.func("o", "r", "package.json", "main")
         gt.github_read_file.func("o", "r", "package.json", "work")
         reads = counting.reads
-        gt.invalidate_read_cache("o", "r", "work")
+        github_client.invalidate_read_cache("o", "r", "work")
         gt.github_read_file.func("o", "r", "package.json", "main")   # toujours en cache
         assert counting.reads == reads
         gt.github_read_file.func("o", "r", "package.json", "work")   # relu après l'écriture
@@ -171,10 +172,10 @@ def test_a_write_invalidates_only_the_written_branch(counting):
 
 
 def test_delivery_checks_never_read_from_or_fill_the_file_cache(counting):
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         gt.make_file_fetcher("o", "r", "main")("package.json")
         gt.make_dir_lister("o", "r", "main")
-        cache = gt._read_cache.get()
+        cache = github_client._read_cache.get()
         assert cache["files"] == {} and cache["dirs"] == {}
 
 
@@ -211,17 +212,17 @@ def test_repo_snapshot_of_an_empty_repository_says_so(counting):
 
 def test_read_cache_counts_hits_and_reads_and_logs_them(counting, caplog):
     caplog.set_level("INFO", logger="myiacrew")
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         gt.github_read_file.func("o", "r", "package.json", "main")
         gt.github_read_file.func("o", "r", "package.json", "main")
-        stats = dict(gt._read_cache.get()["stats"])
+        stats = dict(github_client._read_cache.get()["stats"])
     assert stats == {"hits": 1, "reads": 1}
     assert "[CACHE LECTURE] hits=1 lectures=1" in caplog.text
 
 
 def test_read_cache_logs_nothing_when_no_read_happened(caplog):
     caplog.set_level("INFO", logger="myiacrew")
-    with gt.track_read_cache():
+    with github_client.track_read_cache():
         pass
     assert "CACHE LECTURE" not in caplog.text
 
@@ -357,7 +358,7 @@ def test_a_stopped_execution_can_no_longer_write_or_open_a_pull_request(counting
         assert gt.github_write_file.func("o", "r", "src/a.ts", "x", "crewai/a", "msg").startswith("ERREUR")
         assert gt.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": "src/a.ts", "content": "x"}]).startswith("ERREUR")
         assert gt.github_create_branch.func("o", "r", "crewai/a", "main").startswith("ERREUR")
-        monkeypatch.setattr(gt, "_get_repo", lambda *a: (_ for _ in ()).throw(AssertionError("aucun appel réseau attendu")))
+        monkeypatch.setattr(github_client, "_get_repo", lambda *a: (_ for _ in ()).throw(AssertionError("aucun appel réseau attendu")))
         assert gt.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, gt.STOPPED_EXECUTION_MESSAGE)
     assert counting.created == []
     assert gt._reject_protected_branch("crewai/a") is None              # hors du contexte : plus de signal

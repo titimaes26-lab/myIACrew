@@ -9,7 +9,8 @@ from contextvars import ContextVar
 from typing import Callable, NamedTuple
 
 from crewai.tools import tool
-from github import Auth, Github, GithubException, InputGitTreeElement
+import github_client
+from github import GithubException, InputGitTreeElement
 
 from delivery import merge_pull_request_body
 from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
@@ -18,83 +19,6 @@ from logs import get_logger
 from tools import check_syntax_content
 
 log = get_logger("github")
-
-
-# Cache de LECTURE d'une exécution de crew (voir track_read_cache) : les agents (Designer, Architecte, Diagnostic)
-# relisent les mêmes fichiers (package.json, la racine, src), et chaque lecture coûtait deux appels API (get_repo
-# puis get_contents) avec un client recréé à chaque fois. ContextVar plutôt que global : il vit le temps d'UNE
-# exécution (pas de fuite entre utilisateurs, une relance repart de zéro), et hors de ce contexte le comportement
-# est inchangé. Les vérifications de livraison (make_file_fetcher, make_dir_lister) ne l'utilisent JAMAIS : elles
-# doivent voir l'état réel de GitHub.
-_read_cache: ContextVar[dict | None] = ContextVar("read_cache", default=None)
-_read_cache_lock = threading.Lock()
-
-
-@contextmanager
-def track_read_cache():
-    """Active le cache de lecture pour l'exécution de crew en cours (à entourer le prefetch ET le crew)."""
-    cache: dict = {"repos": {}, "files": {}, "dirs": {}, "stats": {"hits": 0, "reads": 0}}
-    token = _read_cache.set(cache)
-    try:
-        yield
-    finally:
-        _read_cache.reset(token)
-        stats = cache["stats"]
-        if stats["hits"] + stats["reads"]:
-            # Rend le gain du cache lisible dans les logs (et prouve qu'il est actif dans les threads d'outils).
-            log.info(f"[CACHE LECTURE] hits={stats['hits']} lectures={stats['reads']}")
-
-
-def invalidate_read_cache(owner: str, repo: str, branch: str) -> None:
-    """Oublie les lectures d'une branche après une écriture : les agents relisent alors l'état à jour."""
-    cache = _read_cache.get()
-    if cache is None:
-        return
-    with _read_cache_lock:
-        for name in ("files", "dirs"):
-            for key in [k for k in cache[name] if k[:3] == (owner, repo, branch)]:
-                del cache[name][key]
-
-
-def _cached_read(kind: str, key: tuple, read: Callable[[], str]) -> str:
-    """Résultat mémorisé de `read()` ; une ERREUR (texte « ERREUR… ») n'est jamais mémorisée : une branche ou un
-    fichier peut apparaître entre deux lectures."""
-    cache = _read_cache.get()
-    if cache is None:
-        return read()
-    with _read_cache_lock:
-        if key in cache[kind]:
-            cache["stats"]["hits"] += 1
-            return cache[kind][key]
-    value = read()
-    with _read_cache_lock:
-        cache["stats"]["reads"] += 1
-        if not value.startswith("ERREUR"):
-            cache[kind][key] = value
-    return value
-
-
-def _get_repo(owner: str, repo: str):
-    cache = _read_cache.get()
-    if cache is not None:
-        with _read_cache_lock:
-            cached = cache["repos"].get((owner, repo))
-        if cached is not None:
-            return cached
-    token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        raise RuntimeError("GITHUB_TOKEN manquant dans les variables d'environnement du backend.")
-    client = Github(auth=Auth.Token(token))
-    gh_repo = client.get_repo(f"{owner}/{repo}")
-    if cache is not None:
-        with _read_cache_lock:
-            cache["repos"][(owner, repo)] = gh_repo
-    return gh_repo
-
-
-def _github_error(e: GithubException) -> str:
-    message = e.data.get("message", str(e)) if isinstance(e.data, dict) else str(e)
-    return f"ERREUR_GITHUB : {message}"
 
 
 # Toutes les branches de travail créées par ce service (voir main.execute_workflow) commencent par ce préfixe : c'est
@@ -333,7 +257,7 @@ def _record_edit_failure(owner: str, repo: str, path: str, branch: str, reason: 
 
 def _record_edit_success(owner: str, repo: str, path: str, branch: str) -> None:
     # Appelée après CHAQUE écriture réussie (write_file, edit_file, lots) : le cache de lecture de la branche est périmé.
-    invalidate_read_cache(owner, repo, branch)
+    github_client.invalidate_read_cache(owner, repo, branch)
     counts = _edit_failure_counts.get()
     if counts is not None:
         with _edit_failure_lock:
@@ -353,7 +277,7 @@ def _decode_content_file(gh_repo, content_file, path: str) -> tuple[str | None, 
         try:
             raw = base64.b64decode(gh_repo.get_git_blob(content_file.sha).content)
         except GithubException as e:
-            return None, _github_error(e)
+            return None, github_client._github_error(e)
         except Exception as e:
             return None, f"ERREUR : {e}"
     try:
@@ -380,11 +304,11 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
         return fetch
 
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
     except GithubException as e:
         error = (
             f"ERREUR : le repository {owner}/{repo} est introuvable ou inaccessible avec ce jeton"
-            if e.status == 404 else _github_error(e)
+            if e.status == 404 else github_client._github_error(e)
         )
         return failing(error)
     except Exception as e:
@@ -396,7 +320,7 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
     except GithubException as e:
         if e.status == 404:
             return failing(f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}", branch_missing=True)
-        return failing(_github_error(e))
+        return failing(github_client._github_error(e))
     except Exception as e:
         return failing(f"ERREUR : {e}")
 
@@ -406,7 +330,7 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
         except GithubException as e:
             if e.status == 404:
                 return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur la branche '{branch}'"
-            return None, _github_error(e)
+            return None, github_client._github_error(e)
         except Exception as e:
             return None, f"ERREUR : {e}"
         if isinstance(content_file, list):
@@ -422,7 +346,7 @@ def make_dir_lister(owner: str, repo: str, branch: str) -> Callable[[str], set[s
     seulement « inconnu » (dépôt inaccessible, erreur réseau ou de quota). Un seul get_repo est
     fait pour toutes les listes."""
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
     except Exception:
         return lambda directory: None
 
@@ -454,12 +378,12 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
 
 
 def read_file_cached(owner: str, repo: str, path: str, branch: str) -> str:
-    return _cached_read("files", (owner, repo, branch, path), lambda: _read_file_uncached(owner, repo, path, branch))
+    return github_client._cached_read("files", (owner, repo, branch, path), lambda: _read_file_uncached(owner, repo, path, branch))
 
 
 def _read_file_uncached(owner: str, repo: str, path: str, branch: str) -> str:
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         content_file = gh_repo.get_contents(path, ref=branch)
         if isinstance(content_file, list):
             return f"ERREUR : '{path}' est un dossier, pas un fichier. Utilise github_list_directory."
@@ -477,7 +401,7 @@ def _read_file_uncached(owner: str, repo: str, path: str, branch: str) -> str:
                 f"ERREUR_FICHIER_INEXISTANT : '{path}' n'existe pas sur la branche '{branch}' de {owner}/{repo}. "
                 "Inutile de réessayer la lecture de ce fichier exact."
             )
-        return _github_error(e)
+        return github_client._github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
 
@@ -496,12 +420,12 @@ def github_list_directory(owner: str, repo: str, path: str = "", branch: str = "
 
 
 def list_directory_cached(owner: str, repo: str, path: str, branch: str) -> str:
-    return _cached_read("dirs", (owner, repo, branch, path or ""), lambda: _list_directory_uncached(owner, repo, path, branch))
+    return github_client._cached_read("dirs", (owner, repo, branch, path or ""), lambda: _list_directory_uncached(owner, repo, path, branch))
 
 
 def _list_directory_uncached(owner: str, repo: str, path: str, branch: str) -> str:
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         contents = gh_repo.get_contents(path or "", ref=branch)
         if not isinstance(contents, list):
             return f"'{path}' est un fichier, pas un dossier. Utilise github_read_file."
@@ -509,7 +433,7 @@ def _list_directory_uncached(owner: str, repo: str, path: str, branch: str) -> s
     except GithubException as e:
         if e.status == 404:
             return f"ERREUR_DOSSIER_INEXISTANT : '{path}' n'existe pas sur la branche '{branch}' de {owner}/{repo}."
-        return _github_error(e)
+        return github_client._github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
 
@@ -527,7 +451,7 @@ def github_create_branch(owner: str, repo: str, new_branch: str, base_branch: st
     if rejection:
         return rejection
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         try:
             gh_repo.get_branch(new_branch)
             return f"INFO : la branche '{new_branch}' existe déjà, elle peut être utilisée directement."
@@ -535,10 +459,10 @@ def github_create_branch(owner: str, repo: str, new_branch: str, base_branch: st
             pass
         base_ref = gh_repo.get_git_ref(f"heads/{base_branch}")
         gh_repo.create_git_ref(ref=f"refs/heads/{new_branch}", sha=base_ref.object.sha)
-        invalidate_read_cache(owner, repo, new_branch)
+        github_client.invalidate_read_cache(owner, repo, new_branch)
         return f"OK : branche '{new_branch}' créée à partir de '{base_branch}'."
     except GithubException as e:
-        return _github_error(e)
+        return github_client._github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
 
@@ -566,7 +490,7 @@ def github_write_file(owner: str, repo: str, path: str, content: str, branch: st
             "fichier comme non livré dans ton rapport final, avec cette raison."
         )
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         try:
             existing = gh_repo.get_contents(path, ref=branch)
         except GithubException as e:
@@ -588,7 +512,7 @@ def github_write_file(owner: str, repo: str, path: str, content: str, branch: st
         _record_edit_success(owner, repo, path, branch)
         return f"OK : fichier '{path}' mis à jour sur la branche '{branch}'."
     except GithubException as e:
-        return _github_error(e)
+        return github_client._github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
 
@@ -688,7 +612,7 @@ def write_files_to_branch(
     paths_seen = {f["path"] for f in files}
 
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         ref = gh_repo.get_git_ref(f"heads/{branch}")
         base_commit = gh_repo.get_git_commit(ref.object.sha)
 
@@ -752,7 +676,7 @@ def write_files_to_branch(
         # ni corrompu : ce commit n'a simplement jamais été appliqué. Retenter cet appel EN L'ÉTAT
         # repart de la référence à jour (get_git_ref est refait à chaque appel), donc un simple
         # nouvel essai suffit — pas besoin de reconstruire files_json.
-        message = _github_error(e)
+        message = github_client._github_error(e)
         if "fast" in message.lower() and "forward" in message.lower():
             return (
                 f"{message} La branche '{branch}' a été mise à jour par un autre appel entretemps : "
@@ -788,7 +712,7 @@ def github_edit_file(
     if rejection:
         return rejection
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         try:
             existing = gh_repo.get_contents(path, ref=branch)
         except GithubException as e:
@@ -827,7 +751,7 @@ def github_edit_file(
         # ci-dessus) : une erreur GitHub (rate limit, réseau, permissions...) n'a rien à voir
         # avec un old_string mal recopié, et github_write_file échouerait pour la même raison
         # d'infrastructure — pousser vers ce repli ferait perdre un appel d'outil pour rien.
-        return _github_error(e)
+        return github_client._github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
 
@@ -910,12 +834,12 @@ def get_branch_head_sha(owner: str, repo: str, branch: str) -> str | None:
     Pull Request d'un tour PRÉCÉDENT existent toujours.
     """
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         return gh_repo.get_branch(branch).commit.sha
     except GithubException as e:
         if e.status == 404:
             return None
-        raise GitHubVerificationUnavailable(_github_error(e)) from e
+        raise GitHubVerificationUnavailable(github_client._github_error(e)) from e
     except Exception as e:
         raise GitHubVerificationUnavailable(str(e)) from e
 
@@ -983,7 +907,7 @@ def verify_github_delivery(
     (détecter l'absence totale de branche/PR, le cas très majoritairement observé) reste couvert.
 
     """
-    # Réutilise get_branch_head_sha (plutôt que de refaire ici _get_repo + get_branch + gestion du
+    # Réutilise get_branch_head_sha (plutôt que de refaire ici github_client._get_repo + get_branch + gestion du
     # 404) pour ne pas avoir deux implémentations de la même logique de classification d'erreur
     # susceptibles de diverger silencieusement si l'une est retouchée sans l'autre.
     #
@@ -1028,7 +952,7 @@ def verify_github_delivery(
     def _find_matching_pr():
         """None si aucune PR ne correspond, sinon l'objet PullRequest trouvé (utilisé aussi bien
         pour la confirmation booléenne que pour son .html_url, voir DeliveredPullRequest)."""
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         pulls = gh_repo.get_pulls(state="all", head=f"{owner}:{branch}", base=base_branch)
         # merged_at (déjà présent dans la réponse de get_pulls) plutôt que p.merged : cette
         # dernière propriété PyGithub se complète paresseusement par un appel réseau SUPPLÉMENTAIRE
@@ -1147,7 +1071,7 @@ def open_or_update_pull_request(
         log.warning("ouverture de Pull Request refusée : l'exécution a été arrêtée (durée maximale dépassée).")
         return None, STOPPED_EXECUTION_MESSAGE
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         existing = next(iter(gh_repo.get_pulls(state="open", head=f"{owner}:{branch}", base=base_branch)), None)
         if existing is not None:
             existing.edit(body=merge_pull_request_body(getattr(existing, "body", None), body))
@@ -1165,7 +1089,7 @@ def open_or_update_pull_request(
     except GithubException as e:
         if e.status == 422:
             return None, f"INFO : aucune Pull Request créée : GitHub a refusé (422) : {_github_422_detail(e)}"
-        return None, _github_error(e)
+        return None, github_client._github_error(e)
     except Exception as e:
         return None, f"ERREUR : {str(e)}"
 
@@ -1203,7 +1127,7 @@ def describe_partial_delivery(
     pr_state = None
     pr_checked = True
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
         try:
             ahead_by = gh_repo.compare(base_branch, branch).ahead_by
         except Exception:
@@ -1237,7 +1161,7 @@ def check_github_access(owner: str, repo: str, base_branch: str) -> None:
         raise GitHubAccessProblem("missing_token", "GITHUB_TOKEN manque côté serveur : configurez-le puis relancez.")
     target = f"{owner}/{repo}"
     try:
-        gh_repo = _get_repo(owner, repo)
+        gh_repo = github_client._get_repo(owner, repo)
     except GithubException as e:
         if e.status == 404:
             raise GitHubAccessProblem(
@@ -1256,7 +1180,7 @@ def check_github_access(owner: str, repo: str, base_branch: str) -> None:
                 f"Accès refusé à {target} (droits insuffisants ou limite de débit GitHub atteinte) : "
                 "vérifiez les permissions du GITHUB_TOKEN ou réessayez plus tard.",
             ) from e
-        raise GitHubAccessProblem("unavailable", f"GitHub est momentanément injoignable ({_github_error(e)}).") from e
+        raise GitHubAccessProblem("unavailable", f"GitHub est momentanément injoignable ({github_client._github_error(e)}).") from e
     except Exception as e:
         raise GitHubAccessProblem("unavailable", f"GitHub est momentanément injoignable ({e}).") from e
 
@@ -1274,6 +1198,6 @@ def check_github_access(owner: str, repo: str, base_branch: str) -> None:
             raise GitHubAccessProblem(
                 "not_found", f"La branche de base « {base_branch} » n'existe pas sur {target}."
             ) from e
-        raise GitHubAccessProblem("unavailable", f"GitHub est momentanément injoignable ({_github_error(e)}).") from e
+        raise GitHubAccessProblem("unavailable", f"GitHub est momentanément injoignable ({github_client._github_error(e)}).") from e
     except Exception as e:
         raise GitHubAccessProblem("unavailable", f"GitHub est momentanément injoignable ({e}).") from e

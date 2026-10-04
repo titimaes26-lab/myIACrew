@@ -2,6 +2,7 @@ import os
 import sys
 
 import pytest
+import github_client  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test")
@@ -451,7 +452,7 @@ def test_github_dir_lister_maps_404_to_empty_and_other_errors_to_unknown(monkeyp
                 return Item("file.txt")
             raise GithubException(403, {}, {})
 
-    monkeypatch.setattr(gt, "_get_repo", lambda owner, repo: FakeRepo())
+    monkeypatch.setattr(github_client, "_get_repo", lambda owner, repo: FakeRepo())
     list_dir = gt.make_dir_lister("o", "r", "main")
     assert list_dir("src") == {"App.tsx"}
     assert list_dir("src/Header") == set() and list_dir("file.txt") == set()

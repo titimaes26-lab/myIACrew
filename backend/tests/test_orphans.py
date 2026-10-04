@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest  # noqa: E402
+import github_client  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
@@ -148,7 +149,7 @@ def test_describe_partial_delivery_reads_branch_commits_and_pr(monkeypatch):
             return [Pull()]
 
     monkeypatch.setattr(github_tools, "get_branch_head_sha", lambda *a: "new")
-    monkeypatch.setattr(github_tools, "_get_repo", lambda *a: Repo())
+    monkeypatch.setattr(github_client, "_get_repo", lambda *a: Repo())
     assert describe_partial_delivery("o", "r", "b", "main", "old") == PartialDelivery(
         "b", True, True, 2, "https://github.com/o/r/pull/1", "open")
     assert describe_partial_delivery("o", "r", "b", "main", "new").new_commits is False
@@ -210,7 +211,7 @@ def test_pr_lookup_failure_is_reported_as_unverified_not_as_absent(monkeypatch):
             raise RuntimeError("rate limit")
 
     monkeypatch.setattr(github_tools, "get_branch_head_sha", lambda *a: "sha")
-    monkeypatch.setattr(github_tools, "_get_repo", lambda *a: Repo())
+    monkeypatch.setattr(github_client, "_get_repo", lambda *a: Repo())
     partial = describe_partial_delivery("o", "r", "b", "main", "sha")
     assert partial.pr_checked is False
     block = render_partial_delivery_block("o", "r", "b", "main", partial)

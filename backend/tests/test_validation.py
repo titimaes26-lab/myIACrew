@@ -10,7 +10,7 @@ from github import GithubException  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
-import github_tools  # noqa: E402
+import github_client  # noqa: E402
 import main  # noqa: E402
 import fastapi  # noqa: E402
 import schemas  # noqa: E402
@@ -132,7 +132,7 @@ def _problem(**kwargs):
 
 
 def test_access_ok(token, monkeypatch):
-    monkeypatch.setattr(github_tools, "_get_repo", lambda *a: _Repo())
+    monkeypatch.setattr(github_client, "_get_repo", lambda *a: _Repo())
     check_github_access("o", "r", "main")
 
 
@@ -145,25 +145,25 @@ def test_missing_token(monkeypatch):
 def test_repository_errors_by_status(token, monkeypatch, status, kind):
     def boom(*args):
         raise GithubException(status, {"message": "x"}, {})
-    monkeypatch.setattr(github_tools, "_get_repo", boom)
+    monkeypatch.setattr(github_client, "_get_repo", boom)
     assert _problem().kind == kind
 
 
 def test_network_failure_is_unavailable(token, monkeypatch):
     def boom(*args):
         raise ConnectionError("réseau")
-    monkeypatch.setattr(github_tools, "_get_repo", boom)
+    monkeypatch.setattr(github_client, "_get_repo", boom)
     assert _problem().kind == "unavailable"
 
 
 def test_read_only_token_is_forbidden(token, monkeypatch):
-    monkeypatch.setattr(github_tools, "_get_repo", lambda *a: _Repo(push=False))
+    monkeypatch.setattr(github_client, "_get_repo", lambda *a: _Repo(push=False))
     problem = _problem()
     assert problem.kind == "forbidden" and "écrire" in problem.message
 
 
 def test_missing_base_branch(token, monkeypatch):
-    monkeypatch.setattr(github_tools, "_get_repo", lambda *a: _Repo(branch_error=GithubException(404, {}, {})))
+    monkeypatch.setattr(github_client, "_get_repo", lambda *a: _Repo(branch_error=GithubException(404, {}, {})))
     problem = _problem()
     assert problem.kind == "not_found" and "« main »" in problem.message
 
@@ -260,7 +260,7 @@ def test_workflows_follow_the_qualification_literal():
 def test_rate_limit_is_retryable_not_forbidden(token, monkeypatch):
     def boom(*args):
         raise GithubException(403, {"message": "API rate limit exceeded for user"}, {})
-    monkeypatch.setattr(github_tools, "_get_repo", boom)
+    monkeypatch.setattr(github_client, "_get_repo", boom)
     problem = _problem()
     assert problem.kind == "rate_limited"
     assert routes_execute._GITHUB_ACCESS_ERRORS["rate_limited"] == (503, "GITHUB_UNAVAILABLE", True)
@@ -269,7 +269,7 @@ def test_rate_limit_is_retryable_not_forbidden(token, monkeypatch):
 def test_plain_403_stays_forbidden(token, monkeypatch):
     def boom(*args):
         raise GithubException(403, {"message": "Resource not accessible by integration"}, {})
-    monkeypatch.setattr(github_tools, "_get_repo", boom)
+    monkeypatch.setattr(github_client, "_get_repo", boom)
     assert _problem().kind == "forbidden"
 
 

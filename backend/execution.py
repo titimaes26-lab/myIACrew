@@ -17,7 +17,8 @@ from agent_metrics import flush_events
 from crewquestion import AppDevelopmentCrew, track_execution_metrics
 from database import Conversation, ExecutionHistory
 from errors import ExecutionTimeoutError, classify_exception
-from github_tools import track_read_cache, track_write_scope
+from github_tools import track_write_scope
+from github_client import track_read_cache
 from logs import get_logger
 from schemas import WorkflowExecutionInput
 
