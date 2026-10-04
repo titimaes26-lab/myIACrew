@@ -127,27 +127,20 @@ def _reject_sensitive_path(path: str) -> str | None:
     )
 
 def _reject_invalid_syntax(path: str, content: str) -> str | None:
-    """None si le contenu passe la vérification EXACTE de check_syntax_content (Python/JSON/YAML)
-    ou si son extension n'y est pas soumise, sinon le message ERREUR_SYNTAXE qu'elle renvoie, à
-    faire remonter tel quel à l'agent appelant.
+    """None si le contenu passe la vérification de check_syntax_content, ou si son extension n'y est pas soumise,
+    sinon le message ERREUR_SYNTAXE qu'elle renvoie, à faire remonter tel quel à l'agent appelant.
 
-    Garde-fou avant commit (voir github_write_file/github_write_files) contre une troncature
-    silencieuse du contenu produit par diagnostic_task (voir tasksquestion.yaml) : ni
-    developer_agent (qui committe ce contenu) ni ses outils d'écriture n'ont normalement de
-    moyen de détecter qu'un fichier a été coupé en cours de génération — ce filet le fait à leur
-    place, sans coût sur le budget max_iter de l'agent (appel Python interne, pas un outil
-    CrewAI invoqué séparément). Complémentaire à la consigne de prompt qui demande déjà à
-    diagnostic_task de ne pas soumettre un fichier qu'elle craint de tronquer, pas un
-    remplacement : les deux peuvent laisser passer des cas que l'autre aurait rattrapés.
+    Garde-fou avant commit (voir github_write_file/github_write_files) contre une troncature silencieuse du contenu
+    produit par diagnostic_task (voir tasksquestion.yaml) : ni developer_agent (qui committe ce contenu) ni ses outils
+    d'écriture n'ont normalement de moyen de détecter qu'un fichier a été coupé en cours de génération — ce filet le
+    fait à leur place, sans coût sur le budget max_iter de l'agent (appel Python interne, pas un outil CrewAI invoqué
+    séparément). Complémentaire à la consigne de prompt, pas un remplacement.
 
-    Volontairement limité à ERREUR_SYNTAXE (Python/JSON/YAML, vrai parseur exact) : la sortie
-    PROBLÈME(S) DÉTECTÉ(S) (heuristique JS/TS/JSX/TSX de check_syntax_content) a un faux positif
-    connu sur toute apostrophe française en texte JSX hors commentaire (ex: "n'y", très fréquent
-    dans cette app en français — voir _check_balanced_delimiters, tools.py) : bloquer un commit
-    dessus rejetterait EN PERMANENCE des fichiers .tsx/.jsx par ailleurs valides, sans recours
-    possible pour developer_agent (aucun outil de lecture pour corriger ni retenter). check_syntax
-    reste disponible en usage manuel par l'agent (voir development_task, tasksquestion.yaml) pour
-    ces extensions, juste plus en verrou automatique ici.
+    Bloque : Python/JSON/YAML invalides (vrai parseur) et, pour JS/TS/JSX/TSX, la signature d'une COUPURE en fin de
+    fichier (accolade ou `${` jamais refermée, template literal ou commentaire non terminé) — mesurée sans faux
+    positif sur frontend/src et 1 500 fichiers de bibliothèques. Ne bloque PAS les autres indices de l'heuristique
+    (PROBLÈME(S) DÉTECTÉ(S) : parenthèse ou crochet isolé, « 1) » dans un texte JSX), qui restent des conseils : un
+    refus sans recours possible pour developer_agent rejetterait des fichiers valides.
     """
     try:
         result = check_syntax_content(content, path)

@@ -16,7 +16,7 @@ _REGEX_LITERAL_PRECEDERS = set('([{,;:=!&|?+-*%^~>') | {''}
 # et le "/" suivant serait à tort traité comme une division plutôt qu'un littéral regex.
 _REGEX_KEYWORD_PRECEDERS = {'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'yield', 'throw', 'delete', 'void', 'case'}
 
-def _check_balanced_delimiters(content: str) -> list[str]:
+def _scan_delimiters(content: str) -> tuple[list[str], bool]:
     """Vérifie l'équilibre des accolades/parenthèses/crochets/guillemets d'un contenu.
 
     Heuristique volontairement simple (pas un vrai parseur JS/TS/JSX) : suffisante pour
@@ -75,6 +75,16 @@ def _check_balanced_delimiters(content: str) -> list[str]:
             elif ch == in_string:
                 in_string = None
                 last_significant = ch
+            elif ch == '\n' and in_string != '`':
+                # Une chaîne '...' ou "..." ne s'étend jamais sur plusieurs lignes : un guillemet resté ouvert est
+                # un texte (apostrophe d'un texte JSX), pas le début d'une chaîne. Reprise ici plutôt qu'un
+                # décalage de tout le reste du fichier ; une troncature en fin de fichier reste signalée plus bas.
+                in_string = None
+            elif ch == '$' and in_string == '`' and i + 1 < n and content[i + 1] == '{':
+                stack.append('${')              # interpolation : du code jusqu'à son « } »
+                in_string = None
+                i += 2
+                continue
             i += 1
             continue
 
@@ -125,10 +135,15 @@ def _check_balanced_delimiters(content: str) -> list[str]:
                     last_significant = ''
                 word_buf = []
 
-            if ch in ('"', "'", '`'):
+            if ch == "'" and i > 0 and (content[i - 1].isalnum() or content[i - 1] == '_'):
+                pass                            # apostrophe d'un mot (n'y, l'exécution) : jamais le début d'une chaîne
+            elif ch in ('"', "'", '`'):
                 in_string = ch
             elif ch in opening:
                 stack.append(ch)
+            elif ch == '}' and stack and stack[-1] == '${':
+                stack.pop()
+                in_string = '`'
             elif ch in pairs:
                 if not stack or stack[-1] != pairs[ch]:
                     line = content[:i].count('\n') + 1
@@ -150,7 +165,12 @@ def _check_balanced_delimiters(content: str) -> list[str]:
     for ch in stack:
         issues.append(f"'{ch}' jamais refermé.")
 
-    return issues
+    truncated = in_block_comment or in_string == '`' or any(ch in ('{', '${') for ch in stack)
+    return issues, truncated
+
+
+def _check_balanced_delimiters(content: str) -> list[str]:
+    return _scan_delimiters(content)[0]
 
 def check_syntax_content(content: str, file_path: str) -> str:
     """Implémentation réelle de check_syntax (voir sa docstring pour le détail par extension).
@@ -185,7 +205,11 @@ def check_syntax_content(content: str, file_path: str) -> str:
             return f"ERREUR_SYNTAXE : '{file_path}' : {e}"
 
     if ext in ("ts", "tsx", "js", "jsx"):
-        issues = _check_balanced_delimiters(content)
+        issues, truncated = _scan_delimiters(content)
+        if truncated:
+            return (
+                f"ERREUR_SYNTAXE : '{file_path}' semble tronqué (coupé en fin de fichier) :\n" + "\n".join(issues)
+            )
         if issues:
             return (
                 f"PROBLÈME(S) DÉTECTÉ(S) dans '{file_path}' (vérification heuristique, pas une vraie "
