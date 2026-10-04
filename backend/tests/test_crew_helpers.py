@@ -8,6 +8,7 @@ os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
 import crew_tools  # noqa: E402
+import qa_report  # noqa: E402
 import crew_guardrails  # noqa: E402
 import crew_workspace  # noqa: E402
 import crew_llms  # noqa: E402
@@ -46,7 +47,7 @@ def new_crew(owner="", repo="", branch="feature/x"):
     ("Verdict (2 échecs mineurs | tolérés) : GO", "GO"),
 ])
 def test_qa_verdict_variants(text, expected):
-    match = cq.QA_VERDICT.search(text)
+    match = qa_report.QA_VERDICT.search(text)
     assert (match.group("eol") or match.group("upper")) == expected
 
 
@@ -683,7 +684,7 @@ def test_is_withdrawn_with_full_candidate_set():
     "Le verdict ne peut pas être rendu :\nGo figure",
 ])
 def test_incidental_verdict_mentions_are_not_verdicts(text):
-    assert cq.QA_VERDICT.search(text) is None
+    assert qa_report.QA_VERDICT.search(text) is None
 
 
 def test_local_reads_normalize_dot_slash_but_stay_confined(monkeypatch, tmp_path):
