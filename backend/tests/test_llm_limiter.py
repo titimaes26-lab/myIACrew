@@ -47,6 +47,29 @@ def test_quota_errors_are_recognised_without_matching_other_errors():
     assert not is_quota_error(RuntimeError("500 internal error"))
 
 
+class HttpError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def test_quota_detection_uses_the_http_code_and_ignores_numbers_in_other_messages():
+    assert is_quota_error(HttpError(429, "trop de requêtes"))
+    assert not is_quota_error(HttpError(400, "invalid argument at line 1429"))
+    assert not is_quota_error(RuntimeError("fichier page_4290.tsx : erreur 400 sur le quota de pagination"))
+    assert not is_quota_error(RuntimeError("500 : la ligne 429 est invalide"))
+    assert is_quota_error(RuntimeError("429 Too Many Requests"))
+
+
+def test_a_very_long_delay_sets_no_pause_so_calls_fail_fast():
+    limiter = GeminiRateLimiter(12, 60)
+    daily = RuntimeError("429 RESOURCE_EXHAUSTED. Please retry in 53000s.")
+    assert limiter.note_rate_limited(daily, now=0) == 0
+    assert limiter.reserve(now=0) == 0
+    just_ok = RuntimeError("429 RESOURCE_EXHAUSTED. Please retry in 100s.")
+    assert limiter.note_rate_limited(just_ok, now=0) == 101
+
+
 def test_a_429_sets_a_shared_pause_that_every_following_call_waits_for():
     limiter = GeminiRateLimiter(12, 60)
     pause = limiter.note_rate_limited(RuntimeError(QUOTA_TEXT), now=100)
@@ -151,3 +174,15 @@ def test_the_real_client_methods_are_wrapped_once_crewquestion_is_imported():
     assert hasattr(models.Models.generate_content, "__wrapped__")
     assert hasattr(models.AsyncModels.generate_content, "__wrapped__")
     assert time.monotonic() > 0
+
+
+def test_limiter_waits_are_counted_in_the_execution_metrics_of_the_calling_context():
+    from agent_metrics import track_execution_metrics
+    from crewquestion import _record_limiter_wait
+
+    async def scenario():
+        with track_execution_metrics() as metrics:
+            await asyncio.to_thread(_record_limiter_wait, 2.5)   # comme kickoff_async : le contexte est copié
+            return metrics.total_wait_time
+    assert asyncio.run(scenario()) == 2.5
+    _record_limiter_wait(1.0)   # hors exécution : sans effet, sans erreur

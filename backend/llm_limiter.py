@@ -31,7 +31,17 @@ COOLDOWN_MARGIN_SECONDS = 1.0
 # Une attente plus longue que ceci est tracée (INFO) : l'utilisateur voit son exécution ralentir.
 LOG_WAIT_THRESHOLD_SECONDS = 2.0
 
-_QUOTA_MARKERS = ("429", "resource_exhausted", "quota")
+# Pause commune maximale acceptée : au-delà (quota JOURNALIER épuisé, délai de plusieurs heures), dormir ferait croire à
+# une exécution vivante alors qu'elle ne peut plus avancer. Aucune pause n'est alors posée : les appels échouent vite
+# avec l'erreur d'origine (« Quota épuisé » côté utilisateur).
+MAX_COOLDOWN_SECONDS = 120.0
+
+# Un 429 se reconnaît à son code HTTP (exceptions google-genai : `.code`), sinon à son TEXTE : « 429 » seul est trop
+# large (un « 1429 » ou un « quota » cité dans un message n'est pas un 429).
+_QUOTA_TEXT = re.compile(
+    r"resource_exhausted|exceeded your current quota|\b429\b[^\n]{0,80}(?:quota|rate.?limit|too many requests)",
+    re.IGNORECASE,
+)
 _RETRY_IN = re.compile(r"retry in ([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
 _RETRY_DELAY = re.compile(r"retryDelay['\"]?\s*:\s*['\"]([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
 
@@ -45,8 +55,9 @@ def _env_positive_int(name: str, default: int) -> int:
 
 
 def is_quota_error(error: BaseException) -> bool:
-    text = str(error).lower()
-    return any(marker in text for marker in _QUOTA_MARKERS)
+    if 429 in (getattr(error, "code", None), getattr(error, "status_code", None)):
+        return True
+    return _QUOTA_TEXT.search(str(error)) is not None
 
 
 def retry_delay_seconds(error: BaseException) -> Optional[float]:
@@ -88,10 +99,13 @@ class GeminiRateLimiter:
             return max(0.0, start - now)
 
     def note_rate_limited(self, error: BaseException, now: Optional[float] = None) -> float:
-        """Pause commune après un 429 (délai demandé par Google, sinon un défaut). Renvoie la durée retenue."""
+        """Pause commune après un 429 (délai demandé par Google, sinon un défaut). Renvoie la durée retenue, 0 quand le
+        délai dépasse MAX_COOLDOWN_SECONDS (aucune pause : les appels échouent vite)."""
         now = time.monotonic() if now is None else now
         delay = retry_delay_seconds(error)
         pause = (delay if delay is not None else DEFAULT_COOLDOWN_SECONDS) + COOLDOWN_MARGIN_SECONDS
+        if pause > MAX_COOLDOWN_SECONDS:
+            return 0.0
         with self._lock:
             self._cooldown_until = max(self._cooldown_until, now + pause)
         return pause
@@ -115,7 +129,10 @@ def _announce(wait: float, on_wait: Optional[Callable[[float], None]]) -> None:
 def _note_error(error: BaseException) -> None:
     if is_quota_error(error):
         pause = limiter.note_rate_limited(error)
-        log.warning(f"429 Gemini : pause commune de {pause:.0f} s pour toutes les requêtes")
+        if pause > 0:
+            log.warning(f"429 Gemini : pause commune de {pause:.0f} s pour toutes les requêtes")
+        else:
+            log.warning("429 Gemini avec un délai trop long (quota journalier ?) : aucune pause commune, l'erreur remonte")
 
 
 def _wrap_sync(function: Callable[..., Any], on_wait: Optional[Callable[[float], None]]) -> Callable[..., Any]:
