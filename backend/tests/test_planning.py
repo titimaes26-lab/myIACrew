@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
+import crew_llms  # noqa: E402
 
 
 def _agents():
@@ -29,8 +30,8 @@ def test_diagnostic_plans_once_and_observes_without_extra_llm_calls(monkeypatch)
     assert config.reasoning_effort == "low"        # observation heuristique : aucun appel LLM par étape
     assert config.observe_steps is None            # la valeur « low » suffit à désactiver l'observation LLM
     assert config.max_attempts == 1
-    assert config.max_steps == cq.DIAGNOSTIC_PLAN_MAX_STEPS == 5
-    assert config.max_step_iterations == cq.DIAGNOSTIC_STEP_MAX_ITERATIONS == 8
+    assert config.max_steps == crew_llms.DIAGNOSTIC_PLAN_MAX_STEPS == 5
+    assert config.max_step_iterations == crew_llms.DIAGNOSTIC_STEP_MAX_ITERATIONS == 8
     assert agent.max_iter == 7                      # inchangé
 
 
@@ -40,8 +41,8 @@ def test_diagnostic_plans_once_and_observes_without_extra_llm_calls(monkeypatch)
 ])
 def test_diagnostic_effort_is_configurable_and_defaults_to_low(monkeypatch, value, expected):
     monkeypatch.setenv("DIAGNOSTIC_REASONING_EFFORT", value)
-    assert cq._diagnostic_reasoning_effort() == expected
-    assert cq._diagnostic_planning_config().reasoning_effort == expected
+    assert crew_llms._diagnostic_reasoning_effort() == expected
+    assert crew_llms._diagnostic_planning_config().reasoning_effort == expected
 
 
 @pytest.mark.parametrize("value, expected", [
@@ -49,8 +50,8 @@ def test_diagnostic_effort_is_configurable_and_defaults_to_low(monkeypatch, valu
 ])
 def test_step_iterations_are_configurable_with_a_safe_default(monkeypatch, value, expected):
     monkeypatch.setenv("DIAGNOSTIC_STEP_MAX_ITERATIONS", value)
-    assert cq._diagnostic_step_max_iterations() == expected
-    assert cq._diagnostic_planning_config().max_step_iterations == expected
+    assert crew_llms._diagnostic_step_max_iterations() == expected
+    assert crew_llms._diagnostic_planning_config().max_step_iterations == expected
 
 
 def test_only_the_diagnostic_agent_plans():

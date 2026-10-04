@@ -6,23 +6,10 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
-from typing import List, Literal, Callable, Any, Optional
-from dotenv import load_dotenv
+from typing import List, Callable, Any, Optional
 
-# --- CHARGEMENT DES VARIABLES D'ENVIRONNEMENT ---
-env_path = Path(__file__).resolve().parent / '.env'
-load_dotenv(dotenv_path=env_path)
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Configuration LiteLLM & Quotas
-os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY or ""
-os.environ["LITELLM_NUM_RETRIES"] = "7"
-os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
-
-
-from crewai import Agent, Crew, Process, Task, LLM
-from crewai.agent.planning_config import PlanningConfig
+import crew_llms  # noqa: F401  (charge .env et règle LiteLLM AVANT l'import de crewai)
+from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tasks.task_output import TaskOutput
@@ -94,76 +81,6 @@ register_event_listeners()
 llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
 
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
-
-DIAGNOSTIC_PLAN_MAX_STEPS = 5
-DIAGNOSTIC_STEP_MAX_ITERATIONS = 8   # défaut CrewAI : 15 ; assez pour lister puis lire quelques fichiers dans une étape
-_REASONING_EFFORTS: tuple[Literal["low", "medium", "high"], ...] = ("low", "medium", "high")
-
-
-def _diagnostic_reasoning_effort() -> Literal["low", "medium", "high"]:
-    """Effort de planification du diagnostic (DIAGNOSTIC_REASONING_EFFORT : low | medium | high) ; « low » par défaut,
-    y compris pour une valeur illisible."""
-    value = os.getenv("DIAGNOSTIC_REASONING_EFFORT", "").strip().lower()
-    for effort in _REASONING_EFFORTS:
-        if value == effort:
-            return effort
-    return "low"
-
-
-def _diagnostic_step_max_iterations() -> int:
-    """Itérations du modèle par étape du plan (DIAGNOSTIC_STEP_MAX_ITERATIONS) ; entier >= 1, sinon le défaut."""
-    try:
-        value = int(os.getenv("DIAGNOSTIC_STEP_MAX_ITERATIONS", ""))
-    except ValueError:
-        return DIAGNOSTIC_STEP_MAX_ITERATIONS
-    return value if value >= 1 else DIAGNOSTIC_STEP_MAX_ITERATIONS
-
-
-def _diagnostic_planning_config() -> PlanningConfig:
-    return PlanningConfig(
-        reasoning_effort=_diagnostic_reasoning_effort(),
-        max_attempts=1,
-        max_steps=DIAGNOSTIC_PLAN_MAX_STEPS,
-        max_step_iterations=_diagnostic_step_max_iterations(),
-    )
-
-
-def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
-    # max_tokens borne la SORTIE d'un appel (la génération domine la latence) ; absent, le plafond du fournisseur.
-    extra = {"max_tokens": max_tokens} if max_tokens else {}
-    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=request_timeout, **extra)
-
-# Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
-# vérifier demande de la constance ; seule la conception fonctionnelle gagne à rester créative.
-# request_timeout borne UN appel LLM (pas toute la tâche, qui peut en enchaîner max_iter) : un
-# timeout unique de 120s pour tous les agents faisait attendre aussi longtemps un appel de
-# classification JSON (qualification) qu'une génération de fichiers complets (diagnostic) avant
-# de considérer l'appel bloqué et de déclencher le retry litellm — au détriment de la détection
-# rapide d'un appel réellement figé sur les agents les plus légers.
-qualification_llm = _make_llm(0.1, request_timeout=45)   # sortie JSON structurée, sans outil
-designer_llm = _make_llm(0.5, request_timeout=90)        # texte de specs + quelques lectures
-def _architect_max_tokens() -> int:
-    """Plafond de sortie de l'Architecte (ARCHITECT_MAX_OUTPUT_TOKENS, 8192 par défaut). Sur les modèles Gemini
-    récents les tokens de réflexion comptent dans cette limite : un plafond trop juste coupe le plan."""
-    try:
-        value = int(os.getenv("ARCHITECT_MAX_OUTPUT_TOKENS", ""))
-    except ValueError:
-        return 8192
-    return value if value >= 1024 else 8192
-
-
-architect_llm = _make_llm(0.3, request_timeout=90, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
-diagnostic_llm = _make_llm(0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
-developer_llm = _make_llm(0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
-                                                          # complet de diagnostic_task (potentiellement volumineux,
-                                                          # voir diagnostic_llm) et peut devoir en recopier des
-                                                          # extraits dans un appel github_write_file(s) de repli
-                                                          # (voir developer_agent) : pas aussi bas que le 60s
-                                                          # initialement envisagé pour "peu de texte généré", pour
-                                                          # ne pas risquer de couper ce repli sur une grosse livraison.
-qa_llm = _make_llm(0.2, request_timeout=90)               # appels d'outils + rapport final
-
 # Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
 # du reste sans ambiguïté (voir parseCrewResult.ts). Un simple titre "## Résumé" pourrait
 # apparaître naturellement dans le rapport d'un agent (ex: sa propre sous-section de
@@ -176,13 +93,6 @@ SUMMARY_SENTINEL = "<!--crew-summary-->"
 # Gemini déjà sous tension (cf. adaptive_pause/crew_retry.retry_on_rate_limit_async ci-dessus).
 MAX_SUMMARY_INPUT_CHARS = 6000
 
-# Timeout dédié, plus court que celui des agents (120s) : un résumé qui traîne ne doit
-# pas ajouter jusqu'à 2 minutes à une réponse dont le vrai travail est déjà terminé.
-# 25 et non 20 : le résumé demande désormais 4-6 phrases (au lieu de 3-5) plus, le cas
-# échéant, la justification des choix (voir _build_summary_prompt), une génération
-# légèrement plus longue qui reprenait la marge de cette valeur sans que celle-ci ait
-# été ajustée en conséquence.
-summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, request_timeout=25)
 
 MAX_SUMMARY_REQUEST_CHARS = 1500
 
@@ -206,7 +116,7 @@ def _build_summary_input(result) -> str:
     Pour chaque tâche, garde le DÉBUT et la FIN de son rapport plutôt qu'un simple préfixe :
     un agent conclut typiquement son rapport par sa synthèse/justification ("pourquoi tel
     choix"), qu'un pur `raw[:budget]` couperait systématiquement en tout premier sur un
-    rapport dépassant le budget, alors que le résumé demandé à summary_llm cherche justement
+    rapport dépassant le budget, alors que le résumé demandé à crew_llms.summary_llm cherche justement
     ce genre de rationale (voir _build_summary_prompt).
     """
     sections = list(crew_workflow._iter_task_sections(result))
@@ -249,12 +159,12 @@ def _build_summary_prompt(user_request: str, summary_input: str) -> str:
         "justification."
     )
 
-# Borne le temps d'attente total (au-delà du request_timeout de summary_llm lui-même),
+# Borne le temps d'attente total (au-delà du request_timeout de crew_llms.summary_llm lui-même),
 # car LITELLM_NUM_RETRIES=7 (défini plus haut, process-wide) s'applique aussi à cet
 # appel : sans ce filet, une erreur transitoire pourrait déclencher jusqu'à 7 tentatives
-# internes avant que summary_llm.call() ne lève enfin, contredisant l'objectif même
+# internes avant que crew_llms.summary_llm.call() ne lève enfin, contredisant l'objectif même
 # d'un résumé qui ne doit jamais faire attendre longtemps une réponse déjà acquise.
-# 30 et non 25 : doit rester strictement supérieur au request_timeout de summary_llm
+# 30 et non 25 : doit rester strictement supérieur au request_timeout de crew_llms.summary_llm
 # (25 désormais, voir plus haut) pour continuer à lui laisser le temps de lever sa
 # propre erreur de timeout plutôt que d'être coupé par celui-ci en premier.
 SUMMARY_WALL_CLOCK_TIMEOUT = 30
@@ -268,7 +178,7 @@ async def _generate_summary(user_request: str, result) -> str | None:
     """
     def _call() -> str:
         crew_retry.quota_mgr.adaptive_pause()
-        return summary_llm.call(_build_summary_prompt(user_request, _build_summary_input(result)))
+        return crew_llms.summary_llm.call(_build_summary_prompt(user_request, _build_summary_input(result)))
 
     try:
         loop = asyncio.get_running_loop()
@@ -777,7 +687,7 @@ class AppDevelopmentCrew():
 
     @agent
     def qualification_agent(self) -> Agent:
-        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=qualification_llm, max_iter=2, verbose=True)
+        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=crew_llms.qualification_llm, max_iter=2, verbose=True)
 
     @agent
     def product_designer_agent(self) -> Agent:
@@ -786,7 +696,7 @@ class AppDevelopmentCrew():
             # Sans file_write_tool : son livrable est le texte de sa réponse (sauvegardé via
             # output_file), un outil d'écriture ne faisait que le distraire de son raisonnement.
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=designer_llm, max_iter=3, verbose=True,
+            llm=crew_llms.designer_llm, max_iter=3, verbose=True,
         )
 
     @agent
@@ -794,7 +704,7 @@ class AppDevelopmentCrew():
         return Agent(
             config=self.agents_config['architect_agent'],
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=architect_llm, max_iter=5, verbose=True,
+            llm=crew_llms.architect_llm, max_iter=5, verbose=True,
         )
 
     @agent
@@ -811,7 +721,7 @@ class AppDevelopmentCrew():
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=diagnostic_llm, max_iter=7, verbose=True,
+            llm=crew_llms.diagnostic_llm, max_iter=7, verbose=True,
             # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus critique du pipeline,
             # dont tout le code livré dépend. Un seul appel de plan ; en effort « low », l'observation de chaque étape
             # se fait par heuristique, SANS appel LLM. L'ancien `reasoning=True` (effort « medium ») ajoutait un appel
@@ -819,8 +729,8 @@ class AppDevelopmentCrew():
             # `max_rpm` (d'après le code de CrewAI) : une source importante des 429 Gemini. Contrepartie : une étape en
             # échec n'est plus replanifiée (l'heuristique la marque terminée) ; les contrôles de qualité et la seconde
             # tentative automatique restent le filet. Réglable sans déploiement : DIAGNOSTIC_REASONING_EFFORT et
-            # DIAGNOSTIC_STEP_MAX_ITERATIONS.
-            planning_config=_diagnostic_planning_config(),
+            # crew_llms.DIAGNOSTIC_STEP_MAX_ITERATIONS.
+            planning_config=crew_llms._diagnostic_planning_config(),
         )
 
     @agent
@@ -859,7 +769,7 @@ class AppDevelopmentCrew():
             # github_open_delivery_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
             # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
             # entier dans le même budget.
-            llm=developer_llm, max_iter=6, verbose=True,
+            llm=crew_llms.developer_llm, max_iter=6, verbose=True,
         )
 
     @agent
@@ -881,7 +791,7 @@ class AppDevelopmentCrew():
             # (elle doit alors signaler explicitement lesquels restent non vérifiés, voir
             # tasksquestion.yaml), donc ce budget n'a pas besoin de suivre la taille du lot — juste
             # d'en couvrir davantage qu'avant sans pour autant viser l'exhaustivité.
-            llm=qa_llm, max_iter=10, verbose=True,
+            llm=crew_llms.qa_llm, max_iter=10, verbose=True,
         )
 
     @task

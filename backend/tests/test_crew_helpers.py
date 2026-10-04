@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
+import crew_llms  # noqa: E402
 import qualification  # noqa: E402
 
 
@@ -234,11 +235,11 @@ def test_architecture_prompt_stays_short_and_still_names_every_required_section(
 
 
 def test_only_the_architect_output_is_capped_and_make_llm_omits_the_cap_by_default():
-    assert cq.architect_llm.max_tokens == 8192
-    for llm in (cq.qualification_llm, cq.designer_llm, cq.diagnostic_llm, cq.developer_llm, cq.qa_llm):
+    assert crew_llms.architect_llm.max_tokens == 8192
+    for llm in (crew_llms.qualification_llm, crew_llms.designer_llm, crew_llms.diagnostic_llm, crew_llms.developer_llm, crew_llms.qa_llm):
         assert llm.max_tokens is None
-    assert cq._make_llm(0.1).max_tokens is None
-    assert cq._make_llm(0.1, max_tokens=123).max_tokens == 123
+    assert crew_llms._make_llm(0.1).max_tokens is None
+    assert crew_llms._make_llm(0.1, max_tokens=123).max_tokens == 123
 
 
 GOOD_ARCH = """## Existant
@@ -269,7 +270,7 @@ def test_architect_output_cap_is_configurable_with_a_safe_default(monkeypatch, e
         monkeypatch.delenv("ARCHITECT_MAX_OUTPUT_TOKENS", raising=False)
     else:
         monkeypatch.setenv("ARCHITECT_MAX_OUTPUT_TOKENS", env)
-    assert cq._architect_max_tokens() == expected
+    assert crew_llms._architect_max_tokens() == expected
 
 
 def test_architecture_issues_flag_a_plan_cut_by_the_token_limit():
