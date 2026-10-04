@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
+import crew_workspace  # noqa: E402
 import crew_llms  # noqa: E402
 import qualification  # noqa: E402
 
@@ -423,10 +424,10 @@ def test_transient_error_on_the_work_branch_never_falls_back_to_main(monkeypatch
 def test_local_dir_listing_distinguishes_absent_directory_from_unknown(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/App.tsx").write_text("x")
-    assert cq._list_local_dir(tmp_path, "src") == {"App.tsx"}
-    assert cq._list_local_dir(tmp_path, "src/components/Header") == set()
-    assert cq._list_local_dir(tmp_path, "src/App.tsx") == set()
-    assert cq._list_local_dir(tmp_path, "../dehors") is None
+    assert crew_workspace._list_local_dir(tmp_path, "src") == {"App.tsx"}
+    assert crew_workspace._list_local_dir(tmp_path, "src/components/Header") == set()
+    assert crew_workspace._list_local_dir(tmp_path, "src/App.tsx") == set()
+    assert crew_workspace._list_local_dir(tmp_path, "../dehors") is None
 
 
 def test_github_dir_lister_maps_404_to_empty_and_other_errors_to_unknown(monkeypatch):
@@ -459,7 +460,7 @@ def test_unresolved_import_is_flagged_with_real_listing_semantics(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/App.tsx").write_text("x")
     files = [{"path": "src/Main.tsx", "content": "import Header from './components/Header';\n"}]
-    problems = find_import_problems(files, list_dir=lambda d: cq._list_local_dir(tmp_path, d))
+    problems = find_import_problems(files, list_dir=lambda d: crew_workspace._list_local_dir(tmp_path, d))
     assert len(problems) == 1 and "./components/Header" in problems[0]
 
 
@@ -481,7 +482,7 @@ def test_local_writes_are_confined_to_workspace(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/App.tsx").write_text("old\n")
     rejections = {}
-    message = cq._write_files_locally(tmp_path, [
+    message = crew_workspace._write_files_locally(tmp_path, [
         {"path": "src/App.tsx", "content": "export {};\n"},
         {"path": "main.py", "content": "x = 1\n"},
         {"path": "../escape.py", "content": "x = 1\n"},
@@ -489,17 +490,17 @@ def test_local_writes_are_confined_to_workspace(tmp_path):
     assert (tmp_path / "src/App.tsx").read_text() == "export {};\n"
     assert (tmp_path / "main.py").exists()  # dans l'espace de travail, jamais le backend
     assert set(rejections) == {"../escape.py"} and "REJETÉS (1)" in message
-    assert cq._read_local_file(tmp_path, "src/App.tsx") == ("export {};\n", None)
+    assert crew_workspace._read_local_file(tmp_path, "src/App.tsx") == ("export {};\n", None)
 
 
 def test_each_conversation_has_its_own_workspace(monkeypatch, tmp_path):
-    monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
-    a, b = cq._conversation_workspace("1"), cq._conversation_workspace("2")
+    monkeypatch.setattr(crew_workspace, "LOCAL_WORKSPACE_DIR", tmp_path)
+    a, b = crew_workspace._conversation_workspace("1"), crew_workspace._conversation_workspace("2")
     assert a != b and tmp_path in a.parents and tmp_path in b.parents
 
 
 def test_local_mode_commit_read_and_qa_share_the_workspace(monkeypatch, tmp_path):
-    monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(crew_workspace, "LOCAL_WORKSPACE_DIR", tmp_path)
     crew = new_crew(branch="claude/conv-1")
     crew._analyst_files = [{"path": "src/a.ts", "content": "export {};\n"}, {"path": "conf.json", "content": "{ invalide"}]
     assert "REJETÉS" in crew._build_commit_analyst_files_tool().run(commit_message="m")
@@ -513,7 +514,7 @@ def test_empty_owner_from_llm_cannot_divert_a_github_run(monkeypatch):
     crew._analyst_files = [{"path": "src/a.ts", "content": "export {};\n"}]
     calls = []
     monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: calls.append(a[:3]) or "OK : 1")
-    monkeypatch.setattr(cq, "_write_files_locally", lambda *a, **k: pytest.fail("écriture locale en mode GitHub"))
+    monkeypatch.setattr(crew_workspace, "_write_files_locally", lambda *a, **k: pytest.fail("écriture locale en mode GitHub"))
     crew._build_commit_analyst_files_tool().run(commit_message="m")
     assert calls == [("o", "r", "feature/x")]
     assert "github_read_file" in crew._build_local_read_tool().run(file_path="src/a.ts")
@@ -601,7 +602,7 @@ def test_github_rejections_are_tracked_per_latest_commit(monkeypatch):
 
 
 def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tmp_path):
-    monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(crew_workspace, "LOCAL_WORKSPACE_DIR", tmp_path)
     a, b = cq.AppDevelopmentCrew(), cq.AppDevelopmentCrew()
     a._reset_execution_state({"work_branch": "", "conversation_id": "1"})
     b._reset_execution_state({"work_branch": "", "conversation_id": "2"})
@@ -684,13 +685,13 @@ def test_incidental_verdict_mentions_are_not_verdicts(text):
 
 
 def test_local_reads_normalize_dot_slash_but_stay_confined(monkeypatch, tmp_path):
-    monkeypatch.setattr(cq, "LOCAL_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(crew_workspace, "LOCAL_WORKSPACE_DIR", tmp_path)
     crew = new_crew()
     (crew._workspace / "src").mkdir(parents=True)
     (crew._workspace / "src/a.ts").write_text("export {};\n")
-    assert cq._read_local_file(crew._workspace, "./src/a.ts") == ("export {};\n", None)
+    assert crew_workspace._read_local_file(crew._workspace, "./src/a.ts") == ("export {};\n", None)
     assert crew._build_local_read_tool().run(file_path="./src/a.ts") == "export {};\n"
-    assert cq._read_local_file(crew._workspace, "../x")[0] is None
+    assert crew_workspace._read_local_file(crew._workspace, "../x")[0] is None
 
 
 def test_only_successful_commits_are_cached_and_errors_explain_how_to_retry(monkeypatch):
@@ -714,7 +715,7 @@ def test_local_mode_without_extracted_files_never_suggests_github():
 
 
 def test_local_write_with_every_file_rejected_is_an_error(tmp_path):
-    message = cq._write_files_locally(tmp_path, [{"path": "a.json", "content": "{ invalide"}], {})
+    message = crew_workspace._write_files_locally(tmp_path, [{"path": "a.json", "content": "{ invalide"}], {})
     assert message.startswith("ERREUR")
 
 

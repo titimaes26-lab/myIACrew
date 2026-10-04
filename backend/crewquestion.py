@@ -3,7 +3,6 @@ import time
 import asyncio
 import json
 import re
-from pathlib import Path
 from typing import List, Callable, Any, Optional
 
 import crew_llms  # noqa: F401  (charge .env et règle LiteLLM AVANT l'import de crewai)
@@ -15,6 +14,7 @@ from crewai.tools import tool
 from logs import get_logger
 import crew_retry
 import crew_summary
+import crew_workspace
 import crew_workflow
 import qualification
 import llm_limiter
@@ -28,7 +28,6 @@ from github_tools import (
     github_write_file,
     github_write_files,
     open_or_update_pull_request,
-    _reject_invalid_syntax,
     make_dir_lister,
     make_file_fetcher,
     track_edit_failures,
@@ -55,10 +54,8 @@ from delivery import (
     unconfirmed_pr_urls,
 )
 from analyst_output import (
-    FILE_ABSENT,
     FILE_BLOCKS,
     NOT_DELIVERED_MARKER,
-    PRESENT_UNREADABLE,
     build_delivery_report,
     find_import_problems,
     format_manifest,
@@ -125,94 +122,6 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
         # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
         log.warning(f"échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}")
 
-# Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
-# de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
-# cours d'exécution. Chaque conversation a son propre sous-dossier (dérivé de son id, stable d'un
-# tour à l'autre) : deux conversations ne s'écrasent jamais, et un tour de suivi ("corrige ça")
-# relit bien ce que le tour précédent a livré.
-# LIMITE CONNUE (pas un bug) : ce dossier est VIDE au premier tour d'une conversation. Un
-# BUGFIX/FEATURE en mode local ne peut donc pas lire un code préexistant qui n'aurait pas déjà
-# été livré par un tour précédent de CETTE MÊME conversation — le mode local convient surtout à
-# un DESIGN_AND_DEV qui part de zéro. Corriger ça demanderait un dossier projet local en lecture
-# seule, configurable par l'utilisateur (hors périmètre pour l'instant).
-BACKEND_DIR = Path(__file__).resolve().parent
-LOCAL_WORKSPACE_DIR = Path(os.getenv("LOCAL_WORKSPACE_DIR") or BACKEND_DIR / "workspace").resolve()
-
-def _conversation_workspace(conversation_id: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", conversation_id or "").strip(".-")
-    return LOCAL_WORKSPACE_DIR / (f"conversation-{safe}" if safe else "sans-conversation")
-
-def _local_target(workspace: Path, path: str) -> Path | None:
-    """Chemin absolu dans `workspace`, ou None s'il en sortirait (".."). Un préfixe "./" ou "/"
-    (fréquent sous la plume d'un LLM) est normalisé plutôt que refusé."""
-    normalized = normalize_path(path)
-    if normalized is None:
-        return None
-    root = workspace.resolve()
-    target = (root / normalized).resolve()
-    return target if root in target.parents else None
-
-def _write_files_locally(workspace: Path, files: list[dict], rejected_sink: dict[str, str]) -> str:
-    """Pendant disque local de write_files_to_branch (mode sans repository cible), confiné à
-    `workspace`. Les fichiers NON écrits sont ajoutés à rejected_sink ({chemin: raison})."""
-    written = []
-    for f in files:
-        path, content = f["path"], f["content"]
-        target = _local_target(workspace, path)
-        if target is None:
-            rejected_sink[path] = "chemin hors de l'espace de travail local refusé"
-            continue
-        syntax_issue = _reject_invalid_syntax(path, content)
-        if syntax_issue:
-            rejected_sink[path] = syntax_issue
-            continue
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            written.append(path)
-        except Exception as e:
-            rejected_sink[path] = f"{type(e).__name__}: {e}"
-    # Comme write_files_to_branch : aucun fichier écrit est une ERREUR, jamais un "OK : 0" que
-    # le Développeur lirait comme un succès (règle "OK : passe à l'étape suivante").
-    message = (
-        f"OK : {len(written)} fichier(s) écrit(s) dans l'espace de travail local."
-        if written or not files
-        else f"ERREUR : aucun fichier écrit dans l'espace de travail local ({len(files)} rejeté(s))."
-    )
-    refused = {p: r for p, r in rejected_sink.items() if p in {f["path"] for f in files}}
-    if refused:
-        message += f"\nREJETÉS ({len(refused)}) — non écrits :\n" + "\n".join(
-            f"- '{p}' : {reason}" for p, reason in refused.items()
-        )
-    return message
-
-def _read_local_file(workspace: Path, path: str) -> tuple[str | None, str | None]:
-    target = _local_target(workspace, path)
-    if target is None:
-        return None, "chemin hors de l'espace de travail local"
-    try:
-        return target.read_text(encoding="utf-8"), None
-    except FileNotFoundError:
-        return None, f"{FILE_ABSENT} : '{path}' n'existe pas dans l'espace de travail local"
-    except IsADirectoryError:
-        return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
-    except UnicodeDecodeError:
-        return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
-
-def _list_local_dir(workspace: Path, directory: str) -> set[str] | None:
-    """Noms des entrées d'un dossier de l'espace de travail. Dossier absent (ou fichier) : ensemble
-    vide, pas « inconnu » ; None seulement hors de l'espace de travail ou en cas d'erreur d'accès."""
-    target = _local_target(workspace, directory) if directory else workspace.resolve()
-    if target is None:
-        return None
-    try:
-        return {entry.name for entry in target.iterdir()}
-    except (FileNotFoundError, NotADirectoryError):
-        return set()
-    except Exception:
-        return None
 
 MAX_RETRY_CONTEXT_CHARS = 4000
 
@@ -575,7 +484,7 @@ class AppDevelopmentCrew():
             # que le LLM ait à recopier leur contenu — github_write_file(s) restent le repli.
             tools=[
                 # Sans file_write_tool : en local, github_commit_analyst_files écrit dans l'espace
-                # de travail dédié (LOCAL_WORKSPACE_DIR) ; file_write_tool écrirait n'importe où,
+                # de travail dédié (crew_workspace.LOCAL_WORKSPACE_DIR) ; file_write_tool écrirait n'importe où,
                 # y compris sur le code du serveur.
                 self._build_commit_analyst_files_tool(),
                 check_syntax,
@@ -662,7 +571,7 @@ class AppDevelopmentCrew():
         self._base_readers = None
         self._repo_target = (owner, repo) if owner and repo else None
         # Par conversation (et non par branche : en mode local, work_branch est toujours vide).
-        self._workspace = _conversation_workspace(str(inputs.get("conversation_id") or ""))
+        self._workspace = crew_workspace._conversation_workspace(str(inputs.get("conversation_id") or ""))
         # Fichiers committables, fusionnés au fil des tentatives de l'Analyste (voir le guardrail).
         self._analyst_files = []
         # {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables
@@ -711,7 +620,7 @@ class AppDevelopmentCrew():
         target = getattr(self, "_repo_target", None)
         if target is None:
             workspace = self._workspace
-            source = (lambda path: _read_local_file(workspace, path), lambda d: _list_local_dir(workspace, d))
+            source = (lambda path: crew_workspace._read_local_file(workspace, path), lambda d: crew_workspace._list_local_dir(workspace, d))
         else:
             owner, repo = target
             branches = list(dict.fromkeys(b for b in (self._work_branch, getattr(self, "_base_branch", "main")) if b))
@@ -841,7 +750,7 @@ class AppDevelopmentCrew():
             rejections: dict[str, str] = {}
             target = getattr(crew_self, "_repo_target", None)
             if target is None:
-                result = _write_files_locally(crew_self._workspace, files, rejections)
+                result = crew_workspace._write_files_locally(crew_self._workspace, files, rejections)
             else:
                 owner, repo = target
                 result = write_files_to_branch(owner, repo, crew_self._work_branch, commit_message, files, rejections)
@@ -967,7 +876,7 @@ class AppDevelopmentCrew():
             target = getattr(crew_self, "_repo_target", None)
             if target is None:
                 workspace = crew_self._workspace
-                fetch = lambda path: _read_local_file(workspace, path)  # noqa: E731
+                fetch = lambda path: crew_workspace._read_local_file(workspace, path)  # noqa: E731
             else:
                 fetch = make_file_fetcher(target[0], target[1], crew_self._work_branch)
             not_extracted = dict(getattr(crew_self, "_not_extracted", {}) or {})
@@ -975,7 +884,7 @@ class AppDevelopmentCrew():
             planned = _planned_paths(getattr(plan_output, "raw", "") or "")
             scope_notes = _scope_notes(planned, {f["path"] for f in files}, set(not_extracted)) if planned else None
             if target is None:
-                list_dir = lambda directory: _list_local_dir(crew_self._workspace, directory)  # noqa: E731
+                list_dir = lambda directory: crew_workspace._list_local_dir(crew_self._workspace, directory)  # noqa: E731
             else:
                 list_dir = make_dir_lister(target[0], target[1], crew_self._work_branch)
             import_notes = find_import_problems(
@@ -1015,7 +924,7 @@ class AppDevelopmentCrew():
                     "INFO : un repository GitHub cible est défini pour cette exécution : lis ses "
                     "fichiers avec github_read_file, pas sur le disque local."
                 )
-            content, error = _read_local_file(crew_self._workspace, file_path)
+            content, error = crew_workspace._read_local_file(crew_self._workspace, file_path)
             if content is None:
                 return (
                     f"ERREUR_FICHIER_INEXISTANT : {error}. Inutile de réessayer la lecture de ce "
