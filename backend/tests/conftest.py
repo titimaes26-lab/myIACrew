@@ -50,3 +50,10 @@ def session():
     """Session sur une base SQLite en mémoire isolée, sans toucher à `database.engine`."""
     with Session(_memory_engine()) as db:
         yield db
+
+
+@pytest.fixture()
+def counting(monkeypatch):
+    """Faux GitHub qui compte ses lectures (voir github_support.make_counting_repo)."""
+    from github_support import make_counting_repo
+    return make_counting_repo(monkeypatch)
