@@ -332,8 +332,20 @@ def failure_causes(executions: list[dict]) -> list[dict]:
     ]
 
 
+QA_VERDICTS = ("GO", "GO_AVEC_RESERVES", "NO_GO")
+
+
+def execution_cost(prompt_tokens: float, completion_tokens: float, price_per_million: Optional[tuple[float, float]]) -> Optional[float]:
+    """Coût estimé (dans la devise des tarifs) ; None sans tarif configuré. Un seul tarif global (entrée, sortie)
+    par million de tokens : le modèle utilisé n'est pas stocké par mesure."""
+    if price_per_million is None or (price_per_million[0] <= 0 and price_per_million[1] <= 0):
+        return None
+    return prompt_tokens * price_per_million[0] / 1_000_000 + completion_tokens * price_per_million[1] / 1_000_000
+
+
 def summarize(
     runs: list[dict], executions: list[dict], days: int, workflow: Optional[str] = None, tz_offset_minutes: int = 0,
+    price_per_million: Optional[tuple[float, float]] = None,
 ) -> dict:
     """Vue d'ensemble pour le tableau de bord. `runs` : lignes AgentRun ; `executions` : exécutions
     TERMINÉES (status success|failed) de la période, avec created_at / updated_at (datetime).
@@ -352,6 +364,17 @@ def summarize(
             by_execution_tokens[run["execution_id"]] = by_execution_tokens.get(run["execution_id"], 0) + run["total_tokens"]
         by_execution_calls[run["execution_id"]] = by_execution_calls.get(run["execution_id"], 0) + run["llm_calls"]
     succeeded = sum(1 for e in executions if e["status"] == "success")
+    # Coût par exécution, sur les seules mesures dont l'usage de tokens est connu (jamais « 0 » inventé).
+    token_split: dict[int, list[float]] = {}
+    for run in runs:
+        if run["usage_calls"] > 0:
+            split = token_split.setdefault(run["execution_id"], [0.0, 0.0])
+            split[0] += run["prompt_tokens"]
+            split[1] += run["completion_tokens"]
+    costs = [
+        cost for cost in (execution_cost(p, c, price_per_million) for p, c in token_split.values()) if cost is not None
+    ]
+    verdicts = {name: sum(1 for e in executions if e.get("qa_verdict") == name) for name in QA_VERDICTS}
 
     agents = []
     for step in PIPELINE_ORDER:
@@ -380,11 +403,14 @@ def summarize(
     shift = timedelta(minutes=tz_offset_minutes)
     execution_day = {e["id"]: (e["created_at"] + shift).date().isoformat() for e in executions if e.get("created_at")}
     for e in executions:
-        day = daily.setdefault(execution_day[e["id"]], {"executions": 0, "failed": 0, "llm_calls": 0, "tokens": 0})
+        day = daily.setdefault(execution_day[e["id"]], {"executions": 0, "failed": 0, "llm_calls": 0, "tokens": 0, "qa_total": 0, "qa_go": 0})
         day["executions"] += 1
         day["failed"] += 1 if e["status"] == "failed" else 0
         day["llm_calls"] += by_execution_calls.get(e["id"], 0)
         day["tokens"] += by_execution_tokens.get(e["id"], 0)
+        if e.get("qa_verdict") in QA_VERDICTS:
+            day["qa_total"] += 1
+            day["qa_go"] += 1 if e["qa_verdict"] == "GO" else 0
         if e["id"] in duration_by_execution:
             daily_durations.setdefault(execution_day[e["id"]], []).append(duration_by_execution[e["id"]])
     for date, values in daily.items():
@@ -404,6 +430,14 @@ def summarize(
             "token_executions": len(by_execution_tokens),
             "rate_limit_hits": sum(e.get("rate_limit_hits") or 0 for e in executions),
             "wait_seconds": _round(sum(e.get("total_wait_time_seconds") or 0 for e in executions)),
+            # Raisonnement : exécutions relancées automatiquement (2 tentatives) / reprises d'étapes déjà réussies.
+            "auto_retried": sum(1 for e in executions if (e.get("attempts") or 1) > 1),
+            "resumed": sum(1 for e in executions if (e.get("reused_steps") or 0) > 0),
+            # Qualité : verdict QA du résultat (exécutions réussies qui en portent un).
+            "qa_verdicts": verdicts,
+            # Coût estimé (None sans tarif configuré ou sans tokens connus).
+            "total_cost": _round(sum(costs), 6) if costs else None,
+            "avg_cost": _round(_mean(costs), 6) if costs else None,
         },
         "agents": agents,
         "failures": failure_causes(executions),
@@ -429,20 +463,68 @@ def sort_pipeline(rows: list[dict]) -> list[dict]:
     return sorted(rows, key=lambda row: order.get(row["agent"], len(order)))
 
 
+def _as_utc(value: Any) -> Any:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def split_by_period(executions: list[dict], since: Any) -> tuple[list[dict], list[dict]]:
     """(période courante, période précédente) d'une liste d'exécutions couvrant les DEUX périodes :
     created_at >= since / created_at < since. SQLite renvoie des dates naïves (UTC), Postgres des dates
     avec fuseau : les deux sont comparées en UTC."""
-    def as_utc(value: Any) -> Any:
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-    current = [e for e in executions if as_utc(e["created_at"]) >= since]
-    previous = [e for e in executions if as_utc(e["created_at"]) < since]
+    current = [e for e in executions if _as_utc(e["created_at"]) >= since]
+    previous = [e for e in executions if _as_utc(e["created_at"]) < since]
     return current, previous
+
+
+EXECUTION_SORT_KEYS = ("created_at", "duration", "llm_calls", "tokens")
+EXECUTION_STATUS_FILTERS = ("success", "failed")
+REQUEST_PREVIEW_CHARS = 140
+
+
+def list_executions(
+    executions: list[dict], sums: dict[int, dict], *, status: Optional[str] = None, sort: str = "created_at",
+    descending: bool = True, limit: int = 20, offset: int = 0,
+) -> dict:
+    """Page d'exécutions terminées pour le tableau de bord : filtre par statut, tri (date, durée, appels LLM,
+    tokens) et pagination. `sums` : {id: {"llm_calls": int, "tokens": int | None}} (tokens None si l'usage est
+    inconnu). Une valeur absente est TOUJOURS classée en dernier, quel que soit le sens du tri."""
+    if sort not in EXECUTION_SORT_KEYS:
+        sort = "created_at"
+    rows = []
+    for e in executions:
+        if status in EXECUTION_STATUS_FILTERS and e["status"] != status:
+            continue
+        measured = sums.get(e["id"], {})
+        duration = (
+            (e["updated_at"] - e["created_at"]).total_seconds()
+            if e.get("updated_at") and e.get("created_at") else None
+        )
+        request = (e.get("user_request") or "").strip().replace("\n", " ")
+        rows.append({
+            "id": e["id"], "conversation_id": e.get("conversation_id"),
+            "user_request": request[:REQUEST_PREVIEW_CHARS] + ("…" if len(request) > REQUEST_PREVIEW_CHARS else ""),
+            "workflow": e["workflow"], "status": e["status"], "created_at": e["created_at"],
+            "duration_seconds": _round(duration), "llm_calls": measured.get("llm_calls"),
+            "tokens": measured.get("tokens"), "error_code": e.get("error_code"), "qa_verdict": e.get("qa_verdict"),
+            "attempts": e.get("attempts") or 1, "reused_steps": e.get("reused_steps") or 0,
+            "repo": f"{e['repo_owner']}/{e['repo_name']}" if e.get("repo_owner") and e.get("repo_name") else None,
+        })
+
+    def key(row: dict) -> Any:
+        return _as_utc(row["created_at"]).timestamp() if sort == "created_at" else row[{
+            "duration": "duration_seconds", "llm_calls": "llm_calls", "tokens": "tokens"}[sort]]
+
+    present = [row for row in rows if key(row) is not None]
+    missing = [row for row in rows if key(row) is None]
+    present.sort(key=key, reverse=descending)
+    ordered = present + missing
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    return {"total": len(ordered), "items": ordered[offset:offset + limit]}
 
 
 __all__ = [
     "AgentStats", "ExecutionMetrics", "track_execution_metrics", "register_event_listeners", "flush_events",
     "build_agent_run_rows", "summarize", "percentile", "parse_usage", "step_for_role", "agent_run_view",
-    "sort_pipeline", "split_by_period", "PIPELINE_ORDER", "AGENT_LABELS", "SYSTEM_BUCKET", "OTHER_BUCKET",
+    "sort_pipeline", "split_by_period", "list_executions", "execution_cost", "PIPELINE_ORDER", "AGENT_LABELS", "SYSTEM_BUCKET", "OTHER_BUCKET",
 ]

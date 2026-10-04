@@ -2,7 +2,7 @@ import type { DailyMetricsRow } from '../types';
 import { formatSeconds } from './formatDuration';
 import { formatCompact, formatInteger, niceDurationTicks, niceTicks, successPercent } from './metricsFormat';
 
-export type DailyMetricKey = 'llm_calls' | 'duration' | 'success' | 'tokens';
+export type DailyMetricKey = 'llm_calls' | 'duration' | 'success' | 'qa_go' | 'tokens';
 
 export interface DailyMetricSpec {
   key: DailyMetricKey;
@@ -36,6 +36,12 @@ export const DAILY_METRICS: DailyMetricSpec[] = [
     key: 'success', label: 'Taux de succès', title: 'Taux de succès par jour',
     subtitle: 'Part des exécutions terminées du jour qui ont réussi.',
     value: successRate,
+    format: (value) => `${Math.round(value)} %`, ticks: () => [0, 25, 50, 75, 100], labelPeak: false,
+  },
+  {
+    key: 'qa_go', label: 'Verdict QA « GO »', title: 'Verdict QA « GO » par jour',
+    subtitle: 'Part des exécutions du jour dont le verdict QA est « GO » (celles qui portent un verdict seulement).',
+    value: (day) => successPercent(day.qa_go, day.qa_total),
     format: (value) => `${Math.round(value)} %`, ticks: () => [0, 25, 50, 75, 100], labelPeak: false,
   },
   {

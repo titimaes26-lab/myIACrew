@@ -123,8 +123,37 @@ export interface DailyMetricsRow {
   failed: number;
   llm_calls: number;
   tokens: number;
+  // Exécutions du jour qui portent un verdict QA, et parmi elles celles en « GO » (qualité dans le temps).
+  qa_total: number;
+  qa_go: number;
   // Médiane des durées d'exécution du jour ; null quand aucune durée n'est mesurable ce jour-là.
   median_duration_seconds: number | null;
+}
+
+export type QaVerdict = 'GO' | 'GO_AVEC_RESERVES' | 'NO_GO';
+
+export type ExecutionSortKey = 'created_at' | 'duration' | 'llm_calls' | 'tokens';
+
+export interface ExecutionRow {
+  id: number;
+  conversation_id: number | null;
+  user_request: string;
+  workflow: string;
+  status: 'success' | 'failed';
+  created_at: string;
+  duration_seconds: number | null;
+  llm_calls: number | null;
+  tokens: number | null;
+  error_code: string | null;
+  qa_verdict: QaVerdict | null;
+  attempts: number;
+  reused_steps: number;
+  repo: string | null;
+}
+
+export interface ExecutionsPage {
+  total: number;
+  items: ExecutionRow[];
 }
 
 export interface FailureCauseRow {
@@ -146,9 +175,18 @@ export interface MetricsSummary {
     token_executions: number;
     rate_limit_hits: number;
     wait_seconds: number | null;
+    // Raisonnement : exécutions relancées automatiquement / reprises d'étapes déjà réussies.
+    auto_retried: number;
+    resumed: number;
+    // Qualité : verdicts QA des résultats.
+    qa_verdicts: Record<QaVerdict, number>;
+    // Coût estimé (devise `currency`) ; null sans tarif configuré ou sans tokens connus.
+    total_cost: number | null;
+    avg_cost: number | null;
   };
   agents: AgentMetricsRow[];
   failures: FailureCauseRow[];
+  currency?: string | null;
   // Vrai quand la limite d'exécutions analysées est atteinte (la période n'est alors pas couverte en entier).
   truncated?: boolean;
   // Mêmes statistiques d'exécutions sur la période PRÉCÉDENTE de même durée ; null sans donnée comparable.

@@ -1,4 +1,4 @@
-import type { AgentRunView, BulkDeleteResult, ExecutionHistoryEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
+import type { AgentRunView, BulkDeleteResult, ExecutionSortKey, ExecutionsPage, ExecutionHistoryEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
 
 // /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
 // fond côté backend, voir _execute_crew_and_persist dans main.py) : ce corps de réponse ne
@@ -112,6 +112,20 @@ export function apiClient(apiUrl: string, accessToken: string) {
       if (workflow !== 'ALL') query.set('workflow', workflow);
       return request(`${apiUrl}/api/metrics/summary?${query}`, { headers: authHeaders(accessToken), signal })
         .then((res) => parseJsonOrThrow<MetricsSummary>(res));
+    },
+
+    getMetricsExecutions: (
+      query: { days: number; workflow: MetricsWorkflowFilter; status: 'all' | 'success' | 'failed'; sort: ExecutionSortKey;
+        order: 'asc' | 'desc'; limit: number; offset: number },
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams({
+        days: String(query.days), sort: query.sort, order: query.order, limit: String(query.limit), offset: String(query.offset),
+      });
+      if (query.workflow !== 'ALL') params.set('workflow', query.workflow);
+      if (query.status !== 'all') params.set('status', query.status);
+      return request(`${apiUrl}/api/metrics/executions?${params}`, { headers: authHeaders(accessToken), signal })
+        .then((res) => parseJsonOrThrow<ExecutionsPage>(res));
     },
 
     getExecutionAgentRuns: (executionId: number, signal?: AbortSignal) =>

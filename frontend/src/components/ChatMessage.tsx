@@ -6,7 +6,7 @@ import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { isTransientFailure } from '../utils/failureView';
 import FailureBlock from './FailureBlock';
 import { stepShortLabelForKey } from '../constants/workflowSteps';
-import { formatDuration, formatTime } from '../utils/formatDuration';
+import { elapsedSeconds, formatDuration, formatTime } from '../utils/formatDuration';
 import { agentIcon } from '../constants/agentIcons';
 import AgentSummary from './AgentSummary';
 import Button from './ui/Button';
@@ -126,7 +126,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
         )}
 
         {typeof turn.id === 'number' && (turn.status === 'success' || turn.status === 'failed') && (
-          <ExecutionBreakdown executionId={turn.id} />
+          <ExecutionBreakdown executionId={turn.id} totalSeconds={turn.updatedAt ? elapsedSeconds(turn.createdAt, turn.updatedAt) : null} />
         )}
 
         {turn.agentSummary && <p className="paragraph">{turn.agentSummary}</p>}

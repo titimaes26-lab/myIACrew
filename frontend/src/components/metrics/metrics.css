@@ -181,3 +181,30 @@
 .viz-delta--bad { color: var(--viz-bad); }
 .viz-metric-seg { margin-bottom: 8px; }
 .viz-colbar--zero { opacity: 0.55; border-radius: 2px; }
+
+/* --- Chronologie d'une exécution --- */
+.viz-timeline { margin: 8px 0 12px; }
+.viz-trow { display: grid; grid-template-columns: minmax(90px, 160px) 1fr 64px; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+.viz-tlabel { color: var(--viz-ink-2); overflow-wrap: anywhere; }
+.viz-tplot { position: relative; height: 14px; background: var(--viz-plane); border-radius: 3px; }
+.viz-tbar { position: absolute; top: 0; bottom: 0; background: var(--viz-s1); border-radius: 3px; }
+.viz-tbar--wait { background: repeating-linear-gradient(45deg, var(--viz-axis), var(--viz-axis) 4px, transparent 4px, transparent 8px); }
+.viz-tbar--incomplete { opacity: 0.55; }
+.viz-tvalue { text-align: right; font-variant-numeric: tabular-nums; }
+.viz-ttotal { margin-top: 4px; color: var(--viz-muted); font-size: 12px; text-align: right; }
+@media (max-width: 560px) { .viz-trow { grid-template-columns: minmax(70px, 110px) 1fr 54px; } }
+
+/* --- Tableau des exécutions --- */
+.viz-sort { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.viz-sort:hover { text-decoration: underline; }
+.viz-request { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viz-exec-table .badge { margin-right: 4px; white-space: nowrap; }
+.viz-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 10px; }
+.viz-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Le tableau des exécutions défile horizontalement : le détail déplié reste calé à gauche, à la largeur visible. */
+.viz-exec-table { min-width: 640px; }
+.viz-table-wrap:has(.viz-exec-table) { container-type: inline-size; }
+.viz-exec-detail { position: sticky; left: 0; width: 100cqw; box-sizing: border-box; text-align: left; }
+.viz-card-head { flex-wrap: wrap; }
+.viz-seg { max-width: 100%; overflow-x: auto; }

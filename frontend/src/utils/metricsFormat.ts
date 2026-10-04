@@ -29,6 +29,13 @@ export function successPercent(success: number, total: number): number | null {
   return total > 0 ? (success / total) * 100 : null;
 }
 
+// Coût estimé : 4 décimales sous 1 unité (un coût par exécution se compte en centimes ou en fractions de centime).
+export function formatCost(value: number | null | undefined, currency: string | null | undefined): string {
+  if (value == null) return NO_VALUE;
+  const digits = value >= 1 ? 2 : 4;
+  return `${value.toLocaleString('fr-FR', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${currency ?? ''}`.trim();
+}
+
 export function formatPercent(part: number, total: number): string {
   return total === 0 ? NO_VALUE : `${INTEGER.format((part / total) * 100)} %`;
 }

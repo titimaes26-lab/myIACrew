@@ -50,6 +50,11 @@ export default function DailyTrendsChart({ daily }: { daily: DailyMetricsRow[] }
     const rate = success.value(d);
     return rate === null ? '—' : success.format(rate);
   };
+  const qaGo = dailyMetric('qa_go');
+  const qaText = (d: DailyMetricsRow) => {
+    const rate = qaGo.value(d);
+    return rate === null ? '—' : qaGo.format(rate);
+  };
   const valueText = (d: DailyMetricsRow) => {
     const value = metric.value(d);
     return value === null ? 'aucune donnée' : metric.format(value);
@@ -69,12 +74,13 @@ export default function DailyTrendsChart({ daily }: { daily: DailyMetricsRow[] }
       title={metric.title}
       subtitle={metric.subtitle}
       table={{
-        columns: ['Jour', 'Exécutions', 'Échecs', 'Appels LLM', 'Tokens', 'Durée médiane', 'Taux de succès'],
+        columns: ['Jour', 'Exécutions', 'Échecs', 'Appels LLM', 'Tokens', 'Durée médiane', 'Taux de succès', 'Verdict GO'],
         rows: daily.map((d) => [
           formatDay(d.date), String(d.executions), String(d.failed), formatInteger(d.llm_calls),
           d.tokens > 0 ? formatCompact(d.tokens) : '—',
           d.median_duration_seconds === null ? '—' : formatSeconds(d.median_duration_seconds),
           successText(d),
+          qaText(d),
         ]),
       }}
       empty={daily.length === 0 ? 'Aucune exécution terminée sur cette période.' : null}

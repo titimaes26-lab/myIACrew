@@ -16,3 +16,9 @@ export function formatDuration(startIso: string, endIso: string): string | null 
 export function formatTime(iso: string): string {
   return toServerDate(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
+
+// Durée écoulée en secondes entre deux instants serveur, ou null si elle n'a pas de sens.
+export function elapsedSeconds(startIso: string, endIso: string): number | null {
+  const ms = toServerDate(endIso).getTime() - toServerDate(startIso).getTime();
+  return Number.isFinite(ms) && ms >= 0 ? ms / 1000 : null;
+}

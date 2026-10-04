@@ -4,7 +4,7 @@ import { DAILY_METRICS, dailyMetric } from './dailyMetrics';
 import { fillDays } from './metricsSeries';
 
 const day = (overrides: Partial<DailyMetricsRow> = {}): DailyMetricsRow => ({
-  date: '2026-10-01', executions: 4, failed: 1, llm_calls: 12, tokens: 3400, median_duration_seconds: 95, ...overrides,
+  date: '2026-10-01', executions: 4, failed: 1, llm_calls: 12, tokens: 3400, qa_total: 3, qa_go: 2, median_duration_seconds: 95, ...overrides,
 });
 
 describe('DAILY_METRICS', () => {
@@ -13,10 +13,11 @@ describe('DAILY_METRICS', () => {
     expect(dailyMetric('duration').value(day())).toBe(95);
     expect(dailyMetric('success').value(day())).toBe(75);
     expect(dailyMetric('tokens').value(day())).toBe(3400);
+    expect(dailyMetric('qa_go').value(day())).toBeCloseTo(66.67, 1); // 2 GO sur 3 verdicts
   });
 
   it('ne trace aucune colonne un jour sans donnée (null), jamais une colonne à zéro', () => {
-    const empty = day({ executions: 0, failed: 0, llm_calls: 0, tokens: 0, median_duration_seconds: null });
+    const empty = day({ executions: 0, failed: 0, llm_calls: 0, tokens: 0, qa_total: 0, qa_go: 0, median_duration_seconds: null });
     for (const metric of DAILY_METRICS) expect(metric.value(empty)).toBeNull();
   });
 
@@ -35,6 +36,11 @@ describe('DAILY_METRICS', () => {
     expect(dailyMetric('llm_calls').ticks(7).at(-1)).toBeGreaterThanOrEqual(7);
     expect(dailyMetric('duration').ticks(95).at(-1)).toBeGreaterThanOrEqual(95);
     expect(dailyMetric('success').ticks(80)).toEqual([0, 25, 50, 75, 100]);
+  });
+
+  it('la part de verdicts GO ne compte que les exécutions qui portent un verdict', () => {
+    expect(dailyMetric('qa_go').value(day({ executions: 5, qa_total: 0, qa_go: 0 }))).toBeNull();
+    expect(dailyMetric('qa_go').value(day({ qa_total: 2, qa_go: 0 }))).toBe(0); // 0 % est une vraie valeur
   });
 
   it('retombe sur la première métrique pour une clé inconnue', () => {

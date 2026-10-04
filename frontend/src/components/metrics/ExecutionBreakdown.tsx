@@ -5,6 +5,7 @@ import { MetricsApiContext } from '../../hooks/metricsApi';
 import type { AgentRunView } from '../../types';
 import { formatSeconds } from '../../utils/formatDuration';
 import { formatCompact, formatInteger } from '../../utils/metricsFormat';
+import ExecutionTimeline from './ExecutionTimeline';
 import './metrics.css';
 
 interface Loaded {
@@ -42,16 +43,15 @@ function Rows({ runs }: { runs: AgentRunView[] }) {
   );
 }
 
-// Détail par agent d'UNE exécution, chargé seulement quand on l'ouvre. Rien n'est affiché sans
+// Détail d'UNE exécution (chronologie + tableau par agent), chargé à l'affichage. Rien n'est affiché sans
 // configuration d'API (contexte) ni pour les tours qui n'ont pas d'identifiant serveur.
-export default function ExecutionBreakdown({ executionId }: { executionId: number }) {
+export function ExecutionDetail({ executionId, totalSeconds = null }: { executionId: number; totalSeconds?: number | null }) {
   const config = useContext(MetricsApiContext);
-  const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const api = useMemo(() => (config ? apiClient(config.apiUrl, config.accessToken) : null), [config]);
 
   useEffect(() => {
-    if (!open || !api) return;
+    if (!api) return;
     const controller = new AbortController();
     api.getExecutionAgentRuns(executionId, controller.signal)
       .then((runs) => setLoaded({ executionId, runs, error: null }))
@@ -61,26 +61,40 @@ export default function ExecutionBreakdown({ executionId }: { executionId: numbe
         }
       });
     return () => controller.abort();
-  }, [open, api, executionId]);
+  }, [api, executionId]);
 
   if (!api) return null;
   const current = loaded?.executionId === executionId ? loaded : null;
+
+  return (
+    <div className="viz-root viz-break-body">
+      {!current && <p className="viz-sub">Chargement…</p>}
+      {current?.error && <p role="alert">❌ {current.error}</p>}
+      {current?.runs && current.runs.length === 0 && (
+        <p className="viz-sub">Aucune mesure pour cette exécution (lancée avant l'ajout du suivi par agent).</p>
+      )}
+      {current?.runs && current.runs.length > 0 && (
+        <>
+          <ExecutionTimeline runs={current.runs} totalSeconds={totalSeconds} />
+          <Rows runs={current.runs} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// Sous un message terminé du fil : bouton qui déplie ExecutionDetail.
+export default function ExecutionBreakdown({ executionId, totalSeconds = null }: { executionId: number; totalSeconds?: number | null }) {
+  const config = useContext(MetricsApiContext);
+  const [open, setOpen] = useState(false);
+  if (!config) return null;
 
   return (
     <div className="viz-break">
       <button type="button" className="viz-break-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
         📊 {open ? 'Masquer' : 'Voir'} la performance par agent
       </button>
-      {open && (
-        <div className="viz-root viz-break-body">
-          {!current && <p className="viz-sub">Chargement…</p>}
-          {current?.error && <p role="alert">❌ {current.error}</p>}
-          {current?.runs && current.runs.length === 0 && (
-            <p className="viz-sub">Aucune mesure pour cette exécution (lancée avant l'ajout du suivi par agent).</p>
-          )}
-          {current?.runs && current.runs.length > 0 && <Rows runs={current.runs} />}
-        </div>
-      )}
+      {open && <ExecutionDetail executionId={executionId} totalSeconds={totalSeconds} />}
     </div>
   );
 }

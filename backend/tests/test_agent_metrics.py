@@ -185,8 +185,8 @@ def test_summarize_computes_percentiles_averages_and_daily_series():
     assert design["token_runs"] == 1 and design["avg_prompt_tokens"] == 75.0
     assert [a["agent"] for a in result["agents"]] == ["design", "qa"]
     assert result["daily"] == [
-        {"date": "2026-10-01", "executions": 1, "failed": 0, "llm_calls": 4, "tokens": 200, "median_duration_seconds": 60.0},
-        {"date": "2026-10-02", "executions": 1, "failed": 1, "llm_calls": 2, "tokens": 0, "median_duration_seconds": 100.0},
+        {"date": "2026-10-01", "executions": 1, "failed": 0, "llm_calls": 4, "tokens": 200, "qa_total": 0, "qa_go": 0, "median_duration_seconds": 60.0},
+        {"date": "2026-10-02", "executions": 1, "failed": 1, "llm_calls": 2, "tokens": 0, "qa_total": 0, "qa_go": 0, "median_duration_seconds": 100.0},
     ]
     assert result["workflow"] == "BUGFIX" and result["period_days"] == 30
 
@@ -659,3 +659,122 @@ def test_measures_of_the_discarded_previous_period_are_not_loaded(session, monke
     finally:
         event.remove(engine, "before_cursor_execute", count)
     assert len(queries) == 2  # seulement les 2 exécutions de la période courante, pas les 3 lues
+
+
+# --- Point 8 : coût, raisonnement, qualité ------------------------------------------------------
+
+def test_final_verdict_takes_the_last_mention_and_none_when_absent():
+    from qa_report import final_verdict
+    assert final_verdict("Verdict : GO") == "GO"
+    assert final_verdict("Verdict : GO\\n\\n... corrigé ...\\nVerdict : NO_GO") == "NO_GO"
+    assert final_verdict("Verdict : GO_AVEC_RESERVES") == "GO_AVEC_RESERVES"
+    assert final_verdict("aucun rapport") is None and final_verdict("") is None
+
+
+def test_execution_cost_needs_a_configured_price():
+    from agent_metrics import execution_cost
+    assert execution_cost(1_000_000, 500_000, (2.0, 8.0)) == 6.0
+    assert execution_cost(1000, 1000, None) is None
+    assert execution_cost(1000, 1000, (0.0, 0.0)) is None
+
+
+def test_token_prices_are_read_from_the_environment(monkeypatch):
+    monkeypatch.delenv("TOKEN_PRICE_INPUT_PER_MILLION", raising=False)
+    monkeypatch.delenv("TOKEN_PRICE_OUTPUT_PER_MILLION", raising=False)
+    assert main._token_prices() is None
+    monkeypatch.setenv("TOKEN_PRICE_INPUT_PER_MILLION", "0.5")
+    monkeypatch.setenv("TOKEN_PRICE_OUTPUT_PER_MILLION", "2")
+    assert main._token_prices() == (0.5, 2.0)
+    monkeypatch.setenv("TOKEN_PRICE_INPUT_PER_MILLION", "abc")
+    assert main._token_prices() is None
+
+
+def test_summary_counts_reasoning_quality_and_cost(session, monkeypatch):
+    monkeypatch.setenv("TOKEN_PRICE_INPUT_PER_MILLION", "1")
+    monkeypatch.setenv("TOKEN_PRICE_OUTPUT_PER_MILLION", "4")
+    monkeypatch.setenv("COST_CURRENCY", "€")
+    retried = _execution(session, "u1", age_days=1)
+    retried.attempts, retried.qa_verdict = 2, "GO"
+    resumed = _execution(session, "u1", age_days=2)
+    resumed.reused_steps, resumed.qa_verdict = 2, "NO_GO"
+    plain = _execution(session, "u1", age_days=3)
+    plain.attempts, plain.qa_verdict = 1, "GO_AVEC_RESERVES"
+    for entry in (retried, resumed, plain):
+        session.add(entry)
+    session.commit()
+    _agent_run(session, retried)  # 30 tokens d'entrée, 10 de sortie
+    result = _summary(session)
+    e = result["executions"]
+    assert e["auto_retried"] == 1 and e["resumed"] == 1
+    assert e["qa_verdicts"] == {"GO": 1, "GO_AVEC_RESERVES": 1, "NO_GO": 1}
+    assert e["total_cost"] == pytest.approx(0.00007, abs=1e-6)  # 30 × 1/1M + 10 × 4/1M
+    assert result["currency"] == "€"
+    assert result["daily"][-1]["qa_total"] >= 1
+
+
+def test_cost_is_hidden_without_a_price_or_without_known_tokens(session, monkeypatch):
+    monkeypatch.delenv("TOKEN_PRICE_INPUT_PER_MILLION", raising=False)
+    monkeypatch.delenv("TOKEN_PRICE_OUTPUT_PER_MILLION", raising=False)
+    _agent_run(session, _execution(session, "u1", age_days=1))
+    result = _summary(session)
+    assert result["executions"]["total_cost"] is None and result["currency"] is None
+
+
+def test_new_execution_records_one_attempt_and_the_reused_steps_count():
+    from database import ExecutionHistory as Row
+    entry = Row(user_request="x", workflow="BUGFIX", attempts=1, reused_steps=0)
+    assert (entry.attempts, entry.reused_steps, entry.qa_verdict) == (1, 0, None)
+
+
+# --- Point 4 : liste des exécutions ---------------------------------------------------------------
+
+def _list(session, **params):
+    defaults = dict(days=30, workflow=None, status=None, sort="created_at", order="desc", limit=20, offset=0, user="u1")
+    defaults.update(params)
+    user = defaults.pop("user")
+    return asyncio.run(main.metrics_executions(session=session, user={"id": user}, **defaults))
+
+
+def test_executions_list_is_scoped_filtered_and_carries_the_measures(session):
+    mine = _execution(session, "u1", age_days=1, seconds=100)
+    failed = _execution(session, "u1", status="failed", age_days=2, seconds=50)
+    _execution(session, "u2", age_days=1)                   # autre utilisateur
+    _execution(session, "u1", age_days=60)                  # hors période
+    _agent_run(session, mine, calls=3)
+    page = _list(session)
+    assert page["total"] == 2 and [i["id"] for i in page["items"]] == [mine.id, failed.id]
+    first = page["items"][0]
+    assert first["duration_seconds"] == 100.0 and first["llm_calls"] == 3 and first["tokens"] == 40
+    assert page["items"][1]["llm_calls"] is None and page["items"][1]["tokens"] is None  # aucune mesure
+    assert [i["id"] for i in _list(session, status="failed")["items"]] == [failed.id]
+
+
+def test_executions_list_sorts_with_missing_values_always_last(session):
+    slow = _execution(session, "u1", age_days=1, seconds=300)
+    fast = _execution(session, "u1", age_days=2, seconds=20)
+    unmeasured = _execution(session, "u1", age_days=3, seconds=60)
+    _agent_run(session, slow, calls=9)
+    _agent_run(session, fast, calls=2)
+    by_calls = [i["id"] for i in _list(session, sort="llm_calls")["items"]]
+    assert by_calls == [slow.id, fast.id, unmeasured.id]
+    ascending = [i["id"] for i in _list(session, sort="llm_calls", order="asc")["items"]]
+    assert ascending == [fast.id, slow.id, unmeasured.id]      # manquante toujours en dernier
+    assert [i["id"] for i in _list(session, sort="duration")["items"]] == [slow.id, unmeasured.id, fast.id]
+
+
+def test_executions_list_paginates_and_clamps_its_limits(session):
+    ids = [_execution(session, "u1", age_days=1 + n).id for n in range(5)]
+    page = _list(session, limit=2, offset=2)
+    assert page["total"] == 5 and [i["id"] for i in page["items"]] == ids[2:4]
+    assert len(_list(session, limit=10_000)["items"]) == 5          # borné à 100
+    assert _list(session, offset=-5)["items"][0]["id"] == ids[0]   # offset négatif ramené à 0
+    assert len(_list(session, sort="n_importe_quoi")["items"]) == 5  # tri inconnu : par date
+
+
+def test_executions_list_truncates_long_requests(session):
+    entry = _execution(session, "u1", age_days=1)
+    entry.user_request = "x" * 5000
+    session.add(entry)
+    session.commit()
+    text = _list(session)["items"][0]["user_request"]
+    assert len(text) <= 141 and text.endswith("…")

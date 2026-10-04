@@ -57,6 +57,13 @@ def _verdict_spans(raw: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def final_verdict(raw: str) -> str | None:
+    """Dernier verdict QA mentionné dans un résultat (« GO », « GO_AVEC_RESERVES », « NO_GO »), ou None.
+    Sert à suivre la qualité dans le temps ; le DERNIER gagne (un rapport peut citer un verdict puis le corriger)."""
+    spans = _verdict_spans(raw or "")
+    return spans[-1][2] if spans else None
+
+
 _DECORATION = re.compile(r"[*_`\u2705\u274c\u26a0\ufe0f\u2611\u2714\u2716\U0001F7E2\U0001F534\U0001F7E1]")
 _TRAILING_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
 _STATUS_ONLY = re.compile(r"(OK|KO|NON[ _-]?V[ÉE]RIFIABLE)", re.IGNORECASE)

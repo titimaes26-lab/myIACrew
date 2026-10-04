@@ -2,13 +2,15 @@ import { useState } from 'react';
 import { useMetricsSummary } from '../../hooks/useMetricsSummary';
 import type { MetricsSummary, MetricsWorkflowFilter } from '../../types';
 import {
-  formatCompact, formatInteger, formatNumber, formatPercent, formatSecondsOrDash, successPercent,
+  formatCompact, formatCost, formatInteger, formatNumber, formatPercent, formatSecondsOrDash, successPercent,
 } from '../../utils/metricsFormat';
 import AgentDurationChart from './AgentDurationChart';
 import AgentTokensChart from './AgentTokensChart';
 import ChartCard from './ChartCard';
 import DailyTrendsChart from './DailyTrendsChart';
+import ExecutionsTable from './ExecutionsTable';
 import FailureCausesChart from './FailureCausesChart';
+import QaVerdictsChart from './QaVerdictsChart';
 import MetricsFilters from './MetricsFilters';
 import StatTile from './StatTile';
 import { computeDelta } from '../../utils/metricsDelta';
@@ -24,7 +26,11 @@ function Tiles({ summary }: { summary: MetricsSummary }) {
     calls: p ? computeDelta(e.avg_llm_calls, p.avg_llm_calls, 'down') : null,
     tokens: p ? computeDelta(e.avg_tokens, p.avg_tokens, 'down') : null,
     pauses: p ? computeDelta(e.rate_limit_hits, p.rate_limit_hits, 'down') : null,
+    cost: p ? computeDelta(e.avg_cost, p.avg_cost, 'down') : null,
+    // Relances et reprises comparées en TAUX (points) : leur nombre dépend du volume d'exécutions.
+    retried: p ? computeDelta(successPercent(e.auto_retried, e.total), successPercent(p.auto_retried, p.total), 'down', 'points') : null,
   };
+  const share = (count: number) => (e.total > 0 ? `${formatPercent(count, e.total)} des exécutions` : '');
   return (
     <div className="viz-tiles">
       <StatTile label="Exécutions terminées" value={formatInteger(e.total)} delta={delta.total} sub={`${e.success} réussie${e.success > 1 ? 's' : ''} · ${e.failed} en échec`} />
@@ -33,6 +39,11 @@ function Tiles({ summary }: { summary: MetricsSummary }) {
       <StatTile label="Appels LLM" value={formatNumber(e.avg_llm_calls)} delta={delta.calls} sub="par exécution (appels réels)" />
       <StatTile label="Tokens" value={formatCompact(e.avg_tokens)} delta={delta.tokens} sub={e.token_executions > 0 ? `par exécution · ${e.token_executions}/${e.total} mesurées` : 'usage non fourni par le modèle'} />
       <StatTile label="Pauses quota" value={formatInteger(e.rate_limit_hits)} delta={delta.pauses} sub={`${formatSecondsOrDash(e.wait_seconds)} d'attente au total`} />
+      {e.avg_cost != null && (
+        <StatTile label="Coût estimé" value={formatCost(e.avg_cost, summary.currency)} delta={delta.cost} sub={`par exécution · ${formatCost(e.total_cost, summary.currency)} au total`} />
+      )}
+      <StatTile label="Relances automatiques" value={formatInteger(e.auto_retried)} delta={delta.retried} sub={share(e.auto_retried) || 'après une panne temporaire'} />
+      <StatTile label="Reprises à l'étape" value={formatInteger(e.resumed)} sub={share(e.resumed) || 'étapes déjà réussies réutilisées'} />
     </div>
   );
 }
@@ -92,7 +103,9 @@ export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; 
           <AgentDurationChart agents={data.agents} />
           <AgentTokensChart agents={data.agents} />
           <FailureCausesChart failures={data.failures ?? []} total={data.executions.total} />
+          <QaVerdictsChart verdicts={data.executions.qa_verdicts ?? { GO: 0, GO_AVEC_RESERVES: 0, NO_GO: 0 }} total={data.executions.total} />
           <DailyTrendsChart daily={data.daily} />
+          <ExecutionsTable apiUrl={apiUrl} accessToken={accessToken} days={days} workflow={workflow} />
           <AgentTable summary={data} />
         </div>
       )}

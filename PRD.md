@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.13 — Mise à jour le 2026-10-04
+> Version : 1.14 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants · 1.12 (2026-10-04) qualité du code : CI, lint, types, tests frontend, exécution découpée en étapes · 1.13 (2026-10-04) historique des performances : comparaison à la période précédente, tendances quotidiennes, calcul exact.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants · 1.12 (2026-10-04) qualité du code : CI, lint, types, tests frontend, exécution découpée en étapes · 1.13 (2026-10-04) historique des performances : comparaison à la période précédente, tendances quotidiennes, calcul exact · 1.14 (2026-10-04) historique des performances : tableau des exécutions, chronologie par exécution, coût estimé, raisonnement (relances, reprises) et qualité (verdict QA).
 
 ---
 
@@ -194,14 +194,24 @@ GET  /api/repo-targets → { repo_owner, repo_name, base_branch }[]   (20 dernie
 // Exécutions TERMINÉES de l'utilisateur sur la période courante ET la précédente (20 000 au plus, les plus récentes : garde-fou mémoire, pas une limite de produit ; un usage normal sur 365 jours est calculé exactement).
 Response { period_days: number; workflow: string | null;
            executions: { total, success, failed, median_duration_seconds, avg_llm_calls, avg_tokens,
-                         token_executions, rate_limit_hits, wait_seconds };
+                         token_executions, rate_limit_hits, wait_seconds,
+                         auto_retried, resumed,                       // raisonnement : relances auto / reprises à l'étape
+                         qa_verdicts: { GO, GO_AVEC_RESERVES, NO_GO }, // qualité : verdict QA final des résultats
+                         total_cost | null, avg_cost | null };         // coût estimé ; null sans tarif ou sans tokens connus
            agents: { agent, label, runs, incomplete, duration_p50, duration_p95, avg_llm_calls, llm_errors,
                      token_runs, avg_prompt_tokens, avg_completion_tokens, avg_tool_calls, tool_errors }[];
            failures: { code, label, count }[];   // échecs par cause (error_code), du plus fréquent au moins fréquent
            truncated: boolean;                   // vrai si la limite de sécurité (20 000 exécutions) coupe la période courante
            previous: { …mêmes champs que `executions` } | null;   // période précédente de même durée ; null sans donnée ou si la limite la coupe
            comparison_limited: boolean;          // vrai si la limite a fait abandonner la comparaison alors que la période courante est complète
-           daily: { date, executions, failed, llm_calls, tokens, median_duration_seconds | null }[] }
+           currency: string | null;              // devise du coût (COST_CURRENCY, « $ » par défaut) ; null sans tarif
+           daily: { date, executions, failed, llm_calls, tokens, qa_total, qa_go, median_duration_seconds | null }[] }
+
+// GET /api/metrics/executions?days&workflow&status=all|success|failed&sort=created_at|duration|llm_calls|tokens&order=asc|desc&limit(1-100)&offset
+// Exécutions terminées de la période, triées/filtrées côté serveur (valeurs manquantes toujours en dernier ; demande tronquée à 140 caractères).
+Response { total: number;
+           items: { id, conversation_id, user_request, workflow, status: 'success'|'failed', created_at, duration_seconds | null,
+                    llm_calls | null, tokens | null, error_code | null, qa_verdict | null, attempts, reused_steps, repo | null }[] }
 
 // GET /api/executions/{id}/agent-runs   → détail par agent d'UNE exécution (404 si elle n'est pas à l'utilisateur)
 Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_seconds, llm_calls, llm_errors,
@@ -231,13 +241,15 @@ POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [
 | `conversation_id` | int (indexé) | fil de conversation |
 | `repo_owner`, `repo_name`, `base_branch`, `work_branch` | text (nullable) | cible GitHub et branche de travail |
 | `api_calls_count`, `rate_limit_hits`, `total_wait_time_seconds` | int / float (nullable) | coût et attentes de quota de l'exécution |
+| `attempts`, `reused_steps` | int (nullable) | tentatives (2 = relance automatique) et étapes reprises d'une exécution précédente |
+| `qa_verdict` | text (nullable) | verdict QA final (`GO`, `GO_AVEC_RESERVES`, `NO_GO`) |
 | `created_at`, `updated_at` | datetime | horodatages |
 
 **Table `agentrun`** : une ligne par agent mesuré et par exécution — `execution_id`, `conversation_id`, `user_id` (indexés), `workflow`, `agent` (`design`, `architecture`, `diagnostic`, `development`, `qa`, `system`), `status` (`completed`, `incomplete`, `n/a`), `duration_seconds` (nullable), `llm_calls`, `llm_errors`, `usage_calls` (appels dont les tokens sont connus), `prompt_tokens`, `completion_tokens`, `total_tokens`, `tool_calls`, `tool_errors`, `created_at`. Table nouvelle : créée automatiquement, sans migration.
 
 **Table `executioncheckpoint`** : sortie d'une étape reprenable terminée — `execution_id` (indexé), `step` (`design`, `architecture`, `diagnostic`), `raw`, `created_at`. Supprimée avec l'exécution. Table nouvelle : créée automatiquement, sans migration.
 
-L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le texte du résultat (bloc « Livraison constatée par les outils »). Le schéma `auth` est géré entièrement par Supabase. Les colonnes ajoutées après coup sont rattrapées par des migrations légères au démarrage.
+L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le texte du résultat (bloc « Livraison constatée par les outils »). Le schéma `auth` est géré entièrement par Supabase. Variables d'environnement du coût : `TOKEN_PRICE_INPUT_PER_MILLION`, `TOKEN_PRICE_OUTPUT_PER_MILLION` (sans elles, aucun coût n'est affiché), `COST_CURRENCY`. Chronologie d'une exécution : les heures de début par étape ne sont pas stockées ; les étapes sont placées bout à bout selon leur durée, suivies d'un segment « Attente et finalisation » (quota, écritures GitHub) quand il reste au moins 1 s. Les colonnes ajoutées après coup sont rattrapées par des migrations légères au démarrage.
 
 ---
 

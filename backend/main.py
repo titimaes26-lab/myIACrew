@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
-from sqlalchemy import update as sql_update
+from sqlalchemy import case, update as sql_update
 from sqlmodel import Session, col, func, select
 
 from crewquestion import (
@@ -26,11 +26,12 @@ from database import (
     create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
 )
 from agent_metrics import (
-    ExecutionMetrics, agent_run_view, split_by_period, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
+    ExecutionMetrics, agent_run_view, list_executions, split_by_period, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
 )
 from auth import get_current_user, close_http_client
 import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
+from qa_report import final_verdict
 from errors import (
     AppError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
@@ -545,6 +546,17 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
         reason = "délai dépassé" if isinstance(e, (asyncio.TimeoutError, TimeoutError)) else (str(e) or type(e).__name__)
         return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
 
+def _set_attempts(execution_id: int, attempts: int) -> None:
+    """Nombre de tentatives d'une exécution (2 dès qu'une relance automatique est décidée). Best-effort."""
+    try:
+        with Session(engine) as attempts_session:
+            attempts_session.exec(
+                sql_update(ExecutionHistory).where(ExecutionHistory.id == execution_id).values(attempts=attempts)
+            )
+            attempts_session.commit()
+    except Exception as e:
+        print(f"AVERTISSEMENT : nombre de tentatives non enregistré (execution_id={execution_id}) : {type(e).__name__}: {e}", flush=True)
+
 def _touch_execution(execution_id: int) -> bool:
     """Signe de vie (updated_at) d'une exécution en cours. Best-effort ; True si écrit sans erreur.
     Un seul UPDATE conditionnel (status='running') : un battement tardif ne peut pas écraser le
@@ -785,6 +797,7 @@ async def _execute_crew_and_persist(
         # (et non None) pendant l'attente : None ferait simuler une progression par StepIndicator.
         try:
             await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
+            await asyncio.to_thread(_set_attempts, db_entry_id, 2)
             await asyncio.sleep(AUTO_RETRY_DELAY_S)
             async with _execution_semaphore:
                 await _run_crew_and_persist(
@@ -974,6 +987,7 @@ async def _persist_success(
     _safe_refresh(session, db_entry, "succès")
     db_entry.result = raw_result
     db_entry.status = "success"
+    db_entry.qa_verdict = final_verdict(raw_result)
     db_entry.current_step = None
     _record_run_metrics(session, db_entry, state)
     _commit_outcome(session, db_entry, conversation)
@@ -1366,6 +1380,8 @@ async def execute_workflow(
         repo_name=data.repo_name if has_repo_target else None,
         base_branch=normalized_base_branch,
         work_branch=work_branch or None,
+        attempts=1,
+        reused_steps=len(resume_outputs),
     )
     session.add(db_entry)
     session.commit()
@@ -1578,9 +1594,24 @@ async def list_repo_targets(
     return targets
 
 _IN_CLAUSE_CHUNK = 500
+REQUEST_FETCH_CHARS = 200
 # Garde-fou mémoire, pas une limite de produit : au-delà, le tableau de bord signale `truncated` et ne fait
 # plus de comparaison. Assez haut pour que 365 jours d'un usage normal soient calculés EXACTEMENT.
 _METRICS_EXECUTION_LIMIT = 20_000
+
+
+def _token_prices() -> Optional[tuple[float, float]]:
+    """Tarif (entrée, sortie) par million de tokens, lu à l'appel depuis TOKEN_PRICE_INPUT_PER_MILLION et
+    TOKEN_PRICE_OUTPUT_PER_MILLION ; None (coût masqué) si absent, invalide ou nul. Un tarif unique : le modèle
+    n'est pas stocké par mesure."""
+    try:
+        prices = (
+            float(os.getenv("TOKEN_PRICE_INPUT_PER_MILLION", "0")),
+            float(os.getenv("TOKEN_PRICE_OUTPUT_PER_MILLION", "0")),
+        )
+    except ValueError:
+        return None
+    return prices if prices[0] > 0 or prices[1] > 0 else None
 
 @app.get("/api/metrics/summary")
 async def metrics_summary(
@@ -1601,11 +1632,12 @@ async def metrics_summary(
     since = now - timedelta(days=days)
     uid = user.get("id")
     statement = (
-        select(
+        select(  # type: ignore[misc]  # trop de colonnes pour l'inférence de mypy
             ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.workflow,
             ExecutionHistory.created_at, ExecutionHistory.updated_at,
             ExecutionHistory.rate_limit_hits, ExecutionHistory.total_wait_time_seconds,
-            ExecutionHistory.error_code,
+            ExecutionHistory.error_code, ExecutionHistory.attempts, ExecutionHistory.reused_steps,
+            ExecutionHistory.qa_verdict,
         )
         .where(ExecutionHistory.user_id == uid)
         .where(ExecutionHistory.created_at >= now - timedelta(days=2 * days))
@@ -1619,6 +1651,7 @@ async def metrics_summary(
         {
             "id": r[0], "status": r[1], "workflow": r[2], "created_at": r[3], "updated_at": r[4],
             "rate_limit_hits": r[5], "total_wait_time_seconds": r[6], "error_code": r[7],
+            "attempts": r[8], "reused_steps": r[9], "qa_verdict": r[10],
         }
         for r in session.exec(statement).all()
     ]
@@ -1646,7 +1679,11 @@ async def metrics_summary(
             ).all()
         )
     current_ids = {e["id"] for e in executions}
-    result = summarize([r for r in runs if r["execution_id"] in current_ids], executions, days, workflow, tz_offset)
+    prices = _token_prices()
+    result = summarize(
+        [r for r in runs if r["execution_id"] in current_ids], executions, days, workflow, tz_offset, prices,
+    )
+    result["currency"] = os.getenv("COST_CURRENCY", "$") if prices else None
     result["truncated"] = truncated
     result["comparison_limited"] = comparison_limited
     # Comparaison honnête seulement : sans exécution précédente, ou si la période précédente est incomplète
@@ -1655,10 +1692,75 @@ async def metrics_summary(
         previous_ids = {e["id"] for e in previous_executions}
         result["previous"] = summarize(
             [r for r in runs if r["execution_id"] in previous_ids], previous_executions, days, workflow, tz_offset,
+            prices,
         )["executions"]
     else:
         result["previous"] = None
     return result
+
+@app.get("/api/metrics/executions")
+async def metrics_executions(
+    days: int = 30,
+    workflow: Optional[str] = None,
+    status: Optional[str] = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    limit: int = 20,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Exécutions terminées de l'utilisateur sur la période, une page à la fois : filtre par workflow et par
+    statut, tri par date, durée, appels LLM ou tokens (valeurs absentes toujours en dernier)."""
+    days = max(1, min(days, 365))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    uid = user.get("id")
+    statement = (
+        select(  # type: ignore[misc]  # trop de colonnes pour l'inférence de mypy
+            ExecutionHistory.id, ExecutionHistory.conversation_id,
+            # Début de la demande seulement : une demande peut faire des milliers de caractères.
+            func.substr(ExecutionHistory.user_request, 1, REQUEST_FETCH_CHARS),
+            ExecutionHistory.workflow, ExecutionHistory.status, ExecutionHistory.created_at,
+            ExecutionHistory.updated_at, ExecutionHistory.error_code, ExecutionHistory.qa_verdict,
+            ExecutionHistory.attempts, ExecutionHistory.reused_steps, ExecutionHistory.repo_owner,
+            ExecutionHistory.repo_name,
+        )
+        .where(ExecutionHistory.user_id == uid)
+        .where(ExecutionHistory.created_at >= since)
+        .where(col(ExecutionHistory.status).in_(("success", "failed")))
+        .order_by(col(ExecutionHistory.created_at).desc())
+        .limit(_METRICS_EXECUTION_LIMIT)
+    )
+    if workflow:
+        statement = statement.where(ExecutionHistory.workflow == workflow)
+    rows = [
+        {
+            "id": r[0], "conversation_id": r[1], "user_request": r[2], "workflow": r[3], "status": r[4],
+            "created_at": r[5], "updated_at": r[6], "error_code": r[7], "qa_verdict": r[8], "attempts": r[9],
+            "reused_steps": r[10], "repo_owner": r[11], "repo_name": r[12],
+        }
+        for r in session.exec(statement).all()
+    ]
+    # Une ligne par exécution (GROUP BY) : appels LLM et tokens (usage connu seulement ; None sinon).
+    sums: dict[int, dict[str, Any]] = {}
+    ids = [row["id"] for row in rows]
+    known_usage = case((col(AgentRun.usage_calls) > 0, 1), else_=0)
+    for start in range(0, len(ids), _IN_CLAUSE_CHUNK):
+        grouped = session.exec(
+            select(
+                AgentRun.execution_id, func.sum(AgentRun.llm_calls),
+                func.sum(case((col(AgentRun.usage_calls) > 0, AgentRun.total_tokens), else_=0)),
+                func.sum(known_usage),
+            )
+            .where(AgentRun.user_id == uid)
+            .where(col(AgentRun.execution_id).in_(ids[start:start + _IN_CLAUSE_CHUNK]))
+            .group_by(AgentRun.execution_id)
+        ).all()
+        for execution_id, calls, tokens, known in grouped:
+            sums[execution_id] = {"llm_calls": int(calls or 0), "tokens": int(tokens or 0) if known else None}
+    return list_executions(
+        rows, sums, status=status, sort=sort, descending=order != "asc", limit=limit, offset=offset,
+    )
 
 @app.get("/api/executions/{execution_id}/agent-runs")
 async def execution_agent_runs(

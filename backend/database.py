@@ -61,6 +61,11 @@ class ExecutionHistory(SQLModel, table=True):
     # « réessayer tel quel a une chance de réussir ». L'étape en échec est dans `result` (« Échec à l'étape N/M »).
     error_code: Optional[str] = None
     error_retryable: Optional[bool] = None
+    # Raisonnement de l'exécution : nombre de tentatives (2 après une relance automatique), étapes reprises d'une
+    # exécution précédente, et dernier verdict QA du résultat (GO | GO_AVEC_RESERVES | NO_GO) pour suivre la qualité.
+    attempts: Optional[int] = None
+    reused_steps: Optional[int] = None
+    qa_verdict: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -118,6 +123,9 @@ _MIGRATION_STATEMENTS = [
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS current_step VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_code VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS error_retryable BOOLEAN",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS attempts INTEGER",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS reused_steps INTEGER",
+    "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS qa_verdict VARCHAR",
 ]
 
 def _run_lightweight_migrations():
