@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { workflowSteps, stepShortLabel } from '../constants/workflowSteps';
+import { queueAheadText } from '../utils/queueText';
 import { formatSeconds } from '../utils/formatDuration';
 import { estimateRemaining, roundEstimate } from '../utils/estimateRemaining';
 import { useStepStats } from '../hooks/useStepStats';
@@ -25,16 +26,18 @@ interface StepIndicatorProps {
   // plus bas, seul mode disponible pour le tout premier message d'une conversation (son id
   // n'est connu qu'une fois /api/execute résolu, donc rien à sonder avant cela).
   currentStepKey?: string | null;
+  // Exécutions devant celle-ci tant qu'elle attend son créneau (étape « queued »).
+  queueAhead?: number | null;
   // Étapes réutilisées d'une exécution précédente (reprise) : affichées comme terminées, à part.
   reusedSteps?: string[];
 }
 
-export default function StepIndicator({ workflow, scope, since, currentStepKey, reusedSteps }: StepIndicatorProps) {
+export default function StepIndicator({ workflow, scope, since, currentStepKey, queueAhead, reusedSteps }: StepIndicatorProps) {
   const steps = workflowSteps(workflow, scope);
   // Signal réel distinct des vraies étapes du workflow (jamais une clé de WORKFLOW_STEPS, voir
   // constants/workflowSteps.ts) : persisté côté backend (_execute_crew_and_persist, main.py) tant
-  // que cette exécution attend son tour derrière _execution_semaphore (au plus 2 exécutions de
-  // crew en vol simultanément, toutes conversations confondues — voir sa définition). Sans ce
+  // que cette exécution attend son tour derrière _execution_semaphore (une seule exécution de crew
+  // à la fois par défaut, toutes conversations confondues — voir sa définition). Sans ce
   // signal dédié, l'estimation par temps ci-dessous ferait défiler puis "terminer" toutes les
   // étapes en quelques dizaines de secondes alors qu'aucune n'a même commencé, l'exécution étant
   // encore purement en attente d'un emplacement.
@@ -44,6 +47,11 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
 
   const [estimatedIndex, setEstimatedIndex] = useState(0);
   const [elapsed, setElapsed] = useState(() => elapsedSecondsSince(since));
+  // Temps passé en file d'attente (vu par ce navigateur) : retiré du « en cours depuis », qui ne compte que l'exécution.
+  // Suit le temps écoulé tant que le tour est en file ; figé dès qu'il démarre réellement.
+  const [queuedFor, setQueuedFor] = useState(0);
+  if (isQueued && elapsed > queuedFor) setQueuedFor(elapsed);
+  const runningFor = Math.max(0, elapsed - queuedFor);
   // Distingue "jamais eu de signal réel pour ce tour" (retombe sur l'estimation par temps,
   // seul mode possible tant que /api/execute n'a pas résolu pour le tout premier message d'une
   // conversation) de "en avait un, mais plus maintenant" (le backend efface current_step
@@ -152,7 +160,7 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
       )}
       <p className="steps__caption">
         {hasRealProgress
-          ? `En cours depuis ${formatSeconds(elapsed)} — progression suivie en direct.`
+          ? `En cours depuis ${formatSeconds(runningFor)} — progression suivie en direct.`
           : isPausedForRetry
             // Générique plutôt que "après une limite de quota atteinte" : ce message peut
             // aussi, brièvement, correspondre à un échec définitif (non lié au quota) qui n'a
@@ -161,7 +169,7 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
             // current_step sur TOUTE exception, retentée ou non).
             ? `En pause — nouvelle tentative éventuelle en cours. Si l'exécution reprend, ce sera depuis ${reused.size > 0 ? 'la première étape non reprise' : 'la toute première étape'}.`
             : isQueued
-              ? "En file d'attente — d'autres exécutions occupent déjà ce service. Celle-ci démarrera automatiquement dès qu'un emplacement se libère."
+              ? `En file d'attente depuis ${formatSeconds(elapsed)} — ${queueAheadText(queueAhead)} Celle-ci démarrera automatiquement dès qu'un emplacement se libère.`
               : `En cours depuis ${formatSeconds(elapsed)} — progression estimée, l'étape réellement en cours côté serveur peut différer.`}
       </p>
       {stepElapsed !== null && currentLabel && (

@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MetricsApiContext } from '../hooks/metricsApi';
 import { clearStepStatsCache } from '../hooks/useStepStats';
 import StepIndicator from './StepIndicator';
+import { queueAheadText } from '../utils/queueText';
 
 const since = new Date().toISOString();
 
@@ -54,6 +55,35 @@ describe('StepIndicator', () => {
     render(<StepIndicator workflow="BUGFIX" since={since} currentStepKey="queued" />);
     for (const item of items()) expect(item).toHaveClass('stepper__item--todo');
     expect(screen.getByText(/En file d'attente/)).toBeInTheDocument();
+  });
+
+  it('en file d’attente, dit combien d’exécutions passent avant', () => {
+    const { rerender } = render(<StepIndicator workflow="BUGFIX" since={since} currentStepKey="queued" queueAhead={2} />);
+    expect(screen.getByText(/2 exécutions passent avant elle/)).toBeInTheDocument();
+    rerender(<StepIndicator workflow="BUGFIX" since={since} currentStepKey="queued" queueAhead={1} />);
+    expect(screen.getByText(/1 exécution passe avant elle/)).toBeInTheDocument();
+    rerender(<StepIndicator workflow="BUGFIX" since={since} currentStepKey="queued" queueAhead={0} />);
+    expect(screen.getByText(/elle est la prochaine/)).toBeInTheDocument();
+    rerender(<StepIndicator workflow="BUGFIX" since={since} currentStepKey="queued" />);
+    expect(screen.getByText(/d'autres exécutions occupent déjà ce service/)).toBeInTheDocument();
+    expect(queueAheadText(null)).toContain('occupent');
+  });
+
+  it('le « en cours depuis » ne compte pas le temps passé dans la file', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+      const start = new Date().toISOString();
+      const { rerender } = render(<StepIndicator workflow="BUGFIX" since={start} currentStepKey="queued" queueAhead={1} />);
+      act(() => { vi.advanceTimersByTime(125_000); });                   // 2 min 5 s dans la file
+      expect(screen.getByText(/En file d'attente depuis 2m 5s/)).toBeInTheDocument();
+      rerender(<StepIndicator workflow="BUGFIX" since={start} currentStepKey="diagnostic" />);
+      expect(screen.getByText(/En cours depuis 0s/)).toBeInTheDocument();   // l'exécution vient de commencer
+      act(() => { vi.advanceTimersByTime(30_000); });
+      expect(screen.getByText(/En cours depuis 30s/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('annonce l’état de chaque étape aux lecteurs d’écran', () => {

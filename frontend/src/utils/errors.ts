@@ -22,6 +22,8 @@ export function failureHint(code: string | null | undefined): string | null {
     case 'LLM_TIMEOUT':
     case 'GITHUB_UNAVAILABLE':
       return 'Panne temporaire : « Relancer » relance la demande telle quelle, idéalement dans quelques minutes.';
+    case 'EXECUTION_TIMEOUT':
+      return 'L\'exécution a duré trop longtemps et a été arrêtée pour libérer le service : « Relancer » reprend les étapes déjà réussies ; simplifier la demande aide.';
     case 'RATE_LIMITED':
       return 'Limite atteinte : attendez la fin d\'une exécution en cours (ou quelques minutes), puis relancez.';
     case 'INTERRUPTED':

@@ -50,6 +50,8 @@ export interface ConversationProgress {
   status: string | null;
   current_step: string | null;
   completed_agents?: Record<string, string>;
+  // Exécutions devant celle-ci tant qu'elle attend son créneau (étape « queued »), sinon null.
+  queue_ahead?: number | null;
 }
 
 function authHeaders(accessToken: string): HeadersInit {

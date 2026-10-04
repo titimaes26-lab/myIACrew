@@ -203,6 +203,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
           if (progress.status === 'running') {
             setTurns((t) => t.map((turn) => {
               const hasUpdate = turn.currentStep !== progress.current_step ||
+                                (turn.queueAhead ?? null) !== (progress.queue_ahead ?? null) ||
                                 Object.keys(progress.completed_agents || {}).length > 0;
               if (turn.status === 'running' && hasUpdate) {
                 const newCompletedAgents = {
@@ -212,6 +213,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
                 return {
                   ...turn,
                   currentStep: progress.current_step,
+                  queueAhead: progress.queue_ahead ?? null,
                   completedAgents: newCompletedAgents,
                 };
               }

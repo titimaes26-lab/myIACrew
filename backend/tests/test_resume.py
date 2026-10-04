@@ -465,7 +465,8 @@ def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engin
 
 
 def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, monkeypatch):
-    assert main._MAX_CONCURRENT_EXECUTIONS == 1 and main._execution_semaphore._value == 1
+    # Valeur fixée ici : le test ne dépend pas de MAX_CONCURRENT_EXECUTIONS dans l'environnement de CI ou de dev.
+    monkeypatch.setattr(main, "_execution_semaphore", asyncio.Semaphore(1))
     running, peak, order = 0, 0, []
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
@@ -507,3 +508,59 @@ def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, mo
     assert peak == 1                                   # jamais deux crews en même temps
     assert order == ["start", "end"] * 3               # les suivants attendent leur tour
     assert steps.count("queued") >= 3                  # chacun annonce « queued » avant d'attendre
+
+
+def test_a_stuck_crew_is_stopped_at_the_deadline_marked_failed_and_the_slot_is_released(engine, monkeypatch):
+    monkeypatch.setattr(main, "_EXECUTION_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(main, "_execution_semaphore", asyncio.Semaphore(1))
+    calls = []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        calls.append(1)
+        await asyncio.sleep(30)   # bloqué : seul le délai global peut le libérer
+
+    execution_id = _launch_with(engine, monkeypatch, fake_run, request_type="BUGFIX")
+    saved = _saved(engine, execution_id)
+    assert len(calls) == 1                                    # pas de seconde tentative automatique
+    assert saved.status == "failed" and saved.error_code == "EXECUTION_TIMEOUT" and saved.error_retryable is True
+    assert "durée maximale" in saved.result
+    assert main._execution_semaphore._value == 1              # le créneau est rendu : la file peut avancer
+
+
+def test_a_timeout_raised_by_the_crew_itself_is_not_taken_for_the_global_deadline(engine, monkeypatch):
+    monkeypatch.setattr(main, "_EXECUTION_TIMEOUT_S", 600)
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        raise TimeoutError("délai d'un appel LLM")
+
+    execution_id = _launch_with(engine, monkeypatch, fake_run, request_type="BUGFIX")
+    assert _saved(engine, execution_id).error_code == "LLM_TIMEOUT"
+
+
+def test_queue_position_counts_running_executions_and_older_queued_ones(engine):
+    from datetime import datetime, timedelta, timezone
+    base = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+    with Session(engine) as db:
+        def add(user, step, minutes):
+            conversation = Conversation(user_id=user, title="t")
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+            entry = ExecutionHistory(user_request="x", workflow="BUGFIX", status="running", user_id=user,
+                                     conversation_id=conversation.id, current_step=step, created_at=base + timedelta(minutes=minutes))
+            db.add(entry)
+            db.commit()
+            db.refresh(entry)
+            return entry
+        running = add("u1", "diagnostic", 0)           # en cours : devant tout le monde
+        first = add("u2", "queued", 1)                 # première en attente
+        second = add("u3", "queued", 2)                # seconde en attente
+        later_running = add("u4", "development", 3)    # tourne (rare) : compte, créée après ou non
+        add("u5", None, 4)                             # vient d'être lancée, pas encore « queued » : derrière
+        assert main._queue_ahead(db, first.id, "queued", first.created_at) == 2     # running + later_running
+        assert main._queue_ahead(db, second.id, "queued", second.created_at) == 3   # + first
+        assert running.id != later_running.id
+        progress = main.get_conversation_progress(conversation_id=second.conversation_id, session=db, user={"id": "u3"})
+        assert progress["queue_ahead"] == 3 and progress["current_step"] == "queued"
+        done = main.get_conversation_progress(conversation_id=running.conversation_id, session=db, user={"id": "u1"})
+        assert done["queue_ahead"] is None                                          # seulement quand l'exécution attend

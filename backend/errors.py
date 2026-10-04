@@ -17,6 +17,7 @@ class ErrorCode:
     QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
     LLM_TIMEOUT = "LLM_TIMEOUT"
+    EXECUTION_TIMEOUT = "EXECUTION_TIMEOUT"
     GITHUB_UNAVAILABLE = "GITHUB_UNAVAILABLE"
     GUARDRAIL_FAILED = "GUARDRAIL_FAILED"
     DELIVERY_FAILED = "DELIVERY_FAILED"
@@ -58,6 +59,7 @@ _USER_MESSAGES = {
     ErrorCode.QUOTA_EXHAUSTED: "Le quota du modèle IA est épuisé pour le moment. Réessayez dans quelques minutes.",
     ErrorCode.LLM_UNAVAILABLE: "Le modèle IA est momentanément indisponible ou surchargé. Réessayez dans quelques minutes.",
     ErrorCode.LLM_TIMEOUT: "Le modèle IA a mis trop de temps à répondre. Réessayez.",
+    ErrorCode.EXECUTION_TIMEOUT: "L'exécution a dépassé sa durée maximale et a été arrêtée pour libérer le service. Réessayez, ou simplifiez la demande.",
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub est momentanément injoignable : la livraison n'a pas pu être vérifiée. Réessayez.",
     ErrorCode.GUARDRAIL_FAILED: "Le résultat produit ne respecte pas les contrôles de qualité. Reformulez ou précisez la demande.",
 }
@@ -66,6 +68,10 @@ _USER_MESSAGES = {
 class DeliveryError(RuntimeError):
     """Livraison GitHub non confirmée après l'exécution (aucune branche, aucun commit, aucune PR). Son texte porte
     déjà le constat et le rapport de l'agent : le classement ne lui ajoute donc pas de message lisible."""
+
+
+class ExecutionTimeoutError(RuntimeError):
+    """Le crew a dépassé la durée maximale d'une exécution (EXECUTION_TIMEOUT_S, voir main.py)."""
 
 
 class ErrorInfo(NamedTuple):
@@ -139,6 +145,8 @@ def _classify_single(exc: BaseException) -> ErrorInfo:
             return ErrorInfo(ErrorCode.GITHUB_UNAVAILABLE, True, _USER_MESSAGES[ErrorCode.GITHUB_UNAVAILABLE])
     except Exception:
         pass
+    if isinstance(exc, ExecutionTimeoutError):
+        return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT])
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return ErrorInfo(ErrorCode.LLM_TIMEOUT, True, _USER_MESSAGES[ErrorCode.LLM_TIMEOUT])
     text = str(exc).lower()
@@ -159,4 +167,5 @@ def http_status_for(code: str) -> int:
         ErrorCode.LLM_UNAVAILABLE: 503,
         ErrorCode.GITHUB_UNAVAILABLE: 503,
         ErrorCode.LLM_TIMEOUT: 504,
+        ErrorCode.EXECUTION_TIMEOUT: 504,
     }.get(code, 500)

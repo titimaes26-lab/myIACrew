@@ -116,6 +116,8 @@ export interface ChatTurn {
   // conversation, où conversationId n'est connu qu'une fois /api/execute résolu), auquel
   // cas StepIndicator retombe sur l'estimation par temps.
   currentStep?: string | null;
+  // Nombre d'exécutions devant ce tour tant qu'il attend son créneau (étape « queued »), sondé avec la progression.
+  queueAhead?: number | null;
   // Vrai après un clic sur "Annuler" (cancelSending, useConversation.ts) pendant que ce tour
   // est encore "running" : contrairement à status === 'cancelled', ne change PAS `status` lui-
   // même, précisément pour que hasRunningTurn/busy et le sondage de progression restent actifs

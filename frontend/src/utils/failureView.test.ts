@@ -82,6 +82,13 @@ describe('splitPartialWork', () => {
   });
 });
 
+describe('EXECUTION_TIMEOUT', () => {
+  it('est une panne passagère avec sa propre cause', () => {
+    expect(isTransientFailure(null, 'EXECUTION_TIMEOUT')).toBe(true);
+    expect(failureCause('EXECUTION_TIMEOUT').title).toContain('durée maximale');
+  });
+});
+
 describe('RATE_LIMITED', () => {
   it('est une panne passagère avec sa propre cause', () => {
     expect(isTransientFailure(null, 'RATE_LIMITED')).toBe(true);

@@ -38,7 +38,7 @@ from qa_report import final_verdict
 from limits import check_qualify_rate, check_user_execution_quota, record_execution_launch
 from summary import partial_work_block
 from errors import (
-    AppError, DeliveryError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
+    AppError, DeliveryError, ErrorCode, ErrorInfo, ExecutionTimeoutError, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
 from github_tools import (
     verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
@@ -83,6 +83,16 @@ _active_execution_ids: set[int] = set()
 # limite globale sans avertissement (chaque process aurait alors sa PROPRE limite, portant
 # le vrai plafond à cette valeur * nombre de process).
 _MAX_CONCURRENT_EXECUTIONS = _env_int("MAX_CONCURRENT_EXECUTIONS", 1, 1)
+# Étape persistée tant qu'une exécution attend son créneau (jamais une clé réelle de WORKFLOW_STEPS côté frontend).
+QUEUED_STEP = "queued"
+
+# Durée maximale d'UN crew (hors attente dans la file et hors vérification de livraison), EXECUTION_TIMEOUT_S, 20 min par
+# défaut. Avec un seul créneau, une exécution bloquée (appel qui ne revient pas, boucle d'un agent) retiendrait le service
+# pour tous : son battement de cœur continue, le balayage des orphelines ne la libère pas. Au-delà, la tâche est annulée,
+# l'exécution passe en échec (EXECUTION_TIMEOUT, réessayable) et le créneau est rendu. Limite : le crew tourne dans un
+# thread que Python ne sait pas tuer ; il peut finir de s'exécuter (et consommer du quota) après l'annulation, sans effet
+# sur l'exécution déjà marquée en échec.
+_EXECUTION_TIMEOUT_S = _env_int("EXECUTION_TIMEOUT_S", 1200, 60)
 _execution_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXECUTIONS)
 
 # Délai (best-effort, voir on_shutdown) accordé aux exécutions de crew encore en tâche de fond
@@ -830,7 +840,7 @@ async def _execute_crew_and_persist(
     on_step_change une fois le crew réellement lancé (voir _run_crew_and_persist plus bas) l'écrase
     naturellement avec la vraie première étape, sans action supplémentaire ici.
     """
-    await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
+    await asyncio.to_thread(_persist_current_step, db_entry_id, QUEUED_STEP)
     async with _execution_semaphore:
         retry_outputs = await _run_crew_and_persist(
             db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
@@ -842,7 +852,7 @@ async def _execute_crew_and_persist(
         # de base) pour ne bloquer ni un emplacement d'exécution ni une connexion pendant 90 s. « queued »
         # (et non None) pendant l'attente : None ferait simuler une progression par StepIndicator.
         try:
-            await asyncio.to_thread(_persist_current_step, db_entry_id, "queued")
+            await asyncio.to_thread(_persist_current_step, db_entry_id, QUEUED_STEP)
             await asyncio.to_thread(_set_attempts, db_entry_id, 2)
             await asyncio.sleep(AUTO_RETRY_DELAY_S)
             async with _execution_semaphore:
@@ -1022,16 +1032,24 @@ async def _run_crew(
     try:
         with track_execution_metrics() as run_metrics:
             state.metrics = run_metrics
-            return await crew.run_dynamic_crew(
-                inputs=inputs,
-                request_type=request_type,
-                on_step_change=lambda step_key: _persist_current_step(execution_id, step_key),
-                on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(
-                    execution_id, agent_name, output, duration),
-                resume_outputs=resume_outputs,
-                # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
-                **({"scope": scope} if scope else {}),
-            )
+            try:
+                async with asyncio.timeout(_EXECUTION_TIMEOUT_S) as deadline:
+                    return await crew.run_dynamic_crew(
+                        inputs=inputs,
+                        request_type=request_type,
+                        on_step_change=lambda step_key: _persist_current_step(execution_id, step_key),
+                        on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(
+                            execution_id, agent_name, output, duration),
+                        resume_outputs=resume_outputs,
+                        # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
+                        **({"scope": scope} if scope else {}),
+                    )
+            except TimeoutError:
+                # Une TimeoutError levée PAR le crew (délai d'un appel) n'est pas notre échéance : elle garde sa classe.
+                if not deadline.expired():
+                    raise
+                raise ExecutionTimeoutError(
+                    f"durée maximale d'une exécution dépassée ({_EXECUTION_TIMEOUT_S // 60} min)") from None
     finally:
         # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette attente, les derniers
         # appels LLM pourraient manquer aux métriques lues ensuite.
@@ -1712,6 +1730,25 @@ def _parse_completed_agents(result_text: str) -> dict[str, str]:
 
     return agents
 
+def _queue_ahead(session: Session, execution_id: int, current_step: Optional[str], created_at: datetime) -> int:
+    """Nombre d'exécutions (tous utilisateurs) devant celle-ci : celles qui tournent réellement (étape réelle) et celles
+    en attente créées avant elle. Un décompte seulement, rien d'autre d'une exécution d'un autre compte."""
+    mine = _aware_utc(created_at)
+    rows = session.exec(
+        select(ExecutionHistory.id, ExecutionHistory.current_step, ExecutionHistory.created_at)
+        .where(ExecutionHistory.status == "running")
+    ).all()
+    return sum(
+        1 for row_id, step, created in rows
+        if row_id != execution_id and (step not in (None, QUEUED_STEP) or _aware_utc(created) < mine)
+    )
+
+
+def _aware_utc(value: datetime) -> datetime:
+    # SQLite renvoie des datetimes naïfs (UTC) même pour une colonne écrite avec fuseau.
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 @app.get("/api/conversations/{conversation_id}/progress")
 def get_conversation_progress(
     conversation_id: int,
@@ -1732,13 +1769,16 @@ def get_conversation_progress(
     sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation_id)
 
     statement = (
-        select(ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.current_step, ExecutionHistory.result)
+        select(
+            ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.current_step, ExecutionHistory.result,
+            ExecutionHistory.created_at,
+        )
         .where(ExecutionHistory.conversation_id == conversation_id)
         .where(ExecutionHistory.status == "running")
     )
     row = session.exec(statement).first()
     if row is None:
-        return {"id": None, "status": None, "current_step": None, "completed_agents": {}}
+        return {"id": None, "status": None, "current_step": None, "completed_agents": {}, "queue_ahead": None}
 
     completed_agents = {}
     if row[3]:  # if result is not None
@@ -1749,6 +1789,7 @@ def get_conversation_progress(
         "status": row[1],
         "current_step": row[2],
         "completed_agents": completed_agents,
+        "queue_ahead": _queue_ahead(session, row[0], row[2], row[4]) if row[2] == QUEUED_STEP else None,
     }
 
 @app.get("/api/repo-targets")
