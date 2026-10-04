@@ -126,3 +126,45 @@ def test_missing_header_and_unreachable_supabase_are_unchanged(monkeypatch):
 def test_ttl_environment_parsing(monkeypatch, value, expected):
     monkeypatch.setenv("AUTH_CACHE_TTL_S", value)
     assert auth._env_ttl("AUTH_CACHE_TTL_S", 60.0) == expected
+
+
+def test_simultaneous_requests_for_one_token_validate_it_only_once(monkeypatch):
+    calls = []
+
+    async def scenario():
+        async def slow(request):
+            calls.append(1)
+            await asyncio.sleep(0.05)   # laisse les autres requêtes arriver pendant la validation
+            return httpx.Response(200, json={"id": "u1"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+        monkeypatch.setattr(auth, "_get_http_client", lambda: client)
+        token = _jwt(time.time() + 3600)
+        users = await asyncio.gather(*[auth.get_current_user(f"Bearer {token}") for _ in range(6)])
+        other = await auth.get_current_user(f"Bearer {_jwt(time.time() + 3601)}")
+        return users, other
+
+    users, other = asyncio.run(scenario())
+    assert [user["id"] for user in users] == ["u1"] * 6 and other["id"] == "u1"
+    assert len(calls) == 2                  # un seul appel pour la rafale, un pour l'autre jeton
+    assert auth._inflight == {}             # aucun verrou ne reste en mémoire
+
+
+def test_different_tokens_are_validated_in_parallel_and_failures_are_not_shared(monkeypatch):
+    calls = []
+
+    async def scenario():
+        async def refuse(request):
+            calls.append(request.headers["authorization"])
+            await asyncio.sleep(0.02)
+            return httpx.Response(401, json={"msg": "invalid"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+        monkeypatch.setattr(auth, "_get_http_client", lambda: client)
+        return await asyncio.gather(
+            *[auth.get_current_user("Bearer mauvais") for _ in range(3)],
+            auth.get_current_user("Bearer autre"), return_exceptions=True,
+        )
+
+    results = asyncio.run(scenario())
+    assert all(isinstance(result, HTTPException) and result.status_code == 401 for result in results)
+    assert len(calls) == 4                  # un refus n'est jamais gardé : chaque requête réessaie à son tour
+    assert auth._inflight == {} and auth._auth_cache == {}

@@ -1,7 +1,10 @@
 # Dépendances DIRECTES épinglées sur les versions avec lesquelles la suite de tests passe : CrewAI et ses voisins changent
 # vite (planification, observation des étapes, fournisseur Gemini natif...) et un redéploiement ne doit pas changer le
-# comportement sans changement de code. Les dépendances indirectes restent résolues par pip. Pour mettre à jour : changer
-# une version, lancer `python -m pytest -q`, relire le journal des modifications de CrewAI, puis committer.
+# comportement sans changement de code. Les dépendances indirectes sont figées par requirements.lock (contraintes `-c`),
+# pydantic compris : CrewAI le borne lui-même. Pour mettre à jour : changer une version ICI, régénérer requirements.lock
+# (commande en tête de ce fichier), lancer `python -m pytest -q`, relire le journal des modifications de CrewAI, committer.
+-c requirements.lock
+
 fastapi==0.142.2
 uvicorn==0.54.0
 crewai==1.15.23

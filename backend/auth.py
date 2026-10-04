@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import http.cookiejar
@@ -31,6 +32,11 @@ AUTH_CACHE_TTL_S = _env_ttl("AUTH_CACHE_TTL_S", 60.0)
 _AUTH_CACHE_MAX_ENTRIES = 1000
 _auth_cache: dict[str, tuple[float, dict]] = {}   # hachage du jeton -> (échéance monotonic, utilisateur)
 _auth_cache_lock = threading.Lock()
+
+
+# Validations en cours par jeton (hachage) : (verrou, nombre de requêtes en attente ou en cours). Une seule boucle
+# d'événements : aucune protection de thread nécessaire.
+_inflight: dict[str, tuple[asyncio.Lock, int]] = {}
 
 
 def _cache_key(token: str) -> str:
@@ -162,6 +168,27 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     user = cached_user(token)
     if user is not None:
         return user
+    # Une seule validation à la fois PAR jeton : à l'expiration d'une entrée, des requêtes simultanées du même utilisateur
+    # (onglets, sondages qui se chevauchent) n'interrogent pas toutes Supabase ; les autres attendent la première puis
+    # lisent le cache. Une validation en échec n'est pas mise en cache : chacune réessaie à son tour.
+    key = _cache_key(token)
+    lock, waiting = _inflight.get(key) or (asyncio.Lock(), 0)
+    _inflight[key] = (lock, waiting + 1)
+    try:
+        async with lock:
+            user = cached_user(token)
+            if user is not None:
+                return user
+            return await _validate_with_supabase(token)
+    finally:
+        lock, waiting = _inflight[key]
+        if waiting <= 1:
+            del _inflight[key]
+        else:
+            _inflight[key] = (lock, waiting - 1)
+
+
+async def _validate_with_supabase(token: str) -> dict:
     client = _get_http_client()
 
     try:
