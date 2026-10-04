@@ -3,8 +3,6 @@ import time
 import asyncio
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
 from pathlib import Path
 from typing import List, Callable, Any, Optional
 
@@ -15,8 +13,8 @@ from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tasks.task_output import TaskOutput
 from crewai.tools import tool
 from logs import get_logger
-from summary import delivery_facts, fallback_summary
 import crew_retry
+import crew_summary
 import crew_workflow
 import qualification
 import llm_limiter
@@ -80,185 +78,6 @@ register_event_listeners()
 # les autres exécutions en parallèle ni les appels internes de CrewAI.
 llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
 
-
-# Marqueur inséré avant la section de résumé, pour que le frontend puisse la séparer
-# du reste sans ambiguïté (voir parseCrewResult.ts). Un simple titre "## Résumé" pourrait
-# apparaître naturellement dans le rapport d'un agent (ex: sa propre sous-section de
-# conclusion) ; ce commentaire HTML, lui, n'a aucune raison d'être produit par un agent.
-SUMMARY_SENTINEL = "<!--crew-summary-->"
-
-# Borne la taille du texte envoyé au modèle pour la synthèse : le résultat combiné peut
-# contenir du code source complet (workflows FEATURE/DESIGN_AND_DEV), et ce résumé n'est
-# qu'un ajout de confort qui ne justifie pas de peser significativement sur le quota
-# Gemini déjà sous tension (cf. adaptive_pause/crew_retry.retry_on_rate_limit_async ci-dessus).
-MAX_SUMMARY_INPUT_CHARS = 6000
-
-
-MAX_SUMMARY_REQUEST_CHARS = 1500
-
-# Pool dédié et volontairement petit : asyncio.wait_for peut abandonner l'attente d'un
-# appel bloqué (ex: litellm qui enchaîne ses propres tentatives internes bien au-delà de
-# SUMMARY_WALL_CLOCK_TIMEOUT) sans pouvoir arrêter le thread sous-jacent. En isolant ces
-# threads orphelins potentiels dans un pool à part, une panne prolongée de Gemini ne peut
-# jamais épuiser le pool par défaut dont dépend le reste de l'application. Ce pool dédié
-# peut lui-même se retrouver saturé le temps que litellm abandonne ses propres tentatives
-# (borné par LITELLM_NUM_RETRIES/le backoff, pas indéfini) : dans ce cas les résumés sont
-# simplement absents pendant cette fenêtre, sans jamais affecter le résultat des agents.
-_summary_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="crew-summary")
-
-def _build_summary_input(result) -> str:
-    """Texte borné donné en entrée au résumé, avec un budget de troncature réparti
-    à parts égales entre les tâches plutôt qu'une simple troncature globale : sur un
-    workflow à plusieurs tâches (ex: FEATURE), une troncature globale ne garderait que
-    le début (architecture) et perdrait entièrement le code produit et l'avis QA, qui
-    sont pourtant l'essentiel de ce qui a été livré.
-
-    Pour chaque tâche, garde le DÉBUT et la FIN de son rapport plutôt qu'un simple préfixe :
-    un agent conclut typiquement son rapport par sa synthèse/justification ("pourquoi tel
-    choix"), qu'un pur `raw[:budget]` couperait systématiquement en tout premier sur un
-    rapport dépassant le budget, alors que le résumé demandé à crew_llms.summary_llm cherche justement
-    ce genre de rationale (voir _build_summary_prompt).
-    """
-    sections = list(crew_workflow._iter_task_sections(result))
-    if not sections:
-        raw = getattr(result, "raw", None)
-        text = raw if raw is not None else str(result)
-        return text[:MAX_SUMMARY_INPUT_CHARS]
-
-    per_task_budget = max(MAX_SUMMARY_INPUT_CHARS // len(sections), 500)
-    parts = []
-    for agent_name, raw in sections:
-        if len(raw) <= per_task_budget:
-            truncated = raw
-        else:
-            head_budget = per_task_budget * 2 // 3
-            tail_budget = per_task_budget - head_budget
-            truncated = f"{raw[:head_budget]} [...tronqué...] {raw[-tail_budget:]}"
-        parts.append(f"## {agent_name}\n{truncated}")
-    return "\n\n".join(parts)
-
-def _build_summary_prompt(user_request: str, summary_input: str) -> str:
-    # user_request vient du texte libre saisi par l'utilisateur (aucune limite de
-    # longueur côté frontend) : le borner évite qu'une saisie très longue fasse, à elle
-    # seule, dépasser le budget de taille que ce résumé est censé respecter.
-    truncated_request = user_request[:MAX_SUMMARY_REQUEST_CHARS]
-    return (
-        "Voici le résultat produit par une équipe d'agents IA pour répondre à la "
-        f"demande suivante :\n\n{truncated_request}\n\n"
-        f"Résultat complet :\n---\n{summary_input}\n---\n\n"
-        "Rédige, en français, un résumé clair et concret en 3 blocs, avec exactement ces titres :\n"
-        "### Ce qui a été fait\n(2 à 3 phrases : décisions clés, ce qui a été produit)\n"
-        "### Pourquoi ces choix\n(1 à 2 phrases, uniquement si le résultat ci-dessus justifie des choix importants ; "
-        "sinon écris « Non précisé dans le résultat. »)\n"
-        "### À faire ensuite\n(1 à 3 puces : réserves de la QA, éléments non livrés, vérifications à faire ; "
-        "sinon écris « Rien de particulier. »)\n\n"
-        "Les chiffres (étapes, nombre de fichiers, verdict QA) sont déjà affichés ailleurs : ne les répète pas. "
-        "N'invente rien qui ne soit pas déjà présent dans le résultat "
-        "ci-dessus : ni un fait (ex: un fichier livré qui ne l'a pas été), ni une raison "
-        "absente — si le résultat ne justifie pas un choix, décris-le sans inventer de "
-        "justification."
-    )
-
-# Borne le temps d'attente total (au-delà du request_timeout de crew_llms.summary_llm lui-même),
-# car LITELLM_NUM_RETRIES=7 (défini plus haut, process-wide) s'applique aussi à cet
-# appel : sans ce filet, une erreur transitoire pourrait déclencher jusqu'à 7 tentatives
-# internes avant que crew_llms.summary_llm.call() ne lève enfin, contredisant l'objectif même
-# d'un résumé qui ne doit jamais faire attendre longtemps une réponse déjà acquise.
-# 30 et non 25 : doit rester strictement supérieur au request_timeout de crew_llms.summary_llm
-# (25 désormais, voir plus haut) pour continuer à lui laisser le temps de lever sa
-# propre erreur de timeout plutôt que d'être coupé par celui-ci en premier.
-SUMMARY_WALL_CLOCK_TIMEOUT = 30
-
-async def _generate_summary(user_request: str, result) -> str | None:
-    """Résumé de synthèse ajouté en fin de résultat combiné.
-
-    Best-effort : un échec ici (quota, timeout...) ne doit jamais faire échouer
-    l'exécution, dont le résultat des agents est déjà acquis à ce stade. Volontairement
-    sans retry applicatif : ce n'est qu'un ajout de confort, pas la livraison principale.
-    """
-    def _call() -> str:
-        crew_retry.quota_mgr.adaptive_pause()
-        return crew_llms.summary_llm.call(_build_summary_prompt(user_request, _build_summary_input(result)))
-
-    try:
-        loop = asyncio.get_running_loop()
-        # loop.run_in_executor() ne copie PAS automatiquement le contexte courant dans le
-        # thread (contrairement à asyncio.to_thread, qui le fait mais impose son propre
-        # executor par défaut) : sans ce copy_context().run(...) explicite, l'appel à
-        # crew_retry.quota_mgr.adaptive_pause() dans _call() perdrait de vue le _current_metrics de
-        # CETTE requête (il verrait la valeur par défaut, None), et le temps d'attente
-        # de cet appel ne serait jamais comptabilisé dans les métriques renvoyées.
-        ctx = copy_context()
-        text = await asyncio.wait_for(
-            loop.run_in_executor(_summary_executor, ctx.run, _call), timeout=SUMMARY_WALL_CLOCK_TIMEOUT
-        )
-        return text.strip() or None
-    except Exception as e:
-        log.warning(f"Génération du résumé ignorée : {type(e).__name__}: {e}")
-        return None
-
-def _compose_summary_body(sections, request_type, scope, summary: str | None) -> str:
-    """Corps du « ## Résumé » : faits calculés en Python (jamais par le modèle), puis la synthèse du modèle
-    ou, si elle a échoué, un résumé de repli sans modèle. Vide quand il n'y a rien à dire."""
-    parts = (delivery_facts(sections, request_type, scope), summary or fallback_summary(sections))
-    return "\n\n".join(part for part in parts if part)
-
-MAX_PRIOR_TURN_SUMMARY_CHARS = 800
-MAX_PRIOR_TURN_RESULT_CHARS = 500
-
-def _extract_prior_turn_summary(result_text: str) -> str:
-    """Réduit le résultat d'un tour précédent à un texte court utilisable comme contexte.
-
-    Réutilise le "## Résumé" déjà généré pour ce tour (via SUMMARY_SENTINEL) quand il
-    existe : c'est déjà une synthèse pensée pour être lue, pas le rapport complet de
-    chaque agent. À défaut (résumé absent, ex: génération échouée), on retombe sur un
-    simple tronquage du résultat brut plutôt que de ne rien montrer.
-    """
-    if not result_text:
-        return ""
-
-    idx = result_text.rfind(SUMMARY_SENTINEL)
-    if idx != -1:
-        tail = result_text[idx + len(SUMMARY_SENTINEL):].strip()
-        heading_match = re.match(r"^##\s+.+?\s*\n+(.*)", tail, re.DOTALL)
-        summary_text = heading_match.group(1) if heading_match else tail
-        return summary_text.strip()[:MAX_PRIOR_TURN_SUMMARY_CHARS]
-
-    return result_text.strip()[:MAX_PRIOR_TURN_RESULT_CHARS]
-
-MAX_PRIOR_TURNS_IN_CONTEXT = 10
-
-def build_conversation_context(prior_entries, total_count: Optional[int] = None) -> str:
-    """Rappel textuel des tours précédents de cette conversation, donné en entrée aux
-    tâches (voir tasksquestion.yaml, placeholder {conversation_context}).
-
-    Chaque appel à run_dynamic_crew part d'un crew neuf, sans aucune connaissance de ce
-    qui a été demandé/livré aux tours précédents du même fil de discussion : sans ce
-    rappel, un message de suivi ("ajoute aussi Y") ne peut pas être compris comme une
-    continuation de ce qui précède. Ne garde que les MAX_PRIOR_TURNS_IN_CONTEXT derniers
-    tours (les plus pertinents pour un message de suivi) : sans cette borne, une longue
-    conversation ferait grossir sans limite le texte injecté dans chaque tâche, à
-    l'inverse du soin apporté ailleurs dans ce fichier à borner la taille des prompts
-    (MAX_SUMMARY_INPUT_CHARS, troncature par tâche).
-    """
-    if not prior_entries:
-        return "Aucun échange précédent dans cette conversation."
-
-    recent_entries = prior_entries[-MAX_PRIOR_TURNS_IN_CONTEXT:]
-    # total_count : nombre réel de tours quand l'appelant n'a chargé que les plus récents.
-    total = max(total_count or 0, len(prior_entries))
-    status_labels = {"success": "réussi", "failed": "échoué", "running": "en cours (probablement interrompu)"}
-    lines = []
-    if total > len(recent_entries):
-        lines.append(f"[{total - len(recent_entries)} tour(s) plus ancien(s) omis pour rester concis]")
-    for entry in recent_entries:
-        status_label = status_labels.get(entry.status, entry.status)
-        lines.append(f'- Demande : "{entry.user_request.strip()[:200]}" ({entry.workflow}, {status_label})')
-        if entry.status == "success" and entry.result:
-            summary = _extract_prior_turn_summary(entry.result)
-            if summary:
-                lines.append(f"  Résultat : {summary}")
-    return "\n".join(lines)
 
 def _evict_memoized_cache_entries(crew_instance: Any) -> None:
     """Purge, best-effort, les entrées de crewai.project.utils.cache (voir son import plus haut)
@@ -1536,7 +1355,7 @@ class AppDevelopmentCrew():
         # Résultat final reconstruit depuis les sorties accumulées par on_task_complete au fil de
         # TOUTES les tentatives (et pas depuis le CrewOutput de la seule DERNIÈRE tentative, qui
         # ne couvrirait que les tâches de ce sous-crew en cas de reprise) : dans l'ordre ORIGINAL
-        # des étapes (step_keys), pour que crew_workflow._format_crew_result/_generate_summary — qui ne lisent
+        # des étapes (step_keys), pour que crew_workflow._format_crew_result/crew_summary._generate_summary — qui ne lisent
         # que .tasks_output et .raw, voir leurs docstrings — reconstruisent le même résultat
         # combiné qu'une exécution sans aucun échec.
         class _CombinedCrewResult:
@@ -1562,13 +1381,13 @@ class AppDevelopmentCrew():
         # last_execution_time n'est délibérément pas remis à jour avant cet appel :
         # on_task_complete() (task_callback ci-dessus) l'a déjà fait à la fin de la
         # dernière tâche. Le remettre à `time.time()` ici ferait toujours mesurer un
-        # écart quasi nul à adaptive_pause() dans _generate_summary, forçant une pause
+        # écart quasi nul à adaptive_pause() dans crew_summary._generate_summary, forçant une pause
         # maximale (min_interval_seconds, voir crew_retry.QuotaManager) systématique au lieu d'une
         # pause proportionnée au temps déjà écoulé depuis le dernier appel Gemini réel.
-        summary = await _generate_summary(inputs.get('user_request', ''), result)
-        summary_body = _compose_summary_body(list(crew_workflow._iter_task_sections(result)), request_type, scope, summary)
+        summary = await crew_summary._generate_summary(inputs.get('user_request', ''), result)
+        summary_body = crew_summary._compose_summary_body(list(crew_workflow._iter_task_sections(result)), request_type, scope, summary)
         if summary_body:
-            formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary_body}"
+            formatted = f"{formatted}\n\n{crew_summary.SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary_body}"
 
         crew_retry.quota_mgr.last_execution_time = time.time()
         return formatted

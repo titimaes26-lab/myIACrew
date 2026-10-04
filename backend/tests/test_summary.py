@@ -1,4 +1,4 @@
-import crewquestion as cq
+import crew_summary  # noqa: E402
 from summary import delivery_facts, fallback_summary
 
 DIAG = "Analyste Diagnostic Technique"
@@ -31,7 +31,7 @@ def test_fallback_empty_when_nothing_usable():
 
 
 def test_prompt_demande_trois_blocs_sans_chiffres():
-    prompt = cq._build_summary_prompt("demande", "résultat")
+    prompt = crew_summary._build_summary_prompt("demande", "résultat")
     for title in ("### Ce qui a été fait", "### Pourquoi ces choix", "### À faire ensuite"):
         assert title in prompt
     assert "ne les répète pas" in prompt
@@ -39,17 +39,17 @@ def test_prompt_demande_trois_blocs_sans_chiffres():
 
 def test_compose_body_prefers_model_summary_and_keeps_facts():
     sections = [("Architecte", "Plan"), (QA, "Verdict : GO")]
-    body = cq._compose_summary_body(sections, "ANALYSE_ONLY", None, "### Ce qui a été fait\nX")
+    body = crew_summary._compose_summary_body(sections, "ANALYSE_ONLY", None, "### Ce qui a été fait\nX")
     assert body.startswith("**Faits :**") and body.endswith("X") and "Résumé automatique" not in body
 
 
 def test_compose_body_falls_back_without_model_summary():
-    body = cq._compose_summary_body([("Architecte", "Plan global")], "ANALYSE_ONLY", None, None)
+    body = crew_summary._compose_summary_body([("Architecte", "Plan global")], "ANALYSE_ONLY", None, None)
     assert "**Faits :**" in body and "- **Architecte** : Plan global" in body and "Résumé automatique" in body
 
 
 def test_compose_body_empty_without_sections_or_summary():
-    assert cq._compose_summary_body([], "BUGFIX", None, None) == ""
+    assert crew_summary._compose_summary_body([], "BUGFIX", None, None) == ""
 
 
 def test_facts_count_files_and_edits_by_unique_path():
