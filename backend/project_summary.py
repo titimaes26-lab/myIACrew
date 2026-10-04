@@ -28,9 +28,40 @@ _CONVENTIONS: dict[str, dict[str, str]] = {
 }
 
 
+def _strip_jsonc(text: str) -> str:
+    """Retire les commentaires (`//` et `/* */`, hors chaînes) et les virgules finales d'un JSON « avec commentaires »
+    (tsconfig.json, y compris celui que génère `tsc --init`)."""
+    out: list[str] = []
+    i, length, in_string = 0, len(text), False
+    while i < length:
+        char = text[i]
+        if in_string:
+            out.append(char)
+            if char == "\\" and i + 1 < length:
+                out.append(text[i + 1])
+                i += 1
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+            out.append(char)
+        elif text.startswith("//", i):
+            while i < length and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = length if end == -1 else end + 2
+            continue
+        else:
+            out.append(char)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
 def _load_json(text: str) -> Optional[dict]:
-    """JSON, ou JSON avec commentaires (tsconfig.json en accepte) ; None si illisible."""
-    for candidate in (text, re.sub(r"^\s*//.*$", "", text, flags=re.MULTILINE)):
+    """JSON, ou JSON avec commentaires et virgules finales (tsconfig.json) ; None si illisible."""
+    for candidate in (text, _strip_jsonc(text)):
         try:
             data = json.loads(candidate)
         except ValueError:

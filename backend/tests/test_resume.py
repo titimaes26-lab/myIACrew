@@ -209,6 +209,22 @@ def test_resume_is_refused_when_the_scope_differs(engine):
         assert main._resumable_outputs(db, other, "u1", conversation.id) == {}
 
 
+@pytest.mark.parametrize("previous_scope, new_scope, allowed", [
+    (None, "GRAND", True),      # ancienne ligne ou clarification, relancée en détection automatique
+    ("GRAND", None, True),
+    (None, None, True),
+    ("PETIT", "PETIT", True),
+    ("PETIT", "GRAND", False),  # les étapes diffèrent : rien à réutiliser
+    (None, "PETIT", False),
+])
+def test_resume_only_distinguishes_a_small_feature_from_the_full_path(engine, previous_scope, new_scope, allowed):
+    with Session(engine) as db:
+        conversation, entry = _failed_with_checkpoints(db, workflow="FEATURE", steps=("architecture", "diagnostic"), scope=previous_scope)
+        data = _data(entry, target_workflow="FEATURE", scope=new_scope)
+        saved = main._resumable_outputs(db, data, "u1", conversation.id)
+    assert bool(saved) is allowed
+
+
 def test_no_resume_id_means_no_resume(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db)

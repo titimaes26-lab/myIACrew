@@ -45,3 +45,25 @@ def test_summary_handles_tsconfig_variants_and_missing_conventions():
 def test_summary_is_none_for_an_unusable_package_json():
     assert summarize_project("{ pas du json") is None
     assert summarize_project("[1, 2]") is None
+
+
+TSC_INIT = """{
+  /* Visit https://aka.ms/tsconfig to read more about this file */
+  "compilerOptions": {
+    "target": "es2016", // langage de sortie
+    "strict": true, /* tous les contrôles */
+    "paths": {"@/*": ["./src/*"]},
+    "note": "http://exemple.com/*x*/",
+  },
+}"""
+
+
+def test_a_tsconfig_with_comments_and_trailing_commas_is_read_not_called_unreadable():
+    text = summarize_project(PACKAGE, TSC_INIT)
+    assert "mode strict activé" in text and "illisible" not in text
+
+
+def test_comment_markers_inside_strings_are_kept_and_unterminated_comments_do_not_hang():
+    from project_summary import _load_json
+    assert _load_json(TSC_INIT)["compilerOptions"]["note"] == "http://exemple.com/*x*/"
+    assert _load_json('{"a": 1 /* jamais fermé') is None

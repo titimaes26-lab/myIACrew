@@ -753,3 +753,8 @@ def test_file_withdrawn_in_the_same_response_is_not_committed():
     ok, out = crew._diagnostic_guardrail(raw)
     assert ok and [f["path"] for f in crew._analyst_files] == ["src/b.ts"]
     assert "src/App.tsx" in crew._not_extracted and "src/App.tsx" in out
+
+
+def test_qualification_examples_show_how_scope_is_filled():
+    examples = cq.QUALIFICATION_EXAMPLES
+    assert "scope PETIT" in examples and examples.count("scope GRAND") >= 2

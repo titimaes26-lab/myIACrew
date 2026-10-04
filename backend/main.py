@@ -777,7 +777,8 @@ def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id
     if (
         previous is None or previous.user_id != user_id or previous.conversation_id != conversation_id
         or previous.status != "failed" or previous.workflow != data.target_workflow
-        or (previous.scope or None) != (data.scope or None)
+        # Seule « PETIT » change les étapes : GRAND, absent (ancienne ligne, clarification) = parcours complet.
+        or (previous.scope == "PETIT") != (data.scope == "PETIT")
         # Même demande : réutiliser design/architecture/code d'une AUTRE demande ferait committer du code pour
         # la mauvaise demande.
         or (previous.user_request or "").strip() != data.user_request.strip()

@@ -308,7 +308,9 @@ def _enforce_confidence_threshold(report: AnalysisReport) -> AnalysisReport:
 
 QUALIFICATION_EXAMPLES = """\
 Exemples de cas limites (la grille de ta fiche reste la référence) :
-- "Refais la page de login" -> FEATURE, alternative DESIGN_AND_DEV, confiance moyenne à bonne : un module d'un produit existant, sans reconception globale.
+- "Refais la page de login" -> FEATURE, scope GRAND, alternative DESIGN_AND_DEV, confiance moyenne à bonne : un module d'un produit existant, sans reconception globale.
+- "Ajoute un bouton d'export CSV sur la page des commandes" -> FEATURE, scope PETIT, confiance haute : un ajout local, 1 ou 2 fichiers, ni nouvel écran ni nouvelle dépendance.
+- "Ajoute un système de comptes avec connexion et rôles" -> FEATURE, scope GRAND, confiance haute : plusieurs écrans, de l'état partagé et probablement de nouvelles dépendances.
 - "Pourquoi la liste des commandes est lente ?" -> ANALYSE_ONLY, alternative BUGFIX, confiance moyenne à bonne : l'utilisateur veut comprendre, pas de livraison de code.
 - "La recherche plante et ajoute aussi un filtre par date" -> BUGFIX, alternative FEATURE, confiance basse à moyenne, is_clear false : deux intentions, demande de scinder ou de prioriser.
 - "Crée un jeu de gestion de ferme en React" -> DESIGN_AND_DEV, alternative null, confiance haute : nouveau produit à concevoir puis développer.
