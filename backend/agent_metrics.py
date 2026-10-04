@@ -313,6 +313,7 @@ FAILURE_LABELS = {
     ErrorCode.LLM_TIMEOUT: "Délai du modèle dépassé",
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub injoignable",
     ErrorCode.GUARDRAIL_FAILED: "Contrôle de qualité non respecté",
+    ErrorCode.DELIVERY_FAILED: "Livraison GitHub non confirmée",
     ErrorCode.INTERRUPTED: "Interrompue (redémarrage du serveur)",
     ErrorCode.INTERNAL_ERROR: "Erreur interne",
     UNCLASSIFIED_FAILURE: "Cause non enregistrée",

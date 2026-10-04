@@ -33,7 +33,7 @@ import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from qa_report import final_verdict
 from errors import (
-    AppError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
+    AppError, DeliveryError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
 from github_tools import (
     verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
@@ -948,6 +948,12 @@ async def _run_crew(
                 raise
 
 
+# Rapport de l'agent joint à un échec de livraison ; le détail technique stocké garde en plus la place du constat
+# (sans cette marge, la fin du rapport serait coupée, c'est précisément la cause qui disparaîtrait).
+_AGENT_REPORT_CHARS = 3000
+_TECHNICAL_DETAIL_CHARS = _AGENT_REPORT_CHARS + 1500
+
+
 def _delivery_failure_message(issue: DeliveryIssue, raw_result: str) -> str:
     """Message d'une livraison non confirmée sur GitHub. `likely_access_problem` (champ structuré, pas un
     texte à parser) distingue « branche introuvable / API injoignable » (vérifier GITHUB_TOKEN est juste) du
@@ -967,7 +973,7 @@ def _delivery_failure_message(issue: DeliveryIssue, raw_result: str) -> str:
         "Un repository GitHub cible était configuré mais la vérification après coup "
         f"a échoué : {issue.message} {remediation}\n\n"
         "--- Rapport de l'agent (non vérifié sur GitHub) ---\n"
-        f"{raw_result[:3000]}"
+        f"{raw_result[:_AGENT_REPORT_CHARS]}"
     )
 
 
@@ -982,7 +988,7 @@ async def _verify_delivery(
         verify_github_delivery, data.repo_owner, data.repo_name, work_branch, base_branch, sha_before,
     )
     if issue:
-        raise RuntimeError(_delivery_failure_message(issue, raw_result))
+        raise DeliveryError(_delivery_failure_message(issue, raw_result))
     return delivered_pr
 
 
@@ -1054,11 +1060,6 @@ async def _persist_success_safely(
         print(f"ERREUR : succès non enregistré (execution_id={db_entry_id}) : {type(second_error).__name__}: "
               f"{second_error}", flush=True)
         _cleanup_persisted_agents(db_entry_id)
-
-
-# Assez long pour garder le rapport de l'agent joint à un échec de livraison (voir _delivery_failure_message :
-# ~600 caractères de constat + 3000 de rapport) : tronqué à 500, c'est précisément la cause qui disparaissait.
-_TECHNICAL_DETAIL_CHARS = 3800
 
 
 def _failure_detail(exc: BaseException, info: ErrorInfo) -> str:

@@ -18,6 +18,8 @@ describe('isTransientFailure', () => {
 describe('failureCause', () => {
   it('donne une icône et un titre par code, et un repli pour un code inconnu', () => {
     expect(failureCause('QUOTA_EXHAUSTED').title).toBe('Quota du modèle épuisé');
+    expect(failureCause('DELIVERY_FAILED')).toEqual({ icon: '📦', title: 'Livraison GitHub non confirmée' });
+    expect(isTransientFailure(undefined, 'DELIVERY_FAILED')).toBe(false);
     expect(failureCause('CODE_FUTUR').title).toBe("Échec de l'exécution");
     expect(failureCause(null).icon).toBe('❌');
   });

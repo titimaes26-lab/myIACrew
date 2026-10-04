@@ -11,7 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 import main  # noqa: E402
 from auth import get_current_user  # noqa: E402
 from database import ExecutionHistory  # noqa: E402
-from errors import AppError, ErrorCode, classify_exception, http_status_for  # noqa: E402
+from errors import AppError, DeliveryError, ErrorCode, classify_exception, http_status_for  # noqa: E402
 from github_tools import GitHubVerificationUnavailable  # noqa: E402
 
 
@@ -29,6 +29,15 @@ def test_classify_exception(exc, code, retryable):
     assert (info.code, info.retryable) == (code, retryable)
     # Cause reconnue → message lisible ; inconnue → None (l'appelant garde le texte d'origine).
     assert (info.message is None) == (code == ErrorCode.INTERNAL_ERROR)
+
+
+def test_delivery_failure_has_its_own_non_retryable_code_even_with_quota_words():
+    exc = DeliveryError("aucune PR trouvée.\n--- Rapport de l'agent ---\nquota 429 timeout")
+    info = classify_exception(exc)
+    assert (info.code, info.retryable, info.message) == (ErrorCode.DELIVERY_FAILED, False, None)
+    outer = RuntimeError("quota 429")
+    outer.__cause__ = exc
+    assert classify_exception(outer).code == ErrorCode.DELIVERY_FAILED
 
 
 def test_http_status_for_codes():

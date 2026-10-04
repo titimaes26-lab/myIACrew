@@ -12,6 +12,7 @@ const CAUSES: Record<string, FailureCause> = {
   LLM_TIMEOUT: { icon: '⏱️', title: 'Délai du modèle dépassé' },
   GITHUB_UNAVAILABLE: { icon: '🔌', title: 'GitHub injoignable' },
   GUARDRAIL_FAILED: { icon: '🛡️', title: 'Contrôle de qualité non respecté' },
+  DELIVERY_FAILED: { icon: '📦', title: 'Livraison GitHub non confirmée' },
   INTERRUPTED: { icon: '🔌', title: 'Exécution interrompue' },
   INTERNAL_ERROR: { icon: '🐞', title: 'Erreur interne' },
 };

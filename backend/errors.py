@@ -19,6 +19,7 @@ class ErrorCode:
     LLM_TIMEOUT = "LLM_TIMEOUT"
     GITHUB_UNAVAILABLE = "GITHUB_UNAVAILABLE"
     GUARDRAIL_FAILED = "GUARDRAIL_FAILED"
+    DELIVERY_FAILED = "DELIVERY_FAILED"
     INTERRUPTED = "INTERRUPTED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     VALIDATION_ERROR = "VALIDATION_ERROR"
@@ -59,6 +60,11 @@ _USER_MESSAGES = {
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub est momentanément injoignable : la livraison n'a pas pu être vérifiée. Réessayez.",
     ErrorCode.GUARDRAIL_FAILED: "Le résultat produit ne respecte pas les contrôles de qualité. Reformulez ou précisez la demande.",
 }
+
+
+class DeliveryError(RuntimeError):
+    """Livraison GitHub non confirmée après l'exécution (aucune branche, aucun commit, aucune PR). Son texte porte
+    déjà le constat et le rapport de l'agent : le classement ne lui ajoute donc pas de message lisible."""
 
 
 class ErrorInfo(NamedTuple):
@@ -111,7 +117,12 @@ def classify_exception(exc: BaseException) -> ErrorInfo:
     """Range un échec d'exécution/appel LLM dans un code stable (jamais d'exception).
     CrewStepError ne garde que le texte de l'erreur d'origine : on remonte donc la chaîne
     `__cause__`/`__context__` pour retrouver son type (timeout, GitHub indisponible)."""
-    for err in _exception_chain(exc):
+    chain = list(_exception_chain(exc))
+    # En premier et sur toute la chaîne : le rapport joint de l'agent peut citer « quota » ou « timeout », qui
+    # feraient classer à tort l'exception englobante par son texte.
+    if any(isinstance(err, DeliveryError) for err in chain):
+        return ErrorInfo(ErrorCode.DELIVERY_FAILED, False, None)
+    for err in chain:
         info = _classify_single(err)
         if info.code != ErrorCode.INTERNAL_ERROR:
             return info

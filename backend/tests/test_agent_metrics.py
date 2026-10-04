@@ -521,6 +521,7 @@ def test_failure_causes_group_sort_and_label_failed_executions_only():
         {"code": "UNCLASSIFIED", "label": "Cause non enregistrée", "count": 1},
     ]
     assert failure_causes([]) == []
+    assert failure_causes([{"status": "failed", "error_code": "DELIVERY_FAILED"}])[0]["label"] == "Livraison GitHub non confirmée"
 
 
 def test_summary_endpoint_exposes_failure_causes_for_the_user_and_period_only(session):

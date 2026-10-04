@@ -75,9 +75,14 @@ def test_failure_detail_names_the_step_and_keeps_the_technical_text():
     assert detail.startswith("Échec à l'étape 2/5 (Architecte) : Le quota du modèle IA")
     assert "(détail : 429 quota" in detail and len(detail) < 800 + 3800
     # Régression : le rapport de l'agent joint à un échec de livraison ne doit pas être coupé à 500 caractères.
-    issue = SimpleNamespace(message="aucune PR", likely_access_problem=False)
-    delivery = RuntimeError(main._delivery_failure_message(issue, "RAPPORT-FINAL " + "r" * 2000 + " FIN-DU-RAPPORT"))
-    assert "FIN-DU-RAPPORT" in main._failure_detail(delivery, classify_exception(delivery))
+    # Même avec un constat très long, la fin du rapport (3000 caractères au plus) reste.
+    issue = SimpleNamespace(message="m" * 600, likely_access_problem=False)
+    report = "RAPPORT-FINAL " + "r" * 2900 + " FIN-DU-RAPPORT"
+    delivery = main.DeliveryError(main._delivery_failure_message(issue, report))
+    info = classify_exception(delivery)
+    kept = main._failure_detail(delivery, info)
+    assert info.code == "DELIVERY_FAILED" and "Rapport de l'agent" in kept and "FIN-DU-RAPPORT" in kept
+    assert kept.startswith("Un repository GitHub cible")
     plain = RuntimeError("bug interne")
     assert main._failure_detail(plain, classify_exception(plain)) == "bug interne"
 
