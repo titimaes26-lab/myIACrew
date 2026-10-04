@@ -778,3 +778,37 @@ def test_executions_list_truncates_long_requests(session):
     session.commit()
     text = _list(session)["items"][0]["user_request"]
     assert len(text) <= 141 and text.endswith("…")
+
+
+# --- Revue : filtre SQL, paramètres validés, rattrapage des verdicts ------------------------------
+
+def test_executions_endpoint_rejects_unknown_filter_and_sort_values():
+    import inspect
+    from typing import get_args
+    hints = inspect.signature(main.metrics_executions).parameters
+    assert set(get_args(hints["order"].annotation)) == {"asc", "desc"}
+    assert set(get_args(hints["sort"].annotation)) == {"created_at", "duration", "llm_calls", "tokens"}
+    assert "failed" in str(hints["status"].annotation) and "success" in str(hints["status"].annotation)
+
+
+def test_status_filter_total_counts_only_the_filtered_rows(session):
+    _execution(session, "u1", age_days=1)
+    _execution(session, "u1", status="failed", age_days=2)
+    _execution(session, "u1", status="failed", age_days=3)
+    page = _list(session, status="failed")
+    assert page["total"] == 2 and all(i["status"] == "failed" for i in page["items"])
+
+
+def test_backfill_sets_the_verdict_of_old_successful_executions_only(run_engine):
+    with Session(run_engine) as db:
+        old = ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1", result="## QA\nVerdict : NO_GO")
+        none = ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1", result="aucun QA")
+        failed = ExecutionHistory(user_request="r", workflow="BUGFIX", status="failed", user_id="u1", result="Verdict : GO")
+        done = ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1", result="Verdict : NO_GO", qa_verdict="GO")
+        db.add_all([old, none, failed, done])
+        db.commit()
+        ids = [old.id, none.id, failed.id, done.id]
+    main._backfill_qa_verdicts()
+    with Session(run_engine) as db:
+        verdicts = [db.get(ExecutionHistory, i).qa_verdict for i in ids]
+    assert verdicts == ["NO_GO", None, None, "GO"]

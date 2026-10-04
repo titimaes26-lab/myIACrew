@@ -208,3 +208,4 @@
 .viz-exec-detail { position: sticky; left: 0; width: 100cqw; box-sizing: border-box; text-align: left; }
 .viz-card-head { flex-wrap: wrap; }
 .viz-seg { max-width: 100%; overflow-x: auto; }
+.viz-seg button:focus-visible { outline-offset: -3px; }

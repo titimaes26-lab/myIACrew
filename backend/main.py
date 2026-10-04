@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 from dataclasses import dataclass
-from typing import Any, List, NamedTuple, Optional
+from typing import Any, List, Literal, NamedTuple, Optional
 from sqlalchemy import case, update as sql_update
 from sqlmodel import Session, col, func, select
 
@@ -80,10 +80,42 @@ _execution_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXECUTIONS)
 # sans dupliquer sa valeur (ex: un futur endpoint de santé qui voudrait l'exposer).
 _SHUTDOWN_DRAIN_TIMEOUT_S = 20
 
+_BACKFILL_BATCH = 200
+
+def _backfill_qa_verdicts() -> None:
+    """Rattrape `qa_verdict` des exécutions réussies d'avant la colonne, depuis le texte de leur résultat, pour que
+    la qualité dans le temps couvre l'historique. Une exécution sans verdict (aucun QA) reste à NULL et est
+    relue à chaque démarrage : le coût est borné par lots. Best-effort."""
+    try:
+        with Session(engine) as backfill:
+            last_id = 0
+            while True:
+                rows = backfill.exec(
+                    select(ExecutionHistory.id, ExecutionHistory.result)
+                    .where(ExecutionHistory.status == "success")
+                    .where(col(ExecutionHistory.qa_verdict).is_(None))
+                    .where(ExecutionHistory.id > last_id)
+                    .order_by(col(ExecutionHistory.id))
+                    .limit(_BACKFILL_BATCH)
+                ).all()
+                if not rows:
+                    break
+                last_id = rows[-1][0]
+                for execution_id, result in rows:
+                    verdict = final_verdict(result or "")
+                    if verdict:
+                        backfill.exec(
+                            sql_update(ExecutionHistory).where(ExecutionHistory.id == execution_id).values(qa_verdict=verdict)
+                        )
+                backfill.commit()
+    except Exception as e:
+        print(f"AVERTISSEMENT : rattrapage des verdicts QA ignoré : {type(e).__name__}: {e}", flush=True)
+
 # 2. ÉVÉNEMENT DE DÉMARRAGE (Création des tables BDD)
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
+    _backfill_qa_verdicts()
     # Imprimé une seule fois, au démarrage : rend le plafond mémoire du conteneur visible dans les
     # logs Render dès le boot, sans attendre qu'une exécution déclenche la première ligne [MEM]
     # (_log_memory) — utile pour juger d'emblée si le plan actuel a une marge suffisante pour ce
@@ -1702,9 +1734,9 @@ async def metrics_summary(
 async def metrics_executions(
     days: int = 30,
     workflow: Optional[str] = None,
-    status: Optional[str] = None,
-    sort: str = "created_at",
-    order: str = "desc",
+    status: Optional[Literal["success", "failed"]] = None,
+    sort: Literal["created_at", "duration", "llm_calls", "tokens"] = "created_at",
+    order: Literal["asc", "desc"] = "desc",
     limit: int = 20,
     offset: int = 0,
     session: Session = Depends(get_session),
@@ -1733,6 +1765,8 @@ async def metrics_executions(
     )
     if workflow:
         statement = statement.where(ExecutionHistory.workflow == workflow)
+    if status:
+        statement = statement.where(ExecutionHistory.status == status)
     rows = [
         {
             "id": r[0], "conversation_id": r[1], "user_request": r[2], "workflow": r[3], "status": r[4],
