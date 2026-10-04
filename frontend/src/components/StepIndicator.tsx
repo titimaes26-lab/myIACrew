@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { workflowSteps, stepShortLabel } from '../constants/workflowSteps';
 import { formatSeconds } from '../utils/formatDuration';
+import { estimateRemaining, roundEstimate } from '../utils/estimateRemaining';
+import { useStepStats } from '../hooks/useStepStats';
 import { toServerDate } from '../utils/serverDate';
 
 const STEP_ADVANCE_MS = 9000;
@@ -87,6 +89,26 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
   const baseIndex = hasRealProgress ? realIndex : isPausedForRetry ? 0 : isQueued ? -1 : estimatedIndex;
   const activeIndex = baseIndex < 0 ? baseIndex : Math.max(baseIndex, firstOpenIndex);
 
+  // Début de l'étape en cours, en secondes depuis le début du tour. Connu seulement si on l'a vu commencer : la
+  // première étape non reprise commence avec le tour ; une étape suivante est vue changer (au plus 3 s de retard,
+  // le sondage) ; une frise montée en cours de route (rechargement) n'a aucun moyen de le savoir : pas d'estimation.
+  const [stepStart, setStepStart] = useState<{ key: string | null; startElapsed: number | null; seen: boolean }>({ key: null, startElapsed: null, seen: false });
+  if (hasRealProgress && stepStart.key !== currentStepKey) {
+    setStepStart({
+      key: currentStepKey ?? null,
+      startElapsed: stepStart.seen ? elapsed : (realIndex === firstOpenIndex ? 0 : null),
+      seen: true,
+    });
+  }
+  const stepElapsed = hasRealProgress && stepStart.key === currentStepKey && stepStart.startElapsed !== null
+    ? Math.max(0, elapsed - stepStart.startElapsed)
+    : null;
+  const stats = useStepStats(workflow, hasRealProgress);
+  const estimate = stats && currentStepKey && stepElapsed !== null
+    ? estimateRemaining({ stepKeys: steps.map((step) => step.key), currentKey: currentStepKey, reused: reusedSteps, stats, currentElapsed: stepElapsed })
+    : null;
+  const currentLabel = steps[realIndex] ? stepShortLabel(steps[realIndex].label) : null;
+
   return (
     <div className="steps">
       {/* role="status"/aria-live seulement ici, PAS sur le conteneur entier : le chrono ci-
@@ -137,6 +159,16 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
               ? "En file d'attente — d'autres exécutions occupent déjà ce service. Celle-ci démarrera automatiquement dès qu'un emplacement se libère."
               : `En cours depuis ${formatSeconds(elapsed)} — progression estimée, l'étape réellement en cours côté serveur peut différer.`}
       </p>
+      {stepElapsed !== null && currentLabel && (
+        <p className="steps__caption">
+          Étape « {currentLabel} » depuis {formatSeconds(stepElapsed)}
+          {estimate && (
+            estimate.overrun
+              ? ` — plus long que d'habitude (médiane ${formatSeconds(estimate.currentMedian)}) ; environ ${formatSeconds(roundEstimate(estimate.remainingSeconds))} pour la suite.`
+              : ` — temps restant estimé : environ ${formatSeconds(roundEstimate(estimate.remainingSeconds))} (médiane des 30 derniers jours, hors pauses de quota).`
+          )}
+        </p>
+      )}
     </div>
   );
 }

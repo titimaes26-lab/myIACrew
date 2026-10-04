@@ -3,6 +3,8 @@ import Button from './components/ui/Button';
 import ConnectionLostBanner from './components/ConnectionLostBanner';
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { useConversation } from './hooks/useConversation';
+import { useCompletionNotice } from './hooks/useCompletionNotice';
+import { useNotifyPreference } from './hooks/useNotifyPreference';
 import { MetricsApiContext } from './hooks/metricsApi';
 import StudioHeader from './components/StudioHeader';
 import ChatThread from './components/ChatThread';
@@ -31,6 +33,14 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   // ne sait alors pas auquel des deux rattacher l'étape reçue (il n'y en a normalement
   // jamais qu'un), et lui appliquerait à tort l'étape de l'AUTRE exécution.
   const busy = sending || hasRunningTurn;
+  const notifyPreference = useNotifyPreference();
+  const lastTurn = turns[turns.length - 1];
+  useCompletionNotice({
+    running: hasRunningTurn,
+    outcome: lastTurn?.status === 'success' ? 'success' : lastTurn?.status === 'failed' ? 'failed' : 'other',
+    message: lastTurn?.userMessage ?? '',
+    notify: notifyPreference.enabled,
+  });
   // "Relancer" préremplit la zone de saisie avec le texte d'UN AUTRE tour (voir handleRetry) :
   // envoyé pendant qu'une clarification est en attente, ce texte serait alors traité comme LA
   // RÉPONSE à cette clarification plutôt que comme la nouvelle demande affichée (sendMessage
@@ -86,6 +96,9 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
         onToggleHistory={() => setShowHistory((open) => !open)}
         metricsOpen={showMetrics}
         onToggleMetrics={() => setShowMetrics((open) => !open)}
+        notifyEnabled={notifyPreference.enabled}
+        notifyPermission={notifyPreference.permission}
+        onToggleNotify={notifyPreference.toggle}
       />
 
       {showMetrics && (
