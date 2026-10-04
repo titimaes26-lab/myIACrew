@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.46 — Mise à jour le 2026-10-04
+> Version : 1.47 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -25,6 +25,7 @@
 > - 1.44 (10-04) : cache de validation des jetons (60 s), dépendances directes épinglées, plus de `print` (tout par `logging`).
 > - 1.45 (10-04) : verrouillage complet des dépendances (`requirements.lock`), CI en Python 3.11 et 3.12, une seule validation de jeton à la fois par jeton.
 > - 1.46 (10-04) : l'issue d'une validation (succès, 401, 503) est partagée entre requêtes simultanées, veille des failles (job `audit`, Dependabot), cohérence requirements/verrou testée.
+> - 1.47 (10-04) : `useConversation.ts` (728 lignes) découpé en hooks dédiés (dossier `hooks/conversation/`), comportement inchangé.
 
 ---
 
@@ -173,7 +174,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 
 | Couche | Rôle | Fichiers clés |
 |---|---|---|
-| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts`, `hooks/useMetricsSummary.ts` ; résultat et échec : `ResultSections`, `FailureBlock`, `CopyButton` ; lancement : `LaunchPreview` ; progression : `StepIndicator`, `hooks/useStepStats`, `utils/estimateRemaining` ; notification : `hooks/useCompletionNotice`, `hooks/useNotifyPreference` ; aide : `InfoTip` (`components/metrics`) |
+| Frontend (Vue) | Fil de conversation, saisie, progression, historique, auth UI | `frontend/src/App.tsx`, `Studio.tsx`, `Login.tsx`, `components/*`, `components/metrics/*` (tableau de bord), `hooks/useConversation.ts` (état partagé et navigation, 167 lignes) assemblé à partir de `hooks/conversation/` (`useProgressPolling`, `useLaunchPreview`, `useSendMessage`, `sendOutcomes`, `turnMapping`), `hooks/useMetricsSummary.ts` ; résultat et échec : `ResultSections`, `FailureBlock`, `CopyButton` ; lancement : `LaunchPreview` ; progression : `StepIndicator`, `hooks/useStepStats`, `utils/estimateRemaining` ; notification : `hooks/useCompletionNotice`, `hooks/useNotifyPreference` ; aide : `InfoTip` (`components/metrics`) |
 | Client Supabase | Session, token d'accès | `frontend/src/supabaseClient.ts` |
 | API (Logique HTTP) | Endpoints, validation des entrées, auth, exécution en tâche de fond, persistance, vérification de livraison | `backend/main.py`, `backend/auth.py` |
 | Socle backend | Journalisation, erreurs typées, validation, orphelines, résumé de projet | `backend/logs.py`, `backend/errors.py`, `backend/validation.py`, `backend/orphans.py`, `backend/project_summary.py` |

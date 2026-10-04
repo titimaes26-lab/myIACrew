@@ -1,68 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiClient, type ExecuteAcceptedResponse } from '../api';
-import type { ChatTurn, ExecutionHistoryEntry, LaunchChoice, QualificationReport, RepoTarget } from '../types';
+import { useRef, useState } from 'react';
+import { apiClient } from '../api';
+import type { ChatTurn } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
-import { toDisplayedError, isConnectionFailure } from '../utils/errors';
-import { useConnectionStatus } from './useConnectionStatus';
+import { toDisplayedError } from '../utils/errors';
+import { historyEntryToTurn } from './conversation/turnMapping';
+import { useSendOutcomes, type PendingClarification } from './conversation/sendOutcomes';
+import { useProgressPolling } from './conversation/useProgressPolling';
+import { useLaunchPreview } from './conversation/useLaunchPreview';
+import { useSendMessage } from './conversation/useSendMessage';
 
-// Fréquence de sondage de la progression réelle (voir l'effet plus bas) : assez rapide pour
-// paraître réactif face à des étapes qui durent typiquement plusieurs dizaines de secondes,
-// sans multiplier inutilement les requêtes.
-const PROGRESS_POLL_MS = 3000;
-
-const CONFIRM_LAUNCH_KEY = 'studio.confirmLaunch';
-
-// Préférence « confirmer avant de lancer » : activée par défaut ; localStorage peut être indisponible (navigation
-// privée, stockage bloqué), l'interface fonctionne alors avec la valeur par défaut.
-function readConfirmLaunch(): boolean {
-  try {
-    return window.localStorage.getItem(CONFIRM_LAUNCH_KEY) !== 'off';
-  } catch {
-    return true;
-  }
-}
-
-interface PendingLaunch {
-  tempId: string;
-  request: string;
-  // Corps commun de /api/execute (conversation, repository, reprise) fixé au moment de l'envoi.
-  executePayload: Record<string, unknown>;
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError';
-}
-
-function historyEntryToTurn(entry: ExecutionHistoryEntry): ChatTurn {
-  return {
-    id: entry.id,
-    userMessage: entry.user_request,
-    status: entry.status,
-    workflow: entry.workflow,
-    result: entry.result,
-    createdAt: entry.created_at,
-    updatedAt: entry.status !== 'running' ? entry.updated_at : undefined,
-    apiCallsCount: entry.api_calls_count,
-    rateLimitHits: entry.rate_limit_hits,
-    totalWaitTimeSeconds: entry.total_wait_time_seconds,
-    currentStep: entry.current_step,
-    errorCode: entry.error_code,
-    errorRetryable: entry.error_retryable,
-    scope: entry.scope,
-  };
-}
-
+// État d'une conversation du Studio, assemblé à partir de hooks dédiés (dossier ./conversation) : sondage de la
+// progression, aperçu avant lancement, envoi d'un message ; ce fichier garde l'état partagé et la navigation
+// (nouvelle conversation, reprise, annulation).
 export function useConversation(accessToken: string, apiUrl: string) {
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { lost: connectionLost, reportFailure, reportSuccess, reset: resetConnection } = useConnectionStatus();
   // workflow typé QualificationReport['request_type'] (pas un simple string) : sinon
   // effectiveWorkflow, plus bas, se retrouverait lui-même élargi à string dès qu'il combine
   // cette valeur avec workflowType (typé WorkflowType), perdant la garantie à la
   // compilation que seule une des 4 catégories reconnues par le backend est envoyée.
-  const [pendingClarification, setPendingClarification] = useState<{ originalRequest: string; workflow: QualificationReport['request_type']; fallback?: boolean } | null>(null);
+  const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null);
   // Incrémenté à ces mêmes deux limites que workflowType ci-dessous (startNewConversation, et
   // loadConversation seulement quand il ne s'agit pas d'un no-op sur la conversation déjà
   // affichée) — PAS à chaque changement de conversationId : conversationId lui-même passe de
@@ -74,29 +33,12 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // seulement si ce qu'on lui donne comme key change UNIQUEMENT à ces limites précises — d'où
   // ce compteur dédié plutôt que conversationId directement.
   const [conversationResetSignal, setConversationResetSignal] = useState(0);
-  // Aperçu avant lancement : la demande qualifiée attend « Lancer » (voir confirmLaunch). Un état (et non un ref) :
-  // Studio désactive « Relancer » tant qu'il existe.
-  const [pendingLaunch, setPendingLaunch] = useState<PendingLaunch | null>(null);
-  const launchingRef = useRef(false);
-  const tempIdCounterRef = useRef(0);
-  const [confirmBeforeLaunch, setConfirmBeforeLaunchState] = useState(readConfirmLaunch);
-  const setConfirmBeforeLaunch = useCallback((value: boolean) => {
-    setConfirmBeforeLaunchState(value);
-    try {
-      window.localStorage.setItem(CONFIRM_LAUNCH_KEY, value ? 'on' : 'off');
-    } catch {
-      // Stockage indisponible : le choix vaut pour cette session seulement.
-    }
-  }, []);
-  // Choix du type de demande, modifiable avant chaque envoi (voir sendMessage) mais tenu
   // ici plutôt que localement dans ChatInput : startNewConversation/loadConversation ont
   // besoin de pouvoir le remettre à 'AUTO' à ces limites naturelles (nouvelle conversation,
   // reprise d'une conversation différente), où faire persister un choix manuel resterait
   // silencieusement actif pour une demande sans rapport avec celle où il avait été choisi.
   const [workflowType, setWorkflowType] = useState<WorkflowType>('AUTO');
   const abortControllerRef = useRef<AbortController | null>(null);
-  // Exécution en échec que le prochain envoi reprend (voir prepareRetry) : consommée par sendMessage.
-  const resumeFromRef = useRef<{ id: number; userMessage: string; scope?: string | null } | null>(null);
   // Incrémenté à chaque changement de conversation (nouvelle ou reprise d'une différente),
   // jamais pour un simple envoi de message. Sert à repérer, après un await, si l'opération en
   // cours est toujours la plus récente avant d'appliquer son résultat sur l'état : contrairement
@@ -104,225 +46,19 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // être périmée une fois l'await résolu), un ref se lit toujours à sa valeur courante, donc ce
   // test reste valable quel que soit ce qui s'est produit pendant l'attente.
   const conversationGenerationRef = useRef(0);
-  // Distinct de conversationGenerationRef : celui-ci ne bouge que sur un changement RÉEL de
-  // conversation, alors qu'un cycle de sondage de progression (l'effet plus bas) peut se
-  // terminer et en redémarrer un NOUVEAU sans jamais changer de conversation (ex: un tour
-  // "running" repris depuis l'historique se termine, puis un nouveau message est envoyé dans
-  // cette même conversation avant qu'une réponse tardive du cycle précédent n'ait fini
-  // d'arriver). Sans un identifiant PROPRE à chaque cycle, une telle réponse tardive passerait
-  // à tort la vérification par conversationGenerationRef (la conversation, elle, n'a pas
-  // changé) et s'appliquerait au tour du nouveau cycle.
-  const pollCycleRef = useRef(0);
 
   const api = apiClient(apiUrl, accessToken);
+  const core = { setTurns, setError, setSending, setConversationId, setPendingClarification, abortControllerRef, conversationGenerationRef };
 
-  // Progression réelle : tant qu'un tour est "running" (juste envoyé DANS cette session, ou
-  // encore en cours côté serveur après un rechargement de page qui l'a restauré via
-  // loadConversation), sonde périodiquement l'étape en cours persistée en base
-  // (ExecutionHistory.current_step, mise à jour par on_step_change côté backend) plutôt que de
-  // se fier uniquement à l'estimation par temps écoulé de StepIndicator.
-  //
-  // Dérivé de `turns` (pas de `sending`) : `sending` est un état local à CETTE session
-  // navigateur, remis à false à chaque rechargement de page, alors qu'un tour rechargé depuis
-  // l'historique peut être encore "running" côté serveur — c'est précisément le cas que la
-  // persistance en base (par opposition à un simple état en mémoire côté backend) est censée
-  // couvrir. Une simple valeur booléenne dérivée (pas `turns` lui-même) comme dépendance
-  // d'effet : sinon CHAQUE mutation de `turns` (résultat qui arrive, statut qui change)
-  // redémarrerait l'effet et donc l'intervalle, sans raison une fois qu'un tour est déjà
-  // "running" et le reste.
-  const hasRunningTurn = turns.some((t) => t.status === 'running');
-  // Un tour chargé depuis l'historique (loadConversation) a un id NUMÉRIQUE réel dès le départ ;
-  // un tour envoyé DANS cette session en a un TEMPORAIRE (`temp-...`, une string) tant que
-  // sendMessage n'a pas lui-même reçu sa réponse (voir applyExecuteAccepted). Sert plus bas à
-  // éviter un fetch de resynchronisation qui ne pourrait de toute façon jamais rien trouver pour
-  // ce second cas : messages.find(m => m.id === turn.id) ne peut matcher qu'un id numérique.
-  const runningTurnHasNumericId = turns.some((t) => t.status === 'running' && typeof t.id === 'number');
-  // Identifiants serveur des tours « running », relus par le sondage (qui ne voit pas `turns` : son effet ne dépend
-  // que de booléens) pour ne resynchroniser QUE ces exécutions, pas toute la conversation.
-  const runningIdsRef = useRef<number[]>([]);
-  useEffect(() => {
-    runningIdsRef.current = turns.flatMap((t) => (t.status === 'running' && typeof t.id === 'number' ? [t.id] : []));
+  const { hasRunningTurn, connectionLost } = useProgressPolling({
+    turns, setTurns, setError, conversationId, apiUrl, accessToken, conversationGenerationRef,
   });
-
-  useEffect(() => {
-    // Sans conversationId, aucun moyen d'interroger /api/conversations/{id}/messages : c'est
-    // le cas du tout premier message d'une conversation encore inexistante côté serveur au
-    // moment de l'envoi (son id n'est connu qu'une fois /api/execute résolu) — StepIndicator
-    // retombe alors sur son estimation par temps écoulé pour ce seul tour.
-    if (!hasRunningTurn || conversationId == null) return;
-
-    // Nouveau cycle de sondage : voir pollCycleRef plus haut. Incrémenté ici (à la mise en
-    // place de CET effet), pas dans son nettoyage — un effet suivant qui démarre un nouveau
-    // cycle incrémente de toute façon à son tour, ce qui suffit à invalider les closures de
-    // celui-ci (myCycle capturé juste après ne correspondra plus à pollCycleRef.current une
-    // fois qu'un effet plus récent aura tourné).
-    const myCycle = ++pollCycleRef.current;
-
-    // Un seul client pour tous les sondages de CET effet (pas reconstruit à chaque tick) :
-    // apiUrl/accessToken sont déjà en dépendances de l'effet, donc le recréer à chaque
-    // changement de l'un des deux (via le redémarrage de l'effet) suffit.
-    const client = apiClient(apiUrl, accessToken);
-    // Numéro de séquence local à CET effet (pas un ref partagé entre effets, un nouvel effet -
-    // donc une nouvelle conversation ou un nouveau cycle "running" - repart proprement de zéro) :
-    // sur une requête HTTP lente, deux sondages peuvent se doubler et répondre dans le désordre.
-    // Sans ce compteur, une réponse partie tôt mais arrivée tard (mySeq plus petit) pourrait
-    // écraser une réponse plus récente déjà appliquée, faisant reculer l'affichage de la
-    // progression pendant jusqu'à un intervalle de sondage.
-    let nextSeq = 0;
-    let lastAppliedSeq = 0;
-    // Sans ce garde-fou, deux tours de sondage consécutifs (toutes les PROGRESS_POLL_MS) qui
-    // constatent chacun "plus rien de running" avant que le premier fetch complet de
-    // resynchronisation ci-dessous n'ait eu le temps de répondre déclencheraient chacun leur
-    // propre resynchronisation (une requête par exécution suivie) en parallèle pour rien : le
-    // second ne fait qu'attendre le même résultat que le premier finira de toute façon par
-    // apporter.
-    let resyncInFlight = false;
-    // Posé au nettoyage : un sondage encore en vol d'un ancien cycle ne doit plus rien signaler.
-    let stopped = false;
-
-    const poll = () => {
-      // Capturé À CHAQUE appel (pas une fois pour tout l'effet) : un changement de
-      // conversation en plein vol annule bien l'intervalle (nettoyage de cet effet, déclenché
-      // par le changement de `conversationId` en dépendance), mais n'annule PAS un sondage déjà
-      // parti — sans cette vérification après coup, sa réponse pourrait arriver après le
-      // changement et appliquer par erreur l'étape d'UNE AUTRE conversation au tour "running"
-      // de celle affichée désormais.
-      const myGeneration = conversationGenerationRef.current;
-      const mySeq = ++nextSeq;
-
-      client.getConversationProgress(conversationId)
-        .then((progress) => {
-          // Toute réponse (même périmée ci-dessous) prouve que la connexion fonctionne.
-          if (stopped) return;
-          reportSuccess();
-          if (myGeneration !== conversationGenerationRef.current) return;
-          if (myCycle !== pollCycleRef.current) return;
-          if (mySeq <= lastAppliedSeq) return;
-          lastAppliedSeq = mySeq;
-
-          if (progress.status === 'running') {
-            setTurns((t) => t.map((turn) => {
-              const hasUpdate = turn.currentStep !== progress.current_step ||
-                                (turn.queueAhead ?? null) !== (progress.queue_ahead ?? null) ||
-                                Object.keys(progress.completed_agents || {}).length > 0;
-              if (turn.status === 'running' && hasUpdate) {
-                const newCompletedAgents = {
-                  ...(turn.completedAgents || {}),
-                  ...(progress.completed_agents || {}),
-                };
-                return {
-                  ...turn,
-                  currentStep: progress.current_step,
-                  queueAhead: progress.queue_ahead ?? null,
-                  completedAgents: newCompletedAgents,
-                };
-              }
-              return turn;
-            }));
-            return;
-          }
-
-          // Plus aucune exécution "running" dans cette conversation : soit elle vient de se
-          // terminer, soit ce sondage arrive en double après que sendMessage a déjà lui-même
-          // traité sa propre réponse. Un tour chargé depuis l'historique (id numérique réel, via
-          // loadConversation) n'est suivi par AUCUN autre mécanisme que ce sondage : sans cette
-          // resynchronisation complète, un tel tour resterait bloqué sur "🔄 En cours..."
-          // indéfiniment une fois l'exécution terminée côté serveur, et hasRunningTurn ne
-          // repasserait jamais à false (le sondage tournerait alors indéfiniment, cette branche
-          // répondant toujours "plus rien de 'running'"). À l'inverse, un tour encore sur son id
-          // temporaire (envoyé DANS cette session, pas encore remplacé par son id réel — voir
-          // applyExecuteAccepted) ne peut par construction jamais être retrouvé par
-          // messages.find(m => m.id === turn.id) plus bas (id numérique serveur vs "temp-...") :
-          // inutile de payer le coût d'un fetch complet de l'historique à chaque tick pour lui,
-          // sendMessage résoudra de toute façon très bientôt sa propre requête /api/execute.
-          const idsAtFetch = new Set(runningIdsRef.current);
-          if (!runningTurnHasNumericId || idsAtFetch.size === 0 || resyncInFlight) return;
-          resyncInFlight = true;
-          // Seules les exécutions suivies sont relues (une requête chacune, résultat complet compris), au lieu de
-          // toute la conversation avec le résultat de chacun de ses tours ; une exécution disparue (404) est
-          // simplement absente de `messages`, ce que le repli plus bas traite comme avant.
-          Promise.all([...idsAtFetch].map((id) => client.getExecution(id)))
-            .then((found) => found.filter((entry): entry is ExecutionHistoryEntry => entry !== null))
-            .then((messages) => {
-              if (myGeneration !== conversationGenerationRef.current) return;
-              // Un nouveau cycle (nouveau tour "running" démarré pendant que CE fetch, lent,
-              // était en vol) a déjà commencé : cette réponse, bâtie sur un instantané de
-              // l'historique antérieur à ce nouveau tour, ne peut par construction pas le
-              // contenir — sans cette vérification, matching resterait introuvable pour LUI
-              // aussi et le repli plus bas le marquerait à tort "supprimé".
-              if (myCycle !== pollCycleRef.current) return;
-              // Renseigné DANS l'updater ci-dessous (seul endroit qui voit encore le statut
-              // "running" ancien ET le statut final tout juste reçu), mais appliqué à l'état
-              // global APRÈS cet appel à setTurns, pas depuis l'intérieur de l'updater lui-même
-              // (un simple effet de bord y serait à la fois un anti-pattern React — l'updater
-              // peut être invoqué plusieurs fois en StrictMode — et retarderait ce setError
-              // derrière le prochain rendu déclenché par setTurns). Depuis que /api/execute
-              // répond avant la fin réelle de l'exécution, c'est le SEUL endroit qui détecte
-              // encore un échec découvert après coup par ce sondage plutôt que directement par
-              // la réponse de /api/execute (voir le catch de sendMessage, qui ne voit plus jamais
-              // ce genre d'échec) — sans ça, ce même échec n'afficherait plus la bannière
-              // d'erreur globale, seulement le badge "❌ Échec" sur la bulle de ce tour.
-              let failedMessage: string | null = null;
-              setTurns((t) => t.map((turn) => {
-                // Seuls les tours relus ici : un tour devenu « running » entre-temps n'a pas été interrogé.
-                if (turn.status !== 'running' || typeof turn.id !== 'number' || !idsAtFetch.has(turn.id)) return turn;
-                const matching = messages.find((m) => m.id === turn.id);
-                if (matching) {
-                  if (matching.status === 'failed') failedMessage = matching.result ?? 'Une erreur est survenue.';
-                  // createdAt du turn LOCAL conservé (pas celui, forcément différent, de
-                  // ExecutionHistory.created_at côté serveur — voir database.py, fixé au moment
-                  // du INSERT, donc toujours postérieur de quelques centaines de ms à l'appel
-                  // client à pushRunningTurn) : ChatThread.tsx s'appuie sur le fait que createdAt
-                  // ne change JAMAIS après la création d'un tour, aussi bien pour sa clé React
-                  // (key={turn.createdAt}, voir son commentaire) que pour identityKey (qui décide
-                  // s'il faut recoller au bas du fil). Écraser createdAt ici démonterait/
-                  // remonterait ce <ChatMessage> ET forcerait un recollage en bas au moment même
-                  // où cette exécution se termine — y compris si l'utilisateur était remonté lire
-                  // l'historique entretemps.
-                  return { ...historyEntryToTurn(matching), createdAt: turn.createdAt };
-                }
-                // Toujours introuvable dans l'historique de cette conversation : la ligne a
-                // disparu de la base (ex: nettoyage manuel direct en base d'une exécution restée
-                // bloquée à "running" pour toujours après un crash serveur — /api/history ne
-                // permet plus, lui, de supprimer une ligne "running" justement pour éviter ce
-                // cas). Sans ce repli, ce sondage tournerait indéfiniment : plus aucune ligne
-                // "running" à trouver, mais rien non plus à faire correspondre à ce tour pour le
-                // faire sortir de cet état.
-                return {
-                  ...turn,
-                  status: 'cancelled' as const,
-                  result: "Cette exécution n'existe plus en base (nettoyage manuel probable).",
-                  updatedAt: new Date().toISOString(),
-                };
-              }));
-              if (failedMessage) setError(failedMessage);
-            })
-            .catch(() => {
-              // Resynchronisation best-effort : un prochain tick de ce même intervalle (tant que
-              // hasRunningTurn reste vrai) retentera.
-            })
-            .finally(() => {
-              resyncInFlight = false;
-            });
-        })
-        .catch((err: unknown) => {
-          // Sondage périodique best-effort : une erreur réseau ponctuelle ne doit pas
-          // interrompre l'exécution en cours, seulement priver cette itération de mise à jour.
-          // Plusieurs échecs d'affilée sont signalés à l'utilisateur (connectionLost) — mais
-          // seulement les vraies pannes de connexion ou de serveur : un 401/404 est permanent,
-          // « nouvelle tentative automatique » serait faux.
-          if (!stopped && isConnectionFailure(err)) reportFailure();
-        });
-    };
-    poll();
-    const interval = setInterval(poll, PROGRESS_POLL_MS);
-    return () => {
-      clearInterval(interval);
-      stopped = true;
-      // Plus de sondage (fin d'exécution, changement de conversation) : plus rien à signaler.
-      resetConnection();
-    };
-  }, [hasRunningTurn, runningTurnHasNumericId, conversationId, apiUrl, accessToken, reportSuccess, reportFailure, resetConnection]);
+  const outcomes = useSendOutcomes(core);
+  const launch = useLaunchPreview({ api, ...core, outcomes });
+  const { sendMessage, prepareRetry, resumeFromRef } = useSendMessage({
+    api, conversationId, workflowType, pendingClarification, ...core, outcomes, launch,
+  });
+  const { pendingLaunch, setPendingLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, confirmLaunch, cancelLaunch } = launch;
 
   // Usage interne uniquement (startNewConversation/loadConversation ci-dessous) : abandonne
   // juste la requête HTTP en vol, sans toucher à `turns`. Distinct de cancelSending (le bouton
@@ -427,302 +163,5 @@ export function useConversation(accessToken: string, apiUrl: string) {
     }
   };
 
-  // Partagé entre les 3 chemins qui aboutissent à un /api/execute accepté (repli manuel,
-  // réponse à une clarification, exécution automatique) pour qu'ils ne puissent pas
-  // diverger silencieusement en ne mettant à jour ce mapping que d'un seul côté.
-  // /api/execute répond désormais dès que l'exécution est LANCÉE côté serveur (tâche de fond),
-  // pas quand elle est TERMINÉE (voir ExecuteAcceptedResponse dans api.ts) : ce tour reste donc
-  // "running" ici (déjà posé par pushRunningTurn) — seul son id passe du tempId local à l'id réel
-  // en base, pour que le sondage de progression (l'effet plus haut) puisse le suivre et, à terme,
-  // le resynchroniser avec son résultat final une fois l'exécution terminée côté serveur, même si
-  // cette requête d'origine a depuis été interrompue (écran verrouillé, onglet fermé).
-  const applyExecuteAccepted = (tempId: string, data: ExecuteAcceptedResponse) => {
-    setConversationId(data.conversation_id);
-    setTurns((t) => t.map((turn) => (turn.id === tempId
-      ? { ...turn, id: data.id, resumedSteps: data.resumed_steps?.length ? data.resumed_steps : undefined }
-      : turn)));
-  };
-
-  // « Relancer » : le prochain envoi, s'il reprend EXACTEMENT la demande de ce tour en échec, demande au
-  // serveur de réutiliser ses étapes déjà réussies. Une demande modifiée repart de zéro (le serveur
-  // refuse de toute façon une reprise incohérente avec le workflow ou le repository).
-  const prepareRetry = useCallback((turn: ChatTurn) => {
-    resumeFromRef.current = typeof turn.id === 'number' && turn.status === 'failed'
-      ? { id: turn.id, userMessage: turn.userMessage, scope: turn.scope }
-      : null;
-  }, []);
-
-  // Abandonne l'aperçu en attente : son tour est marqué annulé (rien n'a été lancé côté serveur).
-  const discardPendingLaunch = (reason: string) => {
-    const pending = pendingLaunch;
-    if (!pending) return;
-    setPendingLaunch(null);
-    setTurns((t) => t.map((turn) => (turn.id === pending.tempId
-      ? { ...turn, status: 'cancelled', launchPreview: undefined, result: reason, updatedAt: new Date().toISOString() }
-      : turn)));
-  };
-
-  const cancelLaunch = () => discardPendingLaunch('Lancement annulé : rien n\'a été exécuté.');
-
-  // « Lancer » depuis l'aperçu, avec le type et la taille éventuellement corrigés par l'utilisateur.
-  const confirmLaunch = async (choice: LaunchChoice) => {
-    const pending = pendingLaunch;
-    // launchingRef : un second clic avant le rendu suivant enverrait un deuxième /api/execute (409, tour en échec).
-    if (!pending || launchingRef.current) return;
-    launchingRef.current = true;
-    setPendingLaunch(null);
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const myGeneration = conversationGenerationRef.current;
-    const scope = choice.workflow === 'FEATURE' ? choice.scope : undefined;
-    setSending(true);
-    setError(null);
-    // createdAt repart de maintenant : la frise et le chrono comptent depuis le lancement, pas depuis l'attente.
-    setTurns((t) => t.map((turn) => (turn.id === pending.tempId
-      ? { ...turn, status: 'running', workflow: choice.workflow, scope, launchPreview: undefined, questions: undefined, createdAt: new Date().toISOString() }
-      : turn)));
-    try {
-      const data = await api.execute({
-        ...pending.executePayload,
-        user_request: pending.request,
-        target_workflow: choice.workflow,
-        scope,
-      }, controller.signal);
-      if (myGeneration !== conversationGenerationRef.current) return;
-      applyExecuteAccepted(pending.tempId, data);
-    } catch (err: unknown) {
-      reportSendError(err, pending.tempId, myGeneration);
-    } finally {
-      launchingRef.current = false;
-      abortControllerRef.current = null;
-      setSending(false);
-    }
-  };
-
-  // Issue d'un envoi qui a échoué ou été annulé, partagée par sendMessage et confirmLaunch : marque le tour
-  // concerné « annulé » ou « en échec », sauf si la conversation affichée a changé entretemps.
-  const reportSendError = (err: unknown, tempId: string, myGeneration: number) => {
-    // Idem : une erreur (y compris une annulation) rattachée à une conversation abandonnée
-    // ne doit affecter ni son historique (de toute façon remplacé entretemps) ni, surtout,
-    // pendingClarification/error/conversationId de la conversation désormais affichée.
-    if (myGeneration !== conversationGenerationRef.current) return;
-    if (isAbortError(err)) {
-      // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
-      // réponse de clarification à la demande d'origine (désormais abandonnée).
-      setPendingClarification(null);
-      // Toujours marqué 'cancelled' sans réserve ici (jamais dismissedLocally, voir
-      // cancelSending) : ce catch n'est atteint que si l'appel await api.execute() (ou
-      // api.qualify()) ci-dessus a lui-même été rejeté par cet abort, ce qui signifie par
-      // construction qu'applyExecuteAccepted n'a PAS pu tourner — ce tour est donc encore sur
-      // son tempId (une string), jamais l'id réel renvoyé par /api/execute. dismissedLocally
-      // suppose justement un id réel déjà connu (voir cancelSending) pour que le sondage de
-      // progression puisse un jour reconstituer ce tour par cet id ; sans lui, `status` resterait
-      // "running" à jamais, sans AUCUN mécanisme capable de l'en faire sortir — bien pire que le
-      // risque, ici accepté, d'un 409 "exécution déjà en cours" si l'utilisateur renvoie un
-      // message avant que l'exécution éventuellement déjà lancée côté serveur ne soit terminée.
-      setTurns((t) => t.map((turn) => (turn.id === tempId
-        ? { ...turn, status: 'cancelled', result: "Annulé côté interface avant confirmation du serveur.", updatedAt: new Date().toISOString() }
-        : turn)));
-      return;
-    }
-    const shown = toDisplayedError(err, 'Une erreur est survenue.');
-    const message = shown.message;
-    setTurns((t) => t.map((turn) => (turn.id === tempId
-      ? { ...turn, status: 'failed', result: message, errorCode: shown.code, errorRetryable: shown.retryable, updatedAt: new Date().toISOString() }
-      : turn)));
-    setError(message);
-  };
-
-  const sendMessage = async (text: string, repoTarget: RepoTarget) => {
-    // Compteur en plus de l'horodatage : deux envois dans la même milliseconde auraient le même id et le second
-    // retoucherait le tour du premier.
-    const tempId = `temp-${Date.now()}-${++tempIdCounterRef.current}`;
-    // Même normalisation que le backend (champ repository vide ou d'espaces = absent) : qualification et
-    // exécution doivent s'accorder sur l'existence d'un repository cible.
-    const repoOwner = repoTarget.owner?.trim() ?? '';
-    const repoName = repoTarget.name?.trim() ?? '';
-    const resume = resumeFromRef.current;
-    resumeFromRef.current = null;
-    // Un aperçu non confirmé est remplacé par cette nouvelle demande (le taper vaut abandonner l'ancienne).
-    if (pendingLaunch) discardPendingLaunch("Remplacée par une nouvelle demande avant son lancement.");
-    const executePayload = {
-      conversation_id: conversationId ?? undefined,
-      resume_from_execution_id: resume && resume.userMessage.trim() === text.trim() ? resume.id : undefined,
-      repo_owner: repoOwner || undefined,
-      repo_name: repoName || undefined,
-      base_branch: repoTarget.branch?.trim() || undefined,
-    };
-
-    const hasRepoTarget = Boolean(repoOwner && repoName);
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    // Capturé maintenant (jamais modifié par sendMessage lui-même, seulement lu) : si une
-    // navigation vers une autre conversation survient pendant un des await ci-dessous, ce
-    // nombre ne correspondra plus à conversationGenerationRef.current au retour de l'await,
-    // ce qui permet d'abandonner silencieusement un résultat devenu obsolète (pendingClarification
-    // notamment est un état global, pas propre à une conversation, qui serait sinon modifié à
-    // tort pour la conversation désormais affichée).
-    const myGeneration = conversationGenerationRef.current;
-
-    setSending(true);
-    setError(null);
-
-    // Partagé entre les 3 chemins qui poussent le tour de CET envoi avant son exécution
-    // (repli manuel avec clarification, repli manuel sans clarification, AUTO avant
-    // /api/qualify) pour qu'ils ne puissent pas diverger silencieusement sur sa forme.
-    // workflow omis (undefined) tant que la catégorie n'est pas encore connue (avant
-    // /api/qualify) : ChatTurn.workflow est optionnel précisément pour ce cas.
-    // userMessage surchageable (par défaut `text`, le texte tapé) : nécessaire pour le repli
-    // manuel avec clarification ci-dessous, où `text` seul (la réponse à la clarification) ne
-    // représente pas la demande complète — voir son appel.
-    const pushRunningTurn = (workflow?: string, userMessage: string = text) => {
-      setTurns((t) => [...t, { id: tempId, userMessage, status: 'running', workflow, createdAt: new Date().toISOString() }]);
-    };
-
-    try {
-      if (pendingClarification) {
-        // Si un type a été choisi manuellement pendant qu'une clarification était en
-        // attente, il REMPLACE celui détecté par /api/qualify (pendingClarification.workflow)
-        // mais la demande d'origine (pendingClarification.originalRequest) reste la base de
-        // la demande : ce texte est traité comme la réponse à la clarification, jamais comme
-        // une toute nouvelle demande qui ferait perdre le contexte déjà donné par
-        // l'utilisateur. Le tour "❓ Précisions nécessaires" n'a donc pas besoin d'être
-        // annulé : il est répondu, comme dans le flux AUTO normal (reste en historique).
-        // Combine la demande d'origine et la réponse plutôt que d'afficher seulement `text` (la
-        // réponse) : ce tour n'a alors plus l'air de "Relancer" (Studio.tsx, via handleRetry, qui
-        // préremplit la zone de saisie avec turn.userMessage) une demande tronquée réduite à sa
-        // seule réponse de clarification — un agent avec accès en écriture GitHub recevrait sinon
-        // un fragment hors contexte comme s'il s'agissait de la demande complète.
-        const clarifiedRequest = `${pendingClarification.originalRequest}\n\nPrécisions apportées : ${text}`;
-        let effectiveWorkflow: QualificationReport['request_type'] = pendingClarification.workflow;
-        if (workflowType !== 'AUTO') {
-          effectiveWorkflow = workflowType;
-          pushRunningTurn(effectiveWorkflow, clarifiedRequest);
-        } else {
-          // En AUTO, la réponse sert souvent justement à trancher la catégorie (la question
-          // posée est du type "X ou Y ?" quand la confiance était trop basse) : on requalifie
-          // la demande précisée au lieu de réutiliser le type provisoire. Pas de nouvelle
-          // clarification ici (is_clear ignoré), pour ne jamais boucler sur des questions.
-          pushRunningTurn(undefined, clarifiedRequest);
-          // Un échec de cette requalification (quota Gemini, erreur serveur) ne doit pas faire
-          // perdre la réponse : on retombe sur le type provisoire, comme avant cette étape.
-          let report: QualificationReport | null = null;
-          try {
-            report = await api.qualify(clarifiedRequest, conversationId, hasRepoTarget, controller.signal);
-          } catch (qualifyErr) {
-            if (isAbortError(qualifyErr)) throw qualifyErr;
-          }
-          if (myGeneration !== conversationGenerationRef.current) return;
-          // fallback : repli "qualification impossible" du backend (DESIGN_AND_DEV par défaut, le
-          // workflow le plus coûteux), jamais un vrai choix.
-          if (report && !report.fallback) {
-            effectiveWorkflow = report.request_type;
-          } else if (pendingClarification.fallback) {
-            // Aucune des deux qualifications n'a abouti : plutôt que de lancer au hasard le
-            // workflow le plus coûteux, on redemande le type à l'utilisateur. La demande précisée
-            // (réponse comprise) devient la nouvelle demande en attente : rien de ce qui a été
-            // tapé n'est perdu, il suffit de choisir un type et de confirmer.
-            setPendingClarification({ originalRequest: clarifiedRequest, workflow: effectiveWorkflow, fallback: true });
-            setTurns((t) => t.map((turn) => (turn.id === tempId
-              ? {
-                ...turn,
-                status: 'clarifying',
-                agentSummary: "Le type de demande n'a pas pu être déterminé automatiquement.",
-                questions: ['Choisis le type de workflow ci-dessous, puis envoie un message (ex : « ok ») pour lancer la demande précisée.'],
-                updatedAt: new Date().toISOString(),
-              }
-              : turn)));
-            return;
-          }
-          setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: effectiveWorkflow } : turn)));
-        }
-        const data = await api.execute({
-          ...executePayload,
-          user_request: pendingClarification.originalRequest,
-          target_workflow: effectiveWorkflow,
-          clarifications: text,
-        }, controller.signal);
-        if (myGeneration !== conversationGenerationRef.current) return;
-        setPendingClarification(null);
-        applyExecuteAccepted(tempId, data);
-        return;
-      }
-
-      if (workflowType !== 'AUTO') {
-        // Sélection manuelle du type de demande, sans clarification en attente : contourne
-        // /api/qualify pour exécuter directement le workflow choisi, le texte tapé étant
-        // ici la demande complète (pas la réponse à une question précédente).
-        pushRunningTurn(workflowType);
-        const data = await api.execute({
-          ...executePayload,
-          user_request: text,
-          target_workflow: workflowType,
-        }, controller.signal);
-        if (myGeneration !== conversationGenerationRef.current) return;
-        applyExecuteAccepted(tempId, data);
-        return;
-      }
-
-      pushRunningTurn();
-      const report = await api.qualify(text, conversationId, hasRepoTarget, controller.signal);
-      // Abandonné si une navigation vers une autre conversation a eu lieu pendant cet await :
-      // sans ce garde-fou, la suite (setPendingClarification notamment, état global non
-      // propre à une conversation) modifierait à tort l'état de la conversation désormais
-      // affichée plutôt que celle, abandonnée, à l'origine de cette demande.
-      if (myGeneration !== conversationGenerationRef.current) return;
-
-      if (!report.is_clear) {
-        setPendingClarification({ originalRequest: text, workflow: report.request_type, fallback: report.fallback });
-        setTurns((t) => t.map((turn) => (turn.id === tempId
-          ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, questions: report.questions, updatedAt: new Date().toISOString() }
-          : turn)));
-        return;
-      }
-
-      // Une reprise garde la taille du tour en échec : la qualification n'est pas déterministe, et un autre scope
-      // changerait les étapes (donc le serveur refuserait de réutiliser celles déjà réussies).
-      const resumed = executePayload.resume_from_execution_id !== undefined && resume?.scope;
-      const scope = report.request_type === 'FEATURE' ? (resumed ? resume.scope : report.scope) : undefined;
-      // Aperçu avant lancement : la qualification peut se tromper (type, taille), et un lancement coûte plusieurs
-      // minutes de quota. Pas pour une reprise (« Relancer » : déjà confirmée une fois) ni si l'utilisateur a
-      // décoché la confirmation.
-      if (confirmBeforeLaunch && executePayload.resume_from_execution_id === undefined) {
-        const repoLabel = hasRepoTarget ? `${repoOwner}/${repoName}${repoTarget.branch?.trim() ? ` · ${repoTarget.branch.trim()}` : ''}` : null;
-        setPendingLaunch({ tempId, request: text, executePayload });
-        setTurns((t) => t.map((turn) => (turn.id === tempId
-          ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, scope, launchPreview: { workflow: report.request_type, scope: scope === 'PETIT' ? 'PETIT' : 'GRAND', repoLabel } }
-          : turn)));
-        return;
-      }
-
-      setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: report.request_type, agentSummary: report.summary, scope } : turn)));
-
-      const data = await api.execute({
-        ...executePayload,
-        user_request: text,
-        target_workflow: report.request_type,
-        scope,
-      }, controller.signal);
-      if (myGeneration !== conversationGenerationRef.current) return;
-      applyExecuteAccepted(tempId, data);
-    } catch (err: unknown) {
-      reportSendError(err, tempId, myGeneration);
-    } finally {
-      abortControllerRef.current = null;
-      setSending(false);
-    }
-  };
-
-  // Références STABLES vers confirmLaunch/cancelLaunch (recréées à chaque rendu) : transmises à chaque ChatMessage
-  // (React.memo), elles ne doivent pas changer à chaque sondage de progression.
-  const confirmLaunchRef = useRef(confirmLaunch);
-  const cancelLaunchRef = useRef(cancelLaunch);
-  useEffect(() => {
-    confirmLaunchRef.current = confirmLaunch;
-    cancelLaunchRef.current = cancelLaunch;
-  });
-  const stableConfirmLaunch = useCallback((choice: LaunchChoice) => confirmLaunchRef.current(choice), []);
-  const stableCancelLaunch = useCallback(() => cancelLaunchRef.current(), []);
-
-  return { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, conversationId, pendingClarification, pendingLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, confirmLaunch: stableConfirmLaunch, cancelLaunch: stableCancelLaunch, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
+  return { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, conversationId, pendingClarification, pendingLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, confirmLaunch, cancelLaunch, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
 }
