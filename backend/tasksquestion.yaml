@@ -70,29 +70,24 @@ design_task:
 
 architecture_task:
   description: >
-    Demande initiale de l'utilisateur :
-    ---
-    {user_request}
-    ---
     Pour un workflow DESIGN_AND_DEV ou ANALYSE_ONLY, tu reçois aussi le document de spécifications
     (Game Design ou spécifications applicatives) produit par la tâche précédente, disponible dans
     ton contexte. Pour un workflow FEATURE en revanche, cette tâche est la PREMIÈRE du crew (aucune
-    tâche de conception avant) : base-toi alors directement sur la demande ci-dessus, faute de quoi
+    tâche de conception avant) : base-toi alors directement sur la demande ci-dessous, faute de quoi
     tu ne saurais pas ce qui doit être construit.
     Définis la structure des fichiers du projet React/Vite.
     Spécifie la hiérarchie des composants, les props et la gestion d'état.
 
-    Contexte de la conversation (tours précédents de cet utilisateur) :
-    {conversation_context}
-
-    Contexte repository :
-    {repo_instructions}
     Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
-    (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour analyser l'arborescence réelle du projet.
-    Budget de lecture : 4 lectures AU PLUS, dans cet ordre : un `github_list_directory` à la racine,
-    `package.json`, `tsconfig.json` (s'il existe), puis un `github_list_directory` sur `src` : tu en
-    tires les dépendances réellement installées et les conventions du projet. Pas de repository :
-    aucune lecture, et toute dépendance que tu proposes est à ajouter.
+    (owner, repo et branche à lire : voir « Contexte repository » dans « Données de cette demande »,
+    plus bas) pour analyser l'arborescence réelle du projet.
+    Si un APERÇU DU REPOSITORY figure plus bas (section « Données de cette demande »), il remplace le
+    budget de lecture : ne relis PAS ces fichiers ; au plus 2 lectures supplémentaires, seulement pour un
+    fichier précis qu'il ne couvre pas. Sans aperçu, budget de lecture : 4 lectures AU PLUS, dans cet
+    ordre : un `github_list_directory` à la racine, `package.json`, `tsconfig.json` (s'il existe), puis un
+    `github_list_directory` sur `src` : tu en tires les dépendances réellement installées et les
+    conventions du projet. Pas de repository : aucune lecture, et toute dépendance que tu proposes est
+    à ajouter.
 
     Raisonne dans cet ordre :
     1. Existant : décris l'arborescence et les composants RÉELLEMENT lus (ou "projet vide / aucun
@@ -125,6 +120,21 @@ architecture_task:
     ne s'est produit. Si tu inclus un exemple de code illustratif (ex: un hook simulant un appel API),
     indique explicitement qu'il s'agit d'un exemple non exécuté et n'y fais figurer aucune donnée
     GitHub factice qui pourrait passer pour réelle.
+
+    === Données de cette demande ===
+    Demande initiale de l'utilisateur :
+    ---
+    {user_request}
+    ---
+
+    Contexte de la conversation (tours précédents de cet utilisateur) :
+    {conversation_context}
+
+    Contexte repository :
+    {repo_instructions}
+
+    Aperçu du repository (vide si aucun) :
+    {repo_snapshot}
   expected_output: >
     Des titres "##" dans cet ordre : "Existant" (avec les conventions relevées), "Cible" (arborescence
     et hiérarchie des composants), "Décisions" (une ligne Décision / Alternative écartée / Pourquoi

@@ -37,7 +37,7 @@ from errors import (
 )
 from github_tools import (
     verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
-    check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue,
+    check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue, build_repo_snapshot, track_read_cache,
 )
 from delivery import render_partial_delivery_block
 
@@ -886,7 +886,7 @@ def _repo_instructions(
 
 def _crew_inputs(
     data: "WorkflowExecutionInput", conversation_id: int, final_prompt: str, conversation_context: str,
-    work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool,
+    work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool, repo_snapshot: str = "",
 ) -> dict:
     return {
         'user_request': final_prompt,
@@ -899,7 +899,25 @@ def _crew_inputs(
         # Isole l'espace de travail LOCAL de chaque conversation (mode sans repository cible).
         'conversation_id': str(conversation_id),
         'repo_instructions': _repo_instructions(has_repo_target, data, work_branch, base_branch, branch_exists),
+        # Aperçu du repo lu en Python (vide : l'agent lit lui-même avec ses outils).
+        'repo_snapshot': repo_snapshot,
     }
+
+
+async def _prefetch_repo_snapshot(
+    data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool,
+) -> str:
+    """Aperçu du repo pour l'Architecte (racine, package.json, tsconfig.json, src), lu en Python plutôt que par ses
+    appels d'outils : autant de tours de LLM en moins. Seulement avec un repository cible et une étape d'architecture.
+    Best-effort : toute erreur renvoie "" et l'agent lit lui-même (même règle de branche que _repo_instructions)."""
+    if not has_repo_target or "architecture" not in workflow_step_keys(data.target_workflow):
+        return ""
+    branch = work_branch if branch_exists else (base_branch or "main")
+    try:
+        return await asyncio.to_thread(build_repo_snapshot, data.repo_owner, data.repo_name, branch)
+    except Exception as e:
+        print(f"AVERTISSEMENT : aperçu du repository non lu ({type(e).__name__}: {e}) : l'agent lira lui-même.", flush=True)
+        return ""
 
 
 async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, has_repo_target: bool) -> Optional[str]:
@@ -1192,11 +1210,16 @@ async def _run_crew_and_persist(
                     _capture_branch_sha(data, work_branch, has_repo_target),
                 )
                 _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
-                inputs = _crew_inputs(
-                    data, conversation_id, final_prompt, conversation_context, work_branch,
-                    normalized_base_branch, has_repo_target, state.sha_before is not None,
-                )
-                result = await _run_crew(crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs)
+                # Cache de lecture GitHub partagé par l'aperçu et les agents de CETTE exécution (voir track_read_cache).
+                with track_read_cache():
+                    branch_exists = state.sha_before is not None
+                    repo_snapshot = await _prefetch_repo_snapshot(
+                        data, work_branch, normalized_base_branch, has_repo_target, branch_exists)
+                    inputs = _crew_inputs(
+                        data, conversation_id, final_prompt, conversation_context, work_branch,
+                        normalized_base_branch, has_repo_target, branch_exists, repo_snapshot,
+                    )
+                    result = await _run_crew(crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs)
                 raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
                 # Un rapport « réussi » ne prouve rien sur GitHub (un outil github_* en échec renvoie du texte à

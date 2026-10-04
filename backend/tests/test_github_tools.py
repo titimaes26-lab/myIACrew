@@ -82,3 +82,113 @@ def test_github_read_file_does_not_double_prefix_blob_fallback_errors(monkeypatc
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
     result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
     assert result.count("ERREUR") == 1 and "ERREUR : ERREUR" not in result
+
+
+# --- Cache de lecture par exécution et aperçu du repo ------------------------------------------------
+
+class _Entry:
+    def __init__(self, path, kind="file"):
+        self.path, self.type = path, kind
+
+
+class _CountingRepo:
+    """Faux repo : compte les lectures et sert un petit projet. `files` : {(branche, chemin): bytes}."""
+
+    def __init__(self, files, dirs):
+        self.files, self.dirs, self.reads = files, dirs, 0
+
+    def get_contents(self, path, ref="main"):
+        self.reads += 1
+        if (ref, path) in self.dirs:
+            return [_Entry(p, kind) for p, kind in self.dirs[(ref, path)]]
+        if (ref, path) in self.files:
+            return FakeContentFile(self.files[(ref, path)])
+        raise GithubException(404, {"message": "Not Found"}, None)
+
+
+@pytest.fixture()
+def counting(monkeypatch):
+    repo = _CountingRepo(
+        files={("main", "package.json"): b'{"name": "app"}', ("main", "tsconfig.json"): b'{"strict": true}'},
+        dirs={("main", ""): [("package.json", "file"), ("tsconfig.json", "file"), ("src", "dir")],
+              ("main", "src"): [("src/App.tsx", "file")]},
+    )
+    created = []
+
+    class FakeGithub:
+        def __init__(self, auth=None):
+            pass
+
+        def get_repo(self, name):
+            created.append(name)
+            return repo
+
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr(gt, "Github", FakeGithub)
+    repo.created = created
+    return repo
+
+
+def test_without_a_cache_every_read_goes_to_github(counting):
+    gt.github_read_file.func("o", "r", "package.json", "main")
+    gt.github_read_file.func("o", "r", "package.json", "main")
+    assert counting.reads == 2 and len(counting.created) == 2
+
+
+def test_cache_serves_repeated_reads_and_builds_the_repo_once(counting):
+    with gt.track_read_cache():
+        first = gt.github_read_file.func("o", "r", "package.json", "main")
+        second = gt.github_read_file.func("o", "r", "package.json", "main")
+        gt.github_list_directory.func("o", "r", "", "main")
+        gt.github_list_directory.func("o", "r", "", "main")
+    assert first == second == '{"name": "app"}'
+    assert counting.reads == 2          # un fichier + un dossier, une fois chacun
+    assert len(counting.created) == 1   # get_repo une seule fois pour toute l'exécution
+
+
+def test_cache_never_keeps_errors_and_is_isolated_per_execution(counting):
+    with gt.track_read_cache():
+        assert gt.github_read_file.func("o", "r", "absent.ts", "main").startswith("ERREUR_FICHIER_INEXISTANT")
+        gt.github_read_file.func("o", "r", "absent.ts", "main")
+        assert counting.reads == 2      # l'erreur n'est pas mémorisée
+        gt.github_read_file.func("o", "r", "package.json", "main")
+    with gt.track_read_cache():
+        gt.github_read_file.func("o", "r", "package.json", "main")
+    assert counting.reads == 4          # un nouveau contexte repart d'un cache vide
+
+
+def test_a_write_invalidates_only_the_written_branch(counting):
+    counting.files[("work", "package.json")] = b'{"name": "work"}'
+    with gt.track_read_cache():
+        gt.github_read_file.func("o", "r", "package.json", "main")
+        gt.github_read_file.func("o", "r", "package.json", "work")
+        reads = counting.reads
+        gt.invalidate_read_cache("o", "r", "work")
+        gt.github_read_file.func("o", "r", "package.json", "main")   # toujours en cache
+        assert counting.reads == reads
+        gt.github_read_file.func("o", "r", "package.json", "work")   # relu après l'écriture
+        assert counting.reads == reads + 1
+
+
+def test_delivery_checks_never_read_from_or_fill_the_file_cache(counting):
+    with gt.track_read_cache():
+        gt.make_file_fetcher("o", "r", "main")("package.json")
+        gt.make_dir_lister("o", "r", "main")
+        cache = gt._read_cache.get()
+        assert cache["files"] == {} and cache["dirs"] == {}
+
+
+def test_repo_snapshot_lists_the_root_reads_the_config_files_and_src(counting):
+    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    assert "branche lue : main" in snapshot
+    assert "## Racine" in snapshot and "## package.json" in snapshot and '{"name": "app"}' in snapshot
+    assert "## tsconfig.json" in snapshot and "## src" in snapshot and "src/App.tsx" in snapshot
+
+
+def test_repo_snapshot_skips_missing_files_truncates_and_degrades_to_empty(counting):
+    del counting.files[("main", "tsconfig.json")]
+    counting.dirs[("main", "")] = [("package.json", "file"), ("src", "dir")]
+    counting.files[("main", "package.json")] = b"x" * 7000
+    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    assert "## tsconfig.json" not in snapshot and "[… tronqué]" in snapshot and "x" * 6001 not in snapshot
+    assert gt.build_repo_snapshot("o", "r", "inconnue") == ""   # racine illisible : l'agent lira lui-même

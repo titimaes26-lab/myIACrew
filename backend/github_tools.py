@@ -15,12 +15,69 @@ from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
 from tools import check_syntax_content
 
 
+# Cache de LECTURE d'une exécution de crew (voir track_read_cache) : les agents (Designer, Architecte, Diagnostic)
+# relisent les mêmes fichiers (package.json, la racine, src), et chaque lecture coûtait deux appels API (get_repo
+# puis get_contents) avec un client recréé à chaque fois. ContextVar plutôt que global : il vit le temps d'UNE
+# exécution (pas de fuite entre utilisateurs, une relance repart de zéro), et hors de ce contexte le comportement
+# est inchangé. Les vérifications de livraison (make_file_fetcher, make_dir_lister) ne l'utilisent JAMAIS : elles
+# doivent voir l'état réel de GitHub.
+_read_cache: ContextVar[dict | None] = ContextVar("read_cache", default=None)
+_read_cache_lock = threading.Lock()
+
+
+@contextmanager
+def track_read_cache():
+    """Active le cache de lecture pour l'exécution de crew en cours (à entourer le prefetch ET le crew)."""
+    token = _read_cache.set({"repos": {}, "files": {}, "dirs": {}})
+    try:
+        yield
+    finally:
+        _read_cache.reset(token)
+
+
+def invalidate_read_cache(owner: str, repo: str, branch: str) -> None:
+    """Oublie les lectures d'une branche après une écriture : les agents relisent alors l'état à jour."""
+    cache = _read_cache.get()
+    if cache is None:
+        return
+    with _read_cache_lock:
+        for name in ("files", "dirs"):
+            for key in [k for k in cache[name] if k[:3] == (owner, repo, branch)]:
+                del cache[name][key]
+
+
+def _cached_read(kind: str, key: tuple, read: Callable[[], str]) -> str:
+    """Résultat mémorisé de `read()` ; une ERREUR (texte « ERREUR… ») n'est jamais mémorisée : une branche ou un
+    fichier peut apparaître entre deux lectures."""
+    cache = _read_cache.get()
+    if cache is None:
+        return read()
+    with _read_cache_lock:
+        if key in cache[kind]:
+            return cache[kind][key]
+    value = read()
+    if not value.startswith("ERREUR"):
+        with _read_cache_lock:
+            cache[kind][key] = value
+    return value
+
+
 def _get_repo(owner: str, repo: str):
+    cache = _read_cache.get()
+    if cache is not None:
+        with _read_cache_lock:
+            cached = cache["repos"].get((owner, repo))
+        if cached is not None:
+            return cached
     token = os.getenv("GITHUB_TOKEN")
     if not token:
         raise RuntimeError("GITHUB_TOKEN manquant dans les variables d'environnement du backend.")
     client = Github(auth=Auth.Token(token))
-    return client.get_repo(f"{owner}/{repo}")
+    gh_repo = client.get_repo(f"{owner}/{repo}")
+    if cache is not None:
+        with _read_cache_lock:
+            cache["repos"][(owner, repo)] = gh_repo
+    return gh_repo
 
 
 def _github_error(e: GithubException) -> str:
@@ -150,6 +207,8 @@ def _record_edit_failure(owner: str, repo: str, path: str, branch: str, reason: 
 
 
 def _record_edit_success(owner: str, repo: str, path: str, branch: str) -> None:
+    # Appelée après CHAQUE écriture réussie (write_file, edit_file, lots) : le cache de lecture de la branche est périmé.
+    invalidate_read_cache(owner, repo, branch)
     counts = _edit_failure_counts.get()
     if counts is not None:
         with _edit_failure_lock:
@@ -266,6 +325,14 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
         path (str): chemin du fichier dans le repo (ex: 'src/App.tsx').
         branch (str): branche à lire (défaut 'main').
     """
+    return read_file_cached(owner, repo, path, branch)
+
+
+def read_file_cached(owner: str, repo: str, path: str, branch: str) -> str:
+    return _cached_read("files", (owner, repo, branch, path), lambda: _read_file_uncached(owner, repo, path, branch))
+
+
+def _read_file_uncached(owner: str, repo: str, path: str, branch: str) -> str:
     try:
         gh_repo = _get_repo(owner, repo)
         content_file = gh_repo.get_contents(path, ref=branch)
@@ -300,6 +367,14 @@ def github_list_directory(owner: str, repo: str, path: str = "", branch: str = "
         path (str): chemin du dossier (défaut la racine).
         branch (str): branche à inspecter (défaut 'main').
     """
+    return list_directory_cached(owner, repo, path, branch)
+
+
+def list_directory_cached(owner: str, repo: str, path: str, branch: str) -> str:
+    return _cached_read("dirs", (owner, repo, branch, path or ""), lambda: _list_directory_uncached(owner, repo, path, branch))
+
+
+def _list_directory_uncached(owner: str, repo: str, path: str, branch: str) -> str:
     try:
         gh_repo = _get_repo(owner, repo)
         contents = gh_repo.get_contents(path or "", ref=branch)
@@ -332,6 +407,7 @@ def github_create_branch(owner: str, repo: str, new_branch: str, base_branch: st
             pass
         base_ref = gh_repo.get_git_ref(f"heads/{base_branch}")
         gh_repo.create_git_ref(ref=f"refs/heads/{new_branch}", sha=base_ref.object.sha)
+        invalidate_read_cache(owner, repo, new_branch)
         return f"OK : branche '{new_branch}' créée à partir de '{base_branch}'."
     except GithubException as e:
         return _github_error(e)
@@ -626,6 +702,35 @@ def github_edit_file(
         return _github_error(e)
     except Exception as e:
         return f"ERREUR : {str(e)}"
+
+
+# Aperçu du repo donné à l'Architecte (voir main._execute_crew_and_persist) : ce qu'il lisait par 4 appels d'outils
+# (racine, package.json, tsconfig.json, src), lu ici en Python, sans tour de LLM.
+_SNAPSHOT_FILE_LIMITS = (("package.json", 6000), ("tsconfig.json", 3000))
+
+
+def build_repo_snapshot(owner: str, repo: str, branch: str) -> str:
+    """Texte « ## Racine / ## package.json / ## tsconfig.json / ## src » de la branche lue, ou "" si la racine est
+    illisible (l'agent retombe alors sur ses outils). Une lecture secondaire qui échoue devient une ligne « non lu »."""
+    root = list_directory_cached(owner, repo, "", branch)
+    if root.startswith("ERREUR") or root.startswith("INFO"):
+        return ""
+    root_names = {line.split(": ", 1)[-1].strip() for line in root.splitlines()}
+    sections = [f"Aperçu du repository {owner}/{repo} (branche lue : {branch}).", f"## Racine\n{root}"]
+    for name, limit in _SNAPSHOT_FILE_LIMITS:
+        if name not in root_names:
+            continue
+        content = read_file_cached(owner, repo, name, branch)
+        if content.startswith("ERREUR"):
+            sections.append(f"## {name}\nnon lu : {content}")
+        else:
+            cut = "\n[… tronqué]" if len(content) > limit else ""
+            sections.append(f"## {name}\n{content[:limit]}{cut}")
+    if "src" in root_names:
+        listing = list_directory_cached(owner, repo, "src", branch)
+        sections.append(f"## src\n{'non lu : ' + listing if listing.startswith('ERREUR') else listing}")
+    return "\n\n".join(sections)
+
 
 
 class GitHubVerificationUnavailable(Exception):

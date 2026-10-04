@@ -193,10 +193,27 @@ def test_design_task_yaml_placeholders_are_known():
     import string
     import yaml
     tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
-    known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch"}
+    known = {"user_request", "conversation_context", "repo_instructions", "repo_owner", "repo_name", "base_branch", "repo_snapshot"}
     for name in ("design_task", "architecture_task", "diagnostic_task", "development_task"):
         fields = {f[1] for f in string.Formatter().parse(tasks[name]["description"]) if f[1]}
         assert fields <= known | {"work_branch"}, name
+
+
+def test_architecture_prompt_keeps_its_static_instructions_before_the_variable_data():
+    # Préfixe stable (consignes fixes) puis données variables : le cache de préfixe du fournisseur ne sert que si
+    # RIEN de variable ne précède les consignes.
+    import pathlib
+    import string
+    import yaml
+    tasks = yaml.safe_load((pathlib.Path(cq.__file__).parent / "tasksquestion.yaml").read_text(encoding="utf-8"))
+    description = tasks["architecture_task"]["description"]
+    marker = "=== Données de cette demande ==="
+    assert description.count(marker) == 1
+    static, variable = description.split(marker)
+    assert not [f[1] for f in string.Formatter().parse(static) if f[1]]
+    assert {f[1] for f in string.Formatter().parse(variable) if f[1]} == {
+        "user_request", "conversation_context", "repo_instructions", "repo_snapshot"}
+    assert "APERÇU DU REPOSITORY" in static
 
 
 GOOD_ARCH = """## Existant

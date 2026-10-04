@@ -14,6 +14,12 @@ from errors import classify_exception  # noqa: E402
 from github_tools import GitHubVerificationUnavailable  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def no_network_snapshot(monkeypatch):
+    # L'aperçu du repo lit GitHub : jamais de réseau dans ces tests (les tests dédiés le remplacent).
+    monkeypatch.setattr(main, "build_repo_snapshot", lambda *a: "")
+
+
 def _data(**kwargs):
     params = dict(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
     params.update(kwargs)
@@ -295,3 +301,59 @@ def test_mark_startup_failure_only_touches_a_running_row(engine):
     main._mark_startup_failure(execution_id, RuntimeError("autre"))
     with Session(engine) as db:
         assert db.get(ExecutionHistory, execution_id).result == "déjà livré"  # jamais écrasée
+
+
+def test_crew_inputs_carry_the_repo_snapshot_with_an_empty_default():
+    assert main._crew_inputs(_data(), 1, "p", "c", "b", "main", True, False)["repo_snapshot"] == ""
+    assert main._crew_inputs(_data(), 1, "p", "c", "b", "main", True, False, "APERÇU")["repo_snapshot"] == "APERÇU"
+
+
+@pytest.mark.parametrize("workflow, has_repo, branch_exists, expected_branch", [
+    ("FEATURE", True, False, "main"),
+    ("DESIGN_AND_DEV", True, True, "crewai/b"),
+    ("ANALYSE_ONLY", True, False, "main"),
+    ("BUGFIX", True, False, None),                 # pas d'étape d'architecture
+    ("FEATURE", False, False, None),               # pas de repository cible
+])
+def test_snapshot_is_prefetched_only_with_a_repo_and_an_architecture_step(monkeypatch, workflow, has_repo, branch_exists, expected_branch):
+    calls = []
+    monkeypatch.setattr(main, "build_repo_snapshot", lambda owner, repo, branch: calls.append((owner, repo, branch)) or "APERÇU")
+    snapshot = asyncio.run(main._prefetch_repo_snapshot(
+        _data(target_workflow=workflow), "crewai/b", "main", has_repo, branch_exists))
+    assert (calls == [("o", "r", expected_branch)]) if expected_branch else calls == []
+    assert snapshot == ("APERÇU" if expected_branch else "")
+
+
+def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, capsys):
+    def boom(*args):
+        raise RuntimeError("GitHub en panne")
+
+    monkeypatch.setattr(main, "build_repo_snapshot", boom)
+    seen: list[dict] = []
+    _fake_crew(monkeypatch, None, seen)
+    monkeypatch.setattr(main, "get_branch_head_sha", lambda *a: None)
+    execution_id, conversation_id = _new_execution(engine, "FEATURE")
+    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
+    assert seen[0]["repo_snapshot"] == ""
+    assert "aperçu du repository non lu" in capsys.readouterr().out
+    with Session(engine) as db:
+        assert db.get(ExecutionHistory, execution_id).status == "success"
+
+
+def test_the_crew_runs_inside_the_read_cache_and_receives_the_snapshot(engine, monkeypatch):
+    import github_tools
+    monkeypatch.setattr(main, "build_repo_snapshot", lambda *a: "APERÇU")
+    seen: list[dict] = []
+    in_cache: list[bool] = []
+
+    async def run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        seen.append(inputs)
+        in_cache.append(github_tools._read_cache.get() is not None)
+        return SimpleNamespace(raw="résultat")
+
+    monkeypatch.setattr(main, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
+    monkeypatch.setattr(main, "get_branch_head_sha", lambda *a: None)
+    execution_id, conversation_id = _new_execution(engine, "FEATURE")
+    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
+    assert seen[0]["repo_snapshot"] == "APERÇU" and in_cache == [True]
+    assert github_tools._read_cache.get() is None   # le cache ne survit pas à l'exécution
