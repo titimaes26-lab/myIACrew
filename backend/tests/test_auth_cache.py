@@ -149,7 +149,7 @@ def test_simultaneous_requests_for_one_token_validate_it_only_once(monkeypatch):
     assert auth._inflight == {}             # aucun verrou ne reste en mémoire
 
 
-def test_different_tokens_are_validated_in_parallel_and_failures_are_not_shared(monkeypatch):
+def test_simultaneous_failures_share_one_outcome_but_nothing_is_kept_afterwards(monkeypatch):
     calls = []
 
     async def scenario():
@@ -159,12 +159,78 @@ def test_different_tokens_are_validated_in_parallel_and_failures_are_not_shared(
             return httpx.Response(401, json={"msg": "invalid"})
         client = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
         monkeypatch.setattr(auth, "_get_http_client", lambda: client)
-        return await asyncio.gather(
+        burst = await asyncio.gather(
             *[auth.get_current_user("Bearer mauvais") for _ in range(3)],
             auth.get_current_user("Bearer autre"), return_exceptions=True,
         )
+        later = await asyncio.gather(auth.get_current_user("Bearer mauvais"), return_exceptions=True)
+        return burst, later
 
-    results = asyncio.run(scenario())
-    assert all(isinstance(result, HTTPException) and result.status_code == 401 for result in results)
-    assert len(calls) == 4                  # un refus n'est jamais gardé : chaque requête réessaie à son tour
+    burst, later = asyncio.run(scenario())
+    assert all(isinstance(result, HTTPException) and result.status_code == 401 for result in burst + later)
+    assert len(calls) == 3                  # « mauvais » : 1 pour la rafale ; « autre » : 1 ; la requête suivante revalide
     assert auth._inflight == {} and auth._auth_cache == {}
+
+
+def test_a_supabase_outage_costs_one_timeout_for_a_whole_burst_not_one_each(monkeypatch):
+    calls = []
+
+    async def scenario():
+        async def down(request):
+            calls.append(1)
+            await asyncio.sleep(0.05)
+            raise httpx.ConnectTimeout("délai")
+        client = httpx.AsyncClient(transport=httpx.MockTransport(down))
+        monkeypatch.setattr(auth, "_get_http_client", lambda: client)
+        started = time.monotonic()
+        results = await asyncio.gather(*[auth.get_current_user("Bearer t") for _ in range(6)], return_exceptions=True)
+        return results, time.monotonic() - started
+
+    results, elapsed = asyncio.run(scenario())
+    assert all(isinstance(result, HTTPException) and result.status_code == 503 for result in results)
+    assert len(calls) == 1 and elapsed < 0.2     # six requêtes, un seul délai (et non 6 x 0,05 s)
+    assert auth._inflight == {}
+
+
+def test_if_the_validating_request_is_cancelled_the_others_take_over(monkeypatch):
+    calls = []
+
+    async def scenario():
+        async def slow(request):
+            calls.append(1)
+            await asyncio.sleep(0.05)
+            return httpx.Response(200, json={"id": "u1"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+        monkeypatch.setattr(auth, "_get_http_client", lambda: client)
+        token = _jwt(time.time() + 3600)
+        leader = asyncio.ensure_future(auth.get_current_user(f"Bearer {token}"))
+        await asyncio.sleep(0.01)                                      # le leader valide
+        followers = [asyncio.ensure_future(auth.get_current_user(f"Bearer {token}")) for _ in range(3)]
+        await asyncio.sleep(0.01)
+        leader.cancel()                                                # client déconnecté
+        return await asyncio.gather(*followers), leader
+
+    users, leader = asyncio.run(scenario())
+    assert [user["id"] for user in users] == ["u1"] * 3 and leader.cancelled()
+    assert len(calls) == 2                  # le leader annulé, puis UNE reprise partagée par les trois autres
+    assert auth._inflight == {}
+
+
+def test_a_waiting_request_that_is_itself_cancelled_does_not_disturb_the_validation(monkeypatch):
+    async def scenario():
+        async def slow(request):
+            await asyncio.sleep(0.05)
+            return httpx.Response(200, json={"id": "u1"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(slow))
+        monkeypatch.setattr(auth, "_get_http_client", lambda: client)
+        token = _jwt(time.time() + 3600)
+        leader = asyncio.ensure_future(auth.get_current_user(f"Bearer {token}"))
+        await asyncio.sleep(0.01)
+        waiter = asyncio.ensure_future(auth.get_current_user(f"Bearer {token}"))
+        await asyncio.sleep(0.01)
+        waiter.cancel()
+        return await leader, waiter
+
+    user, waiter = asyncio.run(scenario())
+    assert user["id"] == "u1" and waiter.cancelled() and auth._inflight == {}
+

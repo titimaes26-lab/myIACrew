@@ -63,3 +63,25 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
+
+  # Veille des failles connues dans les dépendances figées. Informatif (n'empêche pas de fusionner) : une faille sans
+  # correctif publié (ex. dépendance indirecte bornée par CrewAI) rendrait sinon la CI rouge en permanence. À lire à
+  # chaque exécution, et à traiter en régénérant backend/requirements.lock quand un correctif existe.
+  audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Failles connues du verrou Python (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit --no-deps --disable-pip -r backend/requirements.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Failles connues des dépendances npm de production
+        working-directory: frontend
+        run: npm audit --omit=dev

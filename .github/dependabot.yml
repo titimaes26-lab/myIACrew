@@ -1,0 +1,17 @@
+# Mises à jour automatiques proposées chaque semaine. Python n'y figure pas : les dépendances backend sont figées par
+# backend/requirements.lock, régénéré à la main (commande en tête du fichier) après lecture du journal de CrewAI ; la
+# veille des failles Python est le job « audit » de la CI.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

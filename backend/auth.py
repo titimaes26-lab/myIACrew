@@ -34,9 +34,9 @@ _auth_cache: dict[str, tuple[float, dict]] = {}   # hachage du jeton -> (échéa
 _auth_cache_lock = threading.Lock()
 
 
-# Validations en cours par jeton (hachage) : (verrou, nombre de requêtes en attente ou en cours). Une seule boucle
-# d'événements : aucune protection de thread nécessaire.
-_inflight: dict[str, tuple[asyncio.Lock, int]] = {}
+# Validation en cours par jeton (hachage) : l'issue (utilisateur ou exception) que les requêtes simultanées partagent. Une
+# seule boucle d'événements : aucune protection de thread nécessaire.
+_inflight: dict[str, asyncio.Future] = {}
 
 
 def _cache_key(token: str) -> str:
@@ -168,24 +168,37 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     user = cached_user(token)
     if user is not None:
         return user
-    # Une seule validation à la fois PAR jeton : à l'expiration d'une entrée, des requêtes simultanées du même utilisateur
-    # (onglets, sondages qui se chevauchent) n'interrogent pas toutes Supabase ; les autres attendent la première puis
-    # lisent le cache. Une validation en échec n'est pas mise en cache : chacune réessaie à son tour.
+    # Une seule validation à la fois PAR jeton : des requêtes simultanées du même utilisateur (onglets, sondages qui se
+    # chevauchent) attendent la première et reçoivent SON issue — succès, mais aussi 401 ou 503, pour qu'une panne de
+    # Supabase ne les fasse pas attendre chacune son propre délai l'une après l'autre. Rien n'est gardé après coup, sauf
+    # un succès (cache) : la requête suivante revalide. Si le validateur est annulé (client déconnecté), les autres
+    # reprennent la main plutôt que d'être annulées avec lui.
     key = _cache_key(token)
-    lock, waiting = _inflight.get(key) or (asyncio.Lock(), 0)
-    _inflight[key] = (lock, waiting + 1)
+    while True:
+        shared = _inflight.get(key)
+        if shared is None:
+            break
+        try:
+            return dict(await asyncio.shield(shared))
+        except asyncio.CancelledError:
+            if not shared.cancelled():
+                raise   # c'est CETTE requête qui est annulée
+    outcome: asyncio.Future = asyncio.get_running_loop().create_future()
+    _inflight[key] = outcome
     try:
-        async with lock:
-            user = cached_user(token)
-            if user is not None:
-                return user
-            return await _validate_with_supabase(token)
+        user = await _validate_with_supabase(token)
+        outcome.set_result(user)
+        return user
+    except asyncio.CancelledError:
+        outcome.cancel()
+        raise
+    except BaseException as exc:
+        outcome.set_exception(exc)
+        outcome.exception()   # marquée lue : sans attente, asyncio ne signale pas « exception jamais récupérée »
+        raise
     finally:
-        lock, waiting = _inflight[key]
-        if waiting <= 1:
+        if _inflight.get(key) is outcome:
             del _inflight[key]
-        else:
-            _inflight[key] = (lock, waiting - 1)
 
 
 async def _validate_with_supabase(token: str) -> dict:
