@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import execution  # noqa: E402
 import execution_context  # noqa: E402
 import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
@@ -256,7 +257,7 @@ def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV", r
     class FakeCrew:
         run_dynamic_crew = fake_run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     with Session(engine) as db:
         conversation = Conversation(user_id="u1", title="t")
         db.add(conversation)
@@ -268,7 +269,7 @@ def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV", r
         db.refresh(entry)
         ids = (entry.id, conversation.id)
     data = main.WorkflowExecutionInput(user_request="x", target_workflow=request_type)
-    asyncio.run(main._execute_crew_and_persist(
+    asyncio.run(execution.execute_crew_and_persist(
         ids[0], ids[1], data, False, False, "", None, "prompt", "ctx", resume_outputs))
     return ids[0]
 
@@ -442,7 +443,7 @@ def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engin
     class FakeCrew:
         run_dynamic_crew = fake_run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     with Session(engine) as db:
         conversation = Conversation(user_id="u1", title="t")
         db.add(conversation)
@@ -456,7 +457,7 @@ def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engin
     data = main.WorkflowExecutionInput(user_request="x", target_workflow="DESIGN_AND_DEV")
 
     async def scenario():
-        task = asyncio.create_task(main._execute_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "p", "c"))
+        task = asyncio.create_task(execution.execute_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "p", "c"))
         await asyncio.sleep(0.5)  # 1re tentative échouée, on attend la 2de
         task.cancel()
         try:
@@ -486,7 +487,7 @@ def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, mo
     class FakeCrew:
         run_dynamic_crew = fake_run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     steps = []
     original = execution_state.persist_current_step
     monkeypatch.setattr(execution_state, "persist_current_step", lambda execution_id, step: (steps.append(step), original(execution_id, step))[1])
@@ -505,7 +506,7 @@ def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, mo
 
     async def scenario():
         data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
-        launches = [main._execute_crew_and_persist(*new_execution(), data, False, False, "", None, "prompt", "ctx", None) for _ in range(3)]
+        launches = [execution.execute_crew_and_persist(*new_execution(), data, False, False, "", None, "prompt", "ctx", None) for _ in range(3)]
         await asyncio.gather(*launches)
 
     asyncio.run(scenario())
@@ -578,8 +579,8 @@ def _run_crew_with_deadline(monkeypatch, fake_run, cancel_event=None):
     class FakeCrew:
         run_dynamic_crew = fake_run
     state = execution_context.RunState()
-    with pytest.raises(main.ExecutionTimeoutError) as err:
-        asyncio.run(main._run_crew(FakeCrew(), state, 4242, "BUGFIX", {}, None, None, cancel_event))
+    with pytest.raises(execution.ExecutionTimeoutError) as err:
+        asyncio.run(execution.run_crew(FakeCrew(), state, 4242, "BUGFIX", {}, None, None, cancel_event))
     return err.value
 
 

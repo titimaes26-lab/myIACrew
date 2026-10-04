@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import github_tools  # noqa: E402
 import main  # noqa: E402
+import execution  # noqa: E402
 import database  # noqa: E402
 import validation  # noqa: E402
 from auth import get_current_user  # noqa: E402
@@ -185,7 +186,7 @@ def test_execute_skips_the_check_for_analysis_and_without_repo(engine, monkeypat
 
     async def fake_run(*args, **kwargs):
         return None
-    monkeypatch.setattr(main, "_execute_crew_and_persist", fake_run)
+    monkeypatch.setattr(execution, "execute_crew_and_persist", fake_run)
     for data in (
         main.WorkflowExecutionInput(user_request="x", target_workflow="ANALYSE_ONLY", repo_owner="o", repo_name="r"),
         main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX"),
@@ -203,7 +204,7 @@ def test_rate_limited_launch_creates_no_conversation_and_accepted_launch_is_jour
 
     async def fake_run(*args, **kwargs):
         return None
-    monkeypatch.setattr(main, "_execute_crew_and_persist", fake_run)
+    monkeypatch.setattr(execution, "execute_crew_and_persist", fake_run)
     data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
 
     def launch():
@@ -229,7 +230,7 @@ def test_double_send_in_the_same_conversation_keeps_the_precise_409(engine, monk
 
     async def fake_run(*args, **kwargs):
         return None
-    monkeypatch.setattr(main, "_execute_crew_and_persist", fake_run)
+    monkeypatch.setattr(execution, "execute_crew_and_persist", fake_run)
 
     def launch(conversation_id=None):
         data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", conversation_id=conversation_id)

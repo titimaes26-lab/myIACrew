@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
 import main  # noqa: E402
+import execution  # noqa: E402
 import execution_persistence  # noqa: E402
 import database  # noqa: E402
 import routes_metrics  # noqa: E402
@@ -372,12 +373,12 @@ def run_engine(monkeypatch):
 
 
 def _launch(run_engine, monkeypatch, fake_run):
-    """Lance main._run_crew_and_persist avec un faux crew (aucun LLM, aucun GitHub)."""
+    """Lance execution.run_crew_and_persist avec un faux crew (aucun LLM, aucun GitHub)."""
 
     class FakeCrew:
         run_dynamic_crew = fake_run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     with Session(run_engine) as db:
         conversation = main.Conversation(user_id="u1", title="t")
         db.add(conversation)
@@ -389,7 +390,7 @@ def _launch(run_engine, monkeypatch, fake_run):
         db.refresh(entry)
         ids = (entry.id, conversation.id)
     data = main.WorkflowExecutionInput(user_request="bug", target_workflow="BUGFIX")
-    asyncio.run(main._run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "contexte"))
+    asyncio.run(execution.run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "contexte"))
     return ids[0]
 
 

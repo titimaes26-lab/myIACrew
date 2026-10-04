@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import main  # noqa: E402
+import execution  # noqa: E402
 import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
 import execution_persistence  # noqa: E402
@@ -212,7 +213,7 @@ def _fake_crew(monkeypatch, outcome, seen):
     class FakeCrew:
         run_dynamic_crew = run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
 
 
 def test_analysis_with_a_repo_target_still_learns_that_the_work_branch_exists(engine, monkeypatch):
@@ -223,7 +224,7 @@ def test_analysis_with_a_repo_target_still_learns_that_the_work_branch_exists(en
     monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: "abc123")
     execution_id, conversation_id = _new_execution(engine, "ANALYSE_ONLY")
     data = _data(target_workflow="ANALYSE_ONLY")
-    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, data, True, False, "crewai/b", "main", "p", "c"))
+    asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, data, True, False, "crewai/b", "main", "p", "c"))
     assert "EXISTE DÉJÀ" in seen[0]["repo_instructions"]
     with Session(engine) as db:
         assert db.get(ExecutionHistory, execution_id).status == "success"
@@ -243,7 +244,7 @@ def test_success_persistence_error_never_turns_a_delivered_run_into_a_failure(en
 
     monkeypatch.setattr(execution_outcomes, "persist_success", flaky)
     execution_id, conversation_id = _new_execution(engine)
-    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
+    asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, execution_id)
     assert len(calls) == 2  # une reprise sur Session neuve
@@ -260,7 +261,7 @@ def test_when_success_persistence_fails_twice_the_row_is_not_declared_failed(eng
 
     monkeypatch.setattr(execution_outcomes, "persist_success", broken)
     execution_id, conversation_id = _new_execution(engine)
-    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
+    asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
     with Session(engine) as db:
         assert db.get(ExecutionHistory, execution_id).status == "running"  # libérée plus tard par le balayage
     assert "succès non enregistré" in caplog.text
@@ -301,7 +302,7 @@ def test_run_crew_keeps_the_metrics_and_stops_the_memory_ticker_when_the_crew_cr
     monkeypatch.setattr(memory_monitor, "periodic_memory_logger", endless_ticker)
     crew = SimpleNamespace(run_dynamic_crew=crash)
     with pytest.raises(RuntimeError, match="plante en route"):
-        asyncio.run(main._run_crew(crew, state, 1, "BUGFIX", {}, None))
+        asyncio.run(execution.run_crew(crew, state, 1, "BUGFIX", {}, None))
     assert state.metrics is not None  # le chemin d'échec peut encore lire les métriques de la tentative
     assert ticker["cancelled"] is True
 
@@ -396,7 +397,7 @@ def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, caplo
     _fake_crew(monkeypatch, None, seen)
     monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: None)
     execution_id, conversation_id = _new_execution(engine, "FEATURE")
-    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
+    asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
     assert seen[0]["repo_snapshot"] == ""
     assert "aperçu du repository non lu" in caplog.text
     with Session(engine) as db:
@@ -414,10 +415,10 @@ def test_the_crew_runs_inside_the_read_cache_and_receives_the_snapshot(engine, m
         in_cache.append(github_tools._read_cache.get() is not None)
         return SimpleNamespace(raw="résultat")
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
     monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: None)
     execution_id, conversation_id = _new_execution(engine, "FEATURE")
-    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
+    asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
     assert seen[0]["repo_snapshot"] == "APERÇU" and in_cache == [True]
     assert github_tools._read_cache.get() is None   # le cache ne survit pas à l'exécution
 
@@ -557,10 +558,10 @@ def test_the_crew_runs_with_its_write_scope_limited_to_the_work_branch(engine, m
         seen_scopes.append(github_tools._write_scope.get())
         return SimpleNamespace(raw="résultat")
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
     monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: None)
     execution_id, conversation_id = _new_execution(engine, "FEATURE")
-    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/feature-ab12cd34", "main", "p", "c"))
+    asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/feature-ab12cd34", "main", "p", "c"))
     assert seen_scopes == ["crewai/feature-ab12cd34"]
     assert github_tools._write_scope.get() is None   # jamais conservé après l'exécution
 

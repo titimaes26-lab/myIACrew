@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import main  # noqa: E402
+import execution  # noqa: E402
 import database  # noqa: E402
 from auth import get_current_user  # noqa: E402
 from database import ExecutionHistory  # noqa: E402
@@ -124,7 +125,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
     class FakeCrew:
         run_dynamic_crew = fake_run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     with Session(engine) as db:
         conversation = main.Conversation(user_id="u1", title="t")
         db.add(conversation)
@@ -136,7 +137,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
         db.refresh(entry)
         ids = (entry.id, conversation.id)
     data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
-    asyncio.run(main._run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "contexte"))
+    asyncio.run(execution.run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "contexte"))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, ids[0])
     assert saved.status == "failed"

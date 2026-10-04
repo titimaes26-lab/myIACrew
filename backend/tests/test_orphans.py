@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import execution  # noqa: E402
 import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
 import execution_state  # noqa: E402
@@ -164,7 +165,7 @@ def test_failed_execution_reports_what_github_already_has(monkeypatch):
     class FakeCrew:
         run_dynamic_crew = fake_run
 
-    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+    monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: "sha0")
     monkeypatch.setattr(
         execution_outcomes, "describe_partial_delivery",
@@ -181,7 +182,7 @@ def test_failed_execution_reports_what_github_already_has(monkeypatch):
         db.refresh(entry)
         ids = (entry.id, conversation.id)
     data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
-    asyncio.run(main._run_crew_and_persist(ids[0], ids[1], data, True, True, "crewai/b", "main", "prompt", "ctx"))
+    asyncio.run(execution.run_crew_and_persist(ids[0], ids[1], data, True, True, "crewai/b", "main", "prompt", "ctx"))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, ids[0])
     assert saved.status == "failed" and "boom" in saved.result
