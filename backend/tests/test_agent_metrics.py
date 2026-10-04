@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
 import main  # noqa: E402
+import schemas  # noqa: E402
 import routes_history  # noqa: E402
 import execution  # noqa: E402
 import execution_persistence  # noqa: E402
@@ -381,7 +382,7 @@ def _launch(run_engine, monkeypatch, fake_run):
 
     monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     with Session(run_engine) as db:
-        conversation = main.Conversation(user_id="u1", title="t")
+        conversation = database.Conversation(user_id="u1", title="t")
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -390,7 +391,7 @@ def _launch(run_engine, monkeypatch, fake_run):
         db.commit()
         db.refresh(entry)
         ids = (entry.id, conversation.id)
-    data = main.WorkflowExecutionInput(user_request="bug", target_workflow="BUGFIX")
+    data = schemas.WorkflowExecutionInput(user_request="bug", target_workflow="BUGFIX")
     asyncio.run(execution.run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "contexte"))
     return ids[0]
 

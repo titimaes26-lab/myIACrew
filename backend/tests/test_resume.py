@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
-import main  # noqa: E402
+import schemas  # noqa: E402
 import routes_conversations  # noqa: E402
 import routes_history  # noqa: E402
 import execution  # noqa: E402
@@ -163,7 +163,7 @@ def _failed_with_checkpoints(db, workflow="DESIGN_AND_DEV", user="u1", steps=("d
 def _data(entry, **kwargs):
     params = dict(user_request="x", target_workflow="DESIGN_AND_DEV", resume_from_execution_id=entry.id)
     params.update(kwargs)
-    return main.WorkflowExecutionInput(**params)
+    return schemas.WorkflowExecutionInput(**params)
 
 
 def test_completed_agent_persists_a_checkpoint_only_for_resumable_steps(engine):
@@ -270,7 +270,7 @@ def _launch_with(engine, monkeypatch, fake_run, request_type="DESIGN_AND_DEV", r
         db.commit()
         db.refresh(entry)
         ids = (entry.id, conversation.id)
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow=request_type)
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow=request_type)
     asyncio.run(execution.execute_crew_and_persist(
         ids[0], ids[1], data, False, False, "", None, "prompt", "ctx", resume_outputs))
     return ids[0]
@@ -456,7 +456,7 @@ def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engin
         db.commit()
         db.refresh(entry)
         ids = (entry.id, conversation.id)
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow="DESIGN_AND_DEV")
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="DESIGN_AND_DEV")
 
     async def scenario():
         task = asyncio.create_task(execution.execute_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "p", "c"))
@@ -507,7 +507,7 @@ def test_one_execution_runs_at_a_time_by_default_and_the_others_queue(engine, mo
             return entry.id, conversation.id
 
     async def scenario():
-        data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
+        data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
         launches = [execution.execute_crew_and_persist(*new_execution(), data, False, False, "", None, "prompt", "ctx", None) for _ in range(3)]
         await asyncio.gather(*launches)
 

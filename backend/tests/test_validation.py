@@ -12,6 +12,9 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import github_tools  # noqa: E402
 import main  # noqa: E402
+import fastapi  # noqa: E402
+import schemas  # noqa: E402
+import routes_execute  # noqa: E402
 import execution  # noqa: E402
 import database  # noqa: E402
 import validation  # noqa: E402
@@ -74,7 +77,7 @@ def test_request_and_workflow_limits():
 
 
 def test_models_normalize_empty_repo_fields_so_no_repo_target():
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="", repo_name="", base_branch="")
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="", repo_name="", base_branch="")
     assert (data.repo_owner, data.repo_name, data.base_branch) == (None, None, None)
 
 
@@ -90,7 +93,7 @@ def engine(monkeypatch):
 
 def test_invalid_repo_gives_a_field_level_422_and_creates_nothing(engine):
     main.app.dependency_overrides[get_current_user] = lambda: {"id": "u1"}
-    main.app.dependency_overrides[main.get_session] = lambda: Session(engine)
+    main.app.dependency_overrides[database.get_session] = lambda: Session(engine)
     try:
         res = TestClient(main.app, raise_server_exceptions=False).post("/api/execute", json={
             "user_request": "corrige", "target_workflow": "BUGFIX", "repo_owner": "o", "repo_name": "a b",
@@ -170,30 +173,30 @@ def test_missing_base_branch(token, monkeypatch):
 def test_execute_refuses_before_creating_anything(engine, monkeypatch):
     def refuse(*args):
         raise GitHubAccessProblem("forbidden", "pas de droit d'écriture")
-    monkeypatch.setattr(main, "check_github_access", refuse)
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
+    monkeypatch.setattr(routes_execute, "check_github_access", refuse)
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
     with Session(engine) as db:
         with pytest.raises(AppError) as excinfo:
-            asyncio.run(main.execute_workflow(data=data, session=db, user={"id": "u1"}))
+            asyncio.run(routes_execute.execute_workflow(data=data, session=db, user={"id": "u1"}))
         assert (excinfo.value.status_code, excinfo.value.code, excinfo.value.retryable) == (403, "FORBIDDEN", False)
         assert not db.exec(select(Conversation)).all() and not db.exec(select(ExecutionHistory)).all()
 
 
 def test_execute_skips_the_check_for_analysis_and_without_repo(engine, monkeypatch):
     calls = []
-    monkeypatch.setattr(main, "check_github_access", lambda *a: calls.append(a))
+    monkeypatch.setattr(routes_execute, "check_github_access", lambda *a: calls.append(a))
     monkeypatch.setattr("limits.MAX_RUNNING_PER_USER", 5)  # la première exécution simulée reste « running »
 
     async def fake_run(*args, **kwargs):
         return None
     monkeypatch.setattr(execution, "execute_crew_and_persist", fake_run)
     for data in (
-        main.WorkflowExecutionInput(user_request="x", target_workflow="ANALYSE_ONLY", repo_owner="o", repo_name="r"),
-        main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX"),
+        schemas.WorkflowExecutionInput(user_request="x", target_workflow="ANALYSE_ONLY", repo_owner="o", repo_name="r"),
+        schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX"),
     ):
         async def scenario():
             with Session(engine) as db:
-                return await main.execute_workflow(data=data, session=db, user={"id": "u1"})
+                return await routes_execute.execute_workflow(data=data, session=db, user={"id": "u1"})
             await asyncio.sleep(0)
         assert asyncio.run(scenario())["status"] == "running"
     assert calls == []
@@ -205,12 +208,12 @@ def test_rate_limited_launch_creates_no_conversation_and_accepted_launch_is_jour
     async def fake_run(*args, **kwargs):
         return None
     monkeypatch.setattr(execution, "execute_crew_and_persist", fake_run)
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
 
     def launch():
         async def scenario():
             with Session(engine) as db:
-                return await main.execute_workflow(data=data, session=db, user={"id": "u1"})
+                return await routes_execute.execute_workflow(data=data, session=db, user={"id": "u1"})
         return asyncio.run(scenario())
 
     assert launch()["status"] == "running"          # la première exécution reste « running »
@@ -233,15 +236,15 @@ def test_double_send_in_the_same_conversation_keeps_the_precise_409(engine, monk
     monkeypatch.setattr(execution, "execute_crew_and_persist", fake_run)
 
     def launch(conversation_id=None):
-        data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", conversation_id=conversation_id)
+        data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", conversation_id=conversation_id)
 
         async def scenario():
             with Session(engine) as db:
-                return await main.execute_workflow(data=data, session=db, user={"id": "u1"})
+                return await routes_execute.execute_workflow(data=data, session=db, user={"id": "u1"})
         return asyncio.run(scenario())
 
     first = launch()
-    with pytest.raises(main.HTTPException) as err:
+    with pytest.raises(fastapi.HTTPException) as err:
         launch(first["conversation_id"])           # même conversation : conflit précis, pas le plafond par compte
     assert err.value.status_code == 409 and "cette conversation" in err.value.detail
     with Session(engine) as db:
@@ -260,7 +263,7 @@ def test_rate_limit_is_retryable_not_forbidden(token, monkeypatch):
     monkeypatch.setattr(github_tools, "_get_repo", boom)
     problem = _problem()
     assert problem.kind == "rate_limited"
-    assert main._GITHUB_ACCESS_ERRORS["rate_limited"] == (503, "GITHUB_UNAVAILABLE", True)
+    assert routes_execute._GITHUB_ACCESS_ERRORS["rate_limited"] == (503, "GITHUB_UNAVAILABLE", True)
 
 
 def test_plain_403_stays_forbidden(token, monkeypatch):
@@ -272,12 +275,12 @@ def test_plain_403_stays_forbidden(token, monkeypatch):
 
 def test_slow_github_precheck_times_out_with_a_retryable_error(engine, monkeypatch):
     import time
-    monkeypatch.setattr(main, "_GITHUB_PRECHECK_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(main, "check_github_access", lambda *a: time.sleep(0.3))
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
+    monkeypatch.setattr(routes_execute, "_GITHUB_PRECHECK_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(routes_execute, "check_github_access", lambda *a: time.sleep(0.3))
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
     with Session(engine) as db:
         with pytest.raises(AppError) as excinfo:
-            asyncio.run(main.execute_workflow(data=data, session=db, user={"id": "u1"}))
+            asyncio.run(routes_execute.execute_workflow(data=data, session=db, user={"id": "u1"}))
         assert (excinfo.value.status_code, excinfo.value.retryable) == (503, True)
         assert not db.exec(select(Conversation)).all()
 
@@ -285,14 +288,14 @@ def test_slow_github_precheck_times_out_with_a_retryable_error(engine, monkeypat
 def test_foreign_conversation_is_refused_before_any_github_call(engine, monkeypatch):
     from fastapi import HTTPException
     calls = []
-    monkeypatch.setattr(main, "check_github_access", lambda *a: calls.append(a))
+    monkeypatch.setattr(routes_execute, "check_github_access", lambda *a: calls.append(a))
     with Session(engine) as db:
         foreign = Conversation(user_id="u2", title="t")
         db.add(foreign)
         db.commit()
         db.refresh(foreign)
-        data = main.WorkflowExecutionInput(
+        data = schemas.WorkflowExecutionInput(
             user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r", conversation_id=foreign.id)
         with pytest.raises(HTTPException) as excinfo:
-            asyncio.run(main.execute_workflow(data=data, session=db, user={"id": "u1"}))
+            asyncio.run(routes_execute.execute_workflow(data=data, session=db, user={"id": "u1"}))
     assert excinfo.value.status_code == 404 and calls == []

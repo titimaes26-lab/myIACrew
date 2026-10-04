@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest  # noqa: E402
 
-import main  # noqa: E402
+import routes_execute  # noqa: E402
+import schemas  # noqa: E402
 import execution  # noqa: E402
 import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
@@ -31,7 +32,7 @@ def no_network_snapshot(monkeypatch):
 def _data(**kwargs):
     params = dict(user_request="x", target_workflow="BUGFIX", repo_owner="o", repo_name="r")
     params.update(kwargs)
-    return main.WorkflowExecutionInput(**params)
+    return schemas.WorkflowExecutionInput(**params)
 
 
 def test_repo_instructions_without_repo_target_use_the_local_workspace():
@@ -568,7 +569,7 @@ def test_the_crew_runs_with_its_write_scope_limited_to_the_work_branch(engine, m
 
 def test_work_branches_are_named_with_the_shared_prefix():
     import github_tools
-    assert main.WORK_BRANCH_PREFIX == github_tools.WORK_BRANCH_PREFIX == "crewai/"
+    assert routes_execute.WORK_BRANCH_PREFIX == github_tools.WORK_BRANCH_PREFIX == "crewai/"
 
 
 # --- Lecture ciblée des tours précédents ---------------------------------------------------------------------------

@@ -102,7 +102,8 @@ def test_qualification_examples_use_valid_request_types():
 
 def test_qualify_endpoint_forwards_has_repo_target(monkeypatch):
     import asyncio
-    import main
+    import schemas
+    import routes_execute
 
     calls = []
 
@@ -110,11 +111,11 @@ def test_qualify_endpoint_forwards_has_repo_target(monkeypatch):
         calls.append((user_request, conversation_context, has_repo_target))
         return cq.QualificationResult(summary="s", request_type="BUGFIX", confidence=0.9, is_clear=True)
 
-    monkeypatch.setattr(main.crew_instance, "analyze_user_request", fake_analyze)
-    monkeypatch.setattr(main.crew_instance, "save_analysis_report", lambda *a, **k: None)
+    monkeypatch.setattr(routes_execute.crew_instance, "analyze_user_request", fake_analyze)
+    monkeypatch.setattr(routes_execute.crew_instance, "save_analysis_report", lambda *a, **k: None)
 
-    asyncio.run(main.qualify_request(main.UserRequestInput(user_request="x", has_repo_target=True), {"id": "u"}))
-    asyncio.run(main.qualify_request(main.UserRequestInput(user_request="y"), {"id": "u"}))
+    asyncio.run(routes_execute.qualify_request(schemas.UserRequestInput(user_request="x", has_repo_target=True), {"id": "u"}))
+    asyncio.run(routes_execute.qualify_request(schemas.UserRequestInput(user_request="y"), {"id": "u"}))
     assert [c[2] for c in calls] == [True, False]
 
 

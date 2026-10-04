@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import main  # noqa: E402
+import schemas  # noqa: E402
+import routes_execute  # noqa: E402
 import execution  # noqa: E402
 import database  # noqa: E402
 from auth import get_current_user  # noqa: E402
@@ -56,7 +58,7 @@ def client(monkeypatch):
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(database, "engine", engine)
     main.app.dependency_overrides[get_current_user] = lambda: {"id": "u1"}
-    main.app.dependency_overrides[main.get_session] = lambda: Session(engine)
+    main.app.dependency_overrides[database.get_session] = lambda: Session(engine)
 
     @main.app.get("/_test/app-error")
     async def _app_error():
@@ -105,7 +107,7 @@ def test_unhandled_exception_never_leaks_its_message(client):
 def test_qualify_failure_is_classified_without_leaking_details(client, monkeypatch):
     async def boom(*args, **kwargs):
         raise RuntimeError("429 RESOURCE_EXHAUSTED api_key=SECRET")
-    monkeypatch.setattr(main.crew_instance, "analyze_user_request", boom)
+    monkeypatch.setattr(routes_execute.crew_instance, "analyze_user_request", boom)
     res = client.post("/api/qualify", json={"user_request": "x"})
     assert res.status_code == 429
     assert res.json()["code"] == "QUOTA_EXHAUSTED" and res.json()["retryable"] is True
@@ -127,7 +129,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
 
     monkeypatch.setattr(execution, "AppDevelopmentCrew", FakeCrew)
     with Session(engine) as db:
-        conversation = main.Conversation(user_id="u1", title="t")
+        conversation = database.Conversation(user_id="u1", title="t")
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -136,7 +138,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
         db.commit()
         db.refresh(entry)
         ids = (entry.id, conversation.id)
-    data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
+    data = schemas.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX")
     asyncio.run(execution.run_crew_and_persist(ids[0], ids[1], data, False, False, "", None, "prompt", "contexte"))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, ids[0])
