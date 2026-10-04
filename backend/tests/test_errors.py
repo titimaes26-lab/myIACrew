@@ -186,10 +186,21 @@ SYNC_ENDPOINTS = (
 
 def test_database_endpoints_are_plain_functions_so_fastapi_runs_them_in_a_thread():
     import inspect
+    # Lu sur les routes réellement enregistrées (peu importe le module qui définit chaque point d'accès).
+    def flatten(routes):
+        for route in routes:
+            original = getattr(route, "original_router", None)   # routeur inclus (APIRouter) : on descend dedans
+            if original is not None:
+                yield from flatten(original.routes)
+            elif hasattr(route, "endpoint"):
+                yield route
+
+    endpoints = {route.endpoint.__name__: route.endpoint for route in flatten(main.app.routes)}
     for name in SYNC_ENDPOINTS:
-        assert not inspect.iscoroutinefunction(getattr(main, name)), f"{name} bloquerait la boucle d'événements"
+        assert name in endpoints, f"{name} n'est plus une route de l'application"
+        assert not inspect.iscoroutinefunction(endpoints[name]), f"{name} bloquerait la boucle d'événements"
     # Ceux qui attendent GitHub ou le LLM restent asynchrones.
-    assert inspect.iscoroutinefunction(main.execute_workflow) and inspect.iscoroutinefunction(main.qualify_request)
+    assert inspect.iscoroutinefunction(endpoints["execute_workflow"]) and inspect.iscoroutinefunction(endpoints["qualify_request"])
 
 
 def test_endpoints_serve_requests_from_the_thread_pool(client):

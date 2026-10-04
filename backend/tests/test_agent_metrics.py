@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
 import main  # noqa: E402
+import routes_metrics  # noqa: E402
 from agent_metrics import (  # noqa: E402
     ExecutionMetrics,
     _current_metrics,
@@ -259,20 +260,20 @@ def test_metrics_summary_endpoint_is_scoped_to_the_user_period_and_workflow(sess
     running = _execution(session, "u1", status="running")
     _agent_run(session, running, "design", 800.0)
 
-    everything = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
+    everything = routes_metrics.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
     assert everything["executions"]["total"] == 2  # ni l'ancienne, ni celle d'un autre, ni la « running »
     design = next(a for a in everything["agents"] if a["agent"] == "design")
     assert design["runs"] == 2 and design["duration_p95"] < 100
-    only_bugfix = main.metrics_summary(days=30, workflow="BUGFIX", session=session, user={"id": "u1"})
+    only_bugfix = routes_metrics.metrics_summary(days=30, workflow="BUGFIX", session=session, user={"id": "u1"})
     assert only_bugfix["executions"]["total"] == 1 and only_bugfix["workflow"] == "BUGFIX"
-    wide = main.metrics_summary(days=90, workflow=None, session=session, user={"id": "u1"})
+    wide = routes_metrics.metrics_summary(days=90, workflow=None, session=session, user={"id": "u1"})
     assert wide["executions"]["total"] == 3
-    clamped = main.metrics_summary(days=100000, workflow=None, session=session, user={"id": "u1"})
+    clamped = routes_metrics.metrics_summary(days=100000, workflow=None, session=session, user={"id": "u1"})
     assert clamped["period_days"] == 365
 
 
 def test_metrics_summary_with_no_executions_is_empty(session):
-    result = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "nobody"})
+    result = routes_metrics.metrics_summary(days=30, workflow=None, session=session, user={"id": "nobody"})
     assert result["executions"]["total"] == 0 and result["agents"] == []
 
 
@@ -281,14 +282,14 @@ def test_execution_agent_runs_endpoint_orders_by_pipeline_and_checks_ownership(s
     entry = _execution(session, "u1")
     _agent_run(session, entry, "qa", 5.0)
     _agent_run(session, entry, "design", 3.0)
-    rows = main.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u1"})
+    rows = routes_metrics.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u1"})
     assert [r["agent"] for r in rows] == ["design", "qa"] and rows[0]["label"] == "Conception"
     assert rows[0]["tokens_known"] is True and rows[0]["duration_seconds"] == 3.0
     with pytest.raises(HTTPException) as excinfo:
-        main.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u2"})
+        routes_metrics.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u2"})
     assert excinfo.value.status_code == 404
     with pytest.raises(HTTPException):
-        main.execution_agent_runs(execution_id=9999, session=session, user={"id": "u1"})
+        routes_metrics.execution_agent_runs(execution_id=9999, session=session, user={"id": "u1"})
 
 
 # --- Suppression d'historique et exécution de bout en bout ------------------------------------
@@ -460,7 +461,7 @@ def test_endpoint_applies_and_clamps_the_time_zone_offset(session):
     next_day = (created + timedelta(days=1)).date().isoformat()
 
     def days(offset):
-        result = main.metrics_summary(days=30, workflow=None, tz_offset=offset, session=session, user={"id": "u1"})
+        result = routes_metrics.metrics_summary(days=30, workflow=None, tz_offset=offset, session=session, user={"id": "u1"})
         return [d["date"] for d in result["daily"]]
 
     assert days(0) == [utc_day] and days(120) == [next_day]
@@ -469,7 +470,7 @@ def test_endpoint_applies_and_clamps_the_time_zone_offset(session):
 
 
 def test_endpoint_reads_all_agent_runs_across_several_chunks(session, monkeypatch):
-    monkeypatch.setattr(main, "_IN_CLAUSE_CHUNK", 7)
+    monkeypatch.setattr(routes_metrics, "_IN_CLAUSE_CHUNK", 7)
     now = datetime.now(timezone.utc)
     entries = [ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1",
                                 created_at=now - timedelta(minutes=i), updated_at=now - timedelta(minutes=i) + timedelta(seconds=10))
@@ -481,7 +482,7 @@ def test_endpoint_reads_all_agent_runs_across_several_chunks(session, monkeypatc
     session.add_all([AgentRun(execution_id=e.id, user_id="u1", workflow="BUGFIX", agent="design", duration_seconds=5.0,
                               llm_calls=2, usage_calls=2, total_tokens=10, created_at=e.created_at) for e in entries])
     session.commit()
-    result = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
+    result = routes_metrics.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
     design = next(a for a in result["agents"] if a["agent"] == "design")
     assert result["executions"]["total"] == 23 and design["runs"] == 23
 
@@ -498,7 +499,7 @@ def test_endpoint_handles_the_maximum_number_of_executions_with_the_real_chunk_s
     session.add_all([AgentRun(execution_id=e.id, user_id="u1", workflow="BUGFIX", agent="qa", duration_seconds=1.0,
                               llm_calls=1, created_at=e.created_at) for e in entries])
     session.commit()
-    result = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
+    result = routes_metrics.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
     assert result["executions"]["total"] == 1000
     assert next(a for a in result["agents"] if a["agent"] == "qa")["runs"] == 1000
 
@@ -535,7 +536,7 @@ def test_summary_endpoint_exposes_failure_causes_for_the_user_and_period_only(se
     for entry in (mine, other, old):
         session.add(entry)
     session.commit()
-    result = main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"})
+    result = routes_metrics.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"})
     assert result["failures"] == [{"code": "LLM_TIMEOUT", "label": "Délai du modèle dépassé", "count": 1}]
 
 
@@ -552,19 +553,19 @@ def test_every_code_the_classifier_can_emit_has_a_dashboard_label():
 
 
 def test_summary_flags_truncation_when_the_execution_limit_is_reached(session, monkeypatch):
-    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 2)
+    monkeypatch.setattr(routes_metrics, "_METRICS_EXECUTION_LIMIT", 2)
     for _ in range(3):
         _execution(session, "u1")
-    result = main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"})
+    result = routes_metrics.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"})
     assert result["truncated"] is True and result["executions"]["total"] == 2
-    fewer = main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u9"})
+    fewer = routes_metrics.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u9"})
     assert fewer["truncated"] is False
 
 
 # --- Comparaison à la période précédente et exactitude au-delà de 1 000 exécutions ------------------
 
 def _summary(session, days=30, workflow=None, user="u1"):
-    return main.metrics_summary(days=days, workflow=workflow, tz_offset=0, session=session, user={"id": user})
+    return routes_metrics.metrics_summary(days=days, workflow=workflow, tz_offset=0, session=session, user={"id": user})
 
 
 def test_summary_compares_with_the_previous_period_of_the_same_length(session):
@@ -595,7 +596,7 @@ def test_previous_period_is_scoped_to_the_user_and_the_workflow(session):
 
 
 def test_no_comparison_when_the_limit_cuts_the_previous_period(session, monkeypatch):
-    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 3)
+    monkeypatch.setattr(routes_metrics, "_METRICS_EXECUTION_LIMIT", 3)
     for age in (1, 2, 40, 41):
         _execution(session, "u1", age_days=age)
     result = _summary(session)
@@ -606,7 +607,7 @@ def test_no_comparison_when_the_limit_cuts_the_previous_period(session, monkeypa
 
 
 def test_summary_is_exact_beyond_the_old_thousand_executions_limit(session):
-    assert main._METRICS_EXECUTION_LIMIT > 1000
+    assert routes_metrics._METRICS_EXECUTION_LIMIT > 1000
     from datetime import datetime as dt
     stamp = dt.now(timezone.utc) - timedelta(days=3)
     session.add_all([
@@ -635,7 +636,7 @@ def test_comparison_limited_is_false_when_nothing_is_cut(session):
 
 
 def test_current_period_cut_by_the_limit_is_reported_as_truncated(session, monkeypatch):
-    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 2)
+    monkeypatch.setattr(routes_metrics, "_METRICS_EXECUTION_LIMIT", 2)
     for age in (1, 2, 3):
         _execution(session, "u1", age_days=age)
     result = _summary(session)
@@ -644,8 +645,8 @@ def test_current_period_cut_by_the_limit_is_reported_as_truncated(session, monke
 
 def test_measures_of_the_discarded_previous_period_are_not_loaded(session, monkeypatch):
     from sqlalchemy import event
-    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 3)
-    monkeypatch.setattr(main, "_IN_CLAUSE_CHUNK", 1)  # une requête de mesures par exécution chargée
+    monkeypatch.setattr(routes_metrics, "_METRICS_EXECUTION_LIMIT", 3)
+    monkeypatch.setattr(routes_metrics, "_IN_CLAUSE_CHUNK", 1)  # une requête de mesures par exécution chargée
     for age in (1, 2, 40, 41):
         _agent_run(session, _execution(session, "u1", age_days=age))
     queries = []
@@ -683,12 +684,12 @@ def test_execution_cost_needs_a_configured_price():
 def test_token_prices_are_read_from_the_environment(monkeypatch):
     monkeypatch.delenv("TOKEN_PRICE_INPUT_PER_MILLION", raising=False)
     monkeypatch.delenv("TOKEN_PRICE_OUTPUT_PER_MILLION", raising=False)
-    assert main._token_prices() is None
+    assert routes_metrics._token_prices() is None
     monkeypatch.setenv("TOKEN_PRICE_INPUT_PER_MILLION", "0.5")
     monkeypatch.setenv("TOKEN_PRICE_OUTPUT_PER_MILLION", "2")
-    assert main._token_prices() == (0.5, 2.0)
+    assert routes_metrics._token_prices() == (0.5, 2.0)
     monkeypatch.setenv("TOKEN_PRICE_INPUT_PER_MILLION", "abc")
-    assert main._token_prices() is None
+    assert routes_metrics._token_prices() is None
 
 
 def test_summary_counts_reasoning_quality_and_cost(session, monkeypatch):
@@ -734,7 +735,7 @@ def _list(session, **params):
     defaults = dict(days=30, workflow=None, status=None, sort="created_at", order="desc", limit=20, offset=0, user="u1")
     defaults.update(params)
     user = defaults.pop("user")
-    return main.metrics_executions(session=session, user={"id": user}, **defaults)
+    return routes_metrics.metrics_executions(session=session, user={"id": user}, **defaults)
 
 
 def test_executions_list_is_scoped_filtered_and_carries_the_measures(session):
@@ -787,7 +788,7 @@ def test_executions_list_truncates_long_requests(session):
 def test_executions_endpoint_rejects_unknown_filter_and_sort_values():
     import inspect
     from typing import get_args
-    hints = inspect.signature(main.metrics_executions).parameters
+    hints = inspect.signature(routes_metrics.metrics_executions).parameters
     assert set(get_args(hints["order"].annotation)) == {"asc", "desc"}
     assert set(get_args(hints["sort"].annotation)) == {"created_at", "duration", "llm_calls", "tokens"}
     assert "failed" in str(hints["status"].annotation) and "success" in str(hints["status"].annotation)
