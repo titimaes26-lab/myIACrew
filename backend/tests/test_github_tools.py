@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 gt = pytest.importorskip("github_tools")
 import github_write  # noqa: E402
+import github_edit  # noqa: E402
 import github_read  # noqa: E402
 import github_guards  # noqa: E402
 import github_client  # noqa: E402
@@ -249,7 +250,7 @@ def _write_calls(branch):
     return [
         github_write.github_write_file.func("o", "r", "src/a.ts", "export const a = 1;", branch, "msg"),
         github_write.github_write_files.func("o", "r", branch, "msg", '[{"path": "src/a.ts", "content": "export const a = 1;"}]'),
-        github_write.github_edit_file.func("o", "r", "src/a.ts", branch, "a", "b", "msg"),
+        github_edit.github_edit_file.func("o", "r", "src/a.ts", branch, "a", "b", "msg"),
         github_write.github_create_branch.func("o", "r", branch, "main"),
     ]
 
@@ -321,7 +322,7 @@ def test_sensitive_files_are_refused_without_any_network_call(counting, path):
     refused = github_guards._reject_sensitive_path(path)
     assert refused and refused.startswith("ERREUR") and "non livré" in refused
     assert github_write.github_write_file.func("o", "r", path, "x", "crewai/a", "msg").startswith("ERREUR")
-    assert github_write.github_edit_file.func("o", "r", path, "crewai/a", "a", "b", "msg").startswith("ERREUR")
+    assert github_edit.github_edit_file.func("o", "r", path, "crewai/a", "a", "b", "msg").startswith("ERREUR")
     batch = github_write.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": path, "content": "x"}])
     assert batch.startswith("ERREUR") and "refusés" in batch
     assert counting.created == []
