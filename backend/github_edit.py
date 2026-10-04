@@ -53,7 +53,7 @@ def github_edit_file(
             return github_edit_failures._record_edit_failure(
                 owner, repo, path, branch,
                 reason=f"old_string introuvable tel quel dans '{path}'.",
-                retry_hint="Relis le fichier avec github_read.github_read_file pour recopier l'extrait exact "
+                retry_hint="Relis le fichier avec github_read_file pour recopier l'extrait exact "
                 "(espaces/indentation compris).",
             )
         if occurrences > 1:

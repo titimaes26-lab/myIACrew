@@ -198,7 +198,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
     async def analyze_user_request(self, user_prompt: str, conversation_context: str = "", has_repo_target: bool = False) -> qualification.QualificationResult:
         qualif_agent = self.qualification_agent()
         task_prompt = qualification._build_qualification_prompt(user_prompt, conversation_context, has_repo_target)
-        analysis_task = Task(description=task_prompt, expected_output="Schéma JSON qualification.AnalysisReport.", agent=qualif_agent, output_pydantic=qualification.AnalysisReport)
+        analysis_task = Task(description=task_prompt, expected_output="Schéma JSON AnalysisReport.", agent=qualif_agent, output_pydantic=qualification.AnalysisReport)
         analysis_crew = Crew(agents=[qualif_agent], tasks=[analysis_task], process=Process.sequential, verbose=False)
         
         # Exécution asynchrone pour éviter l'erreur d'event loop
