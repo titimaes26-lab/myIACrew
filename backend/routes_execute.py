@@ -12,7 +12,8 @@ import execution_resume
 import execution_state
 import memory_monitor
 from auth import get_current_user
-from crewquestion import AppDevelopmentCrew, QualificationResult
+from crewquestion import AppDevelopmentCrew
+from qualification import QualificationResult
 from database import Conversation, ExecutionHistory, get_session
 from errors import AppError, ErrorCode, classify_exception, http_status_for
 from github_tools import GitHubAccessProblem, WORK_BRANCH_PREFIX, check_github_access

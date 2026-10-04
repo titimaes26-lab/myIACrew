@@ -253,7 +253,7 @@ def test_double_send_in_the_same_conversation_keeps_the_precise_409(engine, monk
 
 def test_workflows_follow_the_qualification_literal():
     from typing import get_args
-    from crewquestion import RequestType
+    from qualification import RequestType
     assert validation.ALLOWED_WORKFLOWS == get_args(RequestType)
 
 

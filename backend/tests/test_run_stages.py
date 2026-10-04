@@ -461,7 +461,7 @@ def test_a_small_feature_failure_is_judged_against_its_own_steps():
 
 
 def test_qualification_scope_defaults_to_the_safe_full_path():
-    from crewquestion import AnalysisReport, _coerce_analysis_report
+    from qualification import AnalysisReport, _coerce_analysis_report
     base = dict(summary="s", request_type="FEATURE", confidence=0.9, is_clear=True)
     assert AnalysisReport(**base).scope == "GRAND"
     raw = {"summary": "s", "request_type": "FEATURE", "confidence": 0.9, "is_clear": True}

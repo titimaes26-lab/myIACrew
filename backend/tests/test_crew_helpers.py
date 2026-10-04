@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
+import qualification  # noqa: E402
 
 
 def output(raw):
@@ -51,43 +52,43 @@ def test_qa_guardrail_adds_missing_verdict():
 
 
 def test_coerce_analysis_report_fixes_common_model_mistakes():
-    report = cq._coerce_analysis_report(
+    report = qualification._coerce_analysis_report(
         {"request_type": "bugfix", "confidence": 85, "alternative_type": "AUCUNE", "is_clear": True}
     )
     assert report.request_type == "BUGFIX"
     assert report.confidence == pytest.approx(0.85)
     assert report.alternative_type is None
-    assert cq._coerce_analysis_report({"summary": "sans type"}) is None
-    assert cq._coerce_analysis_report({"request_type": "FEATURE", "confidence": 8}).confidence == pytest.approx(0.8)
+    assert qualification._coerce_analysis_report({"summary": "sans type"}) is None
+    assert qualification._coerce_analysis_report({"request_type": "FEATURE", "confidence": 8}).confidence == pytest.approx(0.8)
 
 
 def test_is_clear_string_false_is_false():
-    report = cq._coerce_analysis_report({"request_type": "FEATURE", "confidence": 0.8, "is_clear": "false"})
+    report = qualification._coerce_analysis_report({"request_type": "FEATURE", "confidence": 0.8, "is_clear": "false"})
     assert report.is_clear is False
 
 
 def test_confidence_is_required_in_structured_output():
     with pytest.raises(Exception):
-        cq.AnalysisReport(summary="s", request_type="FEATURE", is_clear=True)
+        qualification.AnalysisReport(summary="s", request_type="FEATURE", is_clear=True)
 
 
 def test_qualification_fallback_is_flagged_outside_llm_schema():
-    result = cq.QualificationResult(summary="s", request_type="BUGFIX", confidence=0.0, is_clear=True)
+    result = qualification.QualificationResult(summary="s", request_type="BUGFIX", confidence=0.0, is_clear=True)
     assert result.fallback is False
-    assert "fallback" not in cq.AnalysisReport.model_json_schema()["properties"]
+    assert "fallback" not in qualification.AnalysisReport.model_json_schema()["properties"]
 
 
 def test_low_confidence_forces_clarification_question():
-    report = cq._enforce_confidence_threshold(cq.AnalysisReport(
+    report = qualification._enforce_confidence_threshold(qualification.AnalysisReport(
         summary="s", request_type="FEATURE", alternative_type="BUGFIX", confidence=0.4, is_clear=True,
     ))
     assert not report.is_clear and "correction d'un bug" in report.questions[0]
 
 
 def test_qualification_prompt_contains_examples_context_and_repo_line():
-    with_repo = cq._build_qualification_prompt("corrige ça", "Tour 1 : ajout d'un filtre", has_repo_target=True)
-    without_repo = cq._build_qualification_prompt("corrige ça")
-    assert cq.QUALIFICATION_EXAMPLES in with_repo
+    with_repo = qualification._build_qualification_prompt("corrige ça", "Tour 1 : ajout d'un filtre", has_repo_target=True)
+    without_repo = qualification._build_qualification_prompt("corrige ça")
+    assert qualification.QUALIFICATION_EXAMPLES in with_repo
     assert "Tour 1 : ajout d'un filtre" in with_repo
     assert "Un repository GitHub cible est fourni." in with_repo
     assert "Aucun repository GitHub cible n'est fourni." in without_repo
@@ -95,9 +96,9 @@ def test_qualification_prompt_contains_examples_context_and_repo_line():
 
 
 def test_qualification_examples_use_valid_request_types():
-    for line in cq.QUALIFICATION_EXAMPLES.splitlines():
+    for line in qualification.QUALIFICATION_EXAMPLES.splitlines():
         if "->" in line:
-            assert line.split("->")[1].split()[0].strip(",") in cq._REQUEST_TYPES
+            assert line.split("->")[1].split()[0].strip(",") in qualification._REQUEST_TYPES
 
 
 def test_qualify_endpoint_forwards_has_repo_target(monkeypatch):
@@ -109,7 +110,7 @@ def test_qualify_endpoint_forwards_has_repo_target(monkeypatch):
 
     async def fake_analyze(user_request, conversation_context, has_repo_target):
         calls.append((user_request, conversation_context, has_repo_target))
-        return cq.QualificationResult(summary="s", request_type="BUGFIX", confidence=0.9, is_clear=True)
+        return qualification.QualificationResult(summary="s", request_type="BUGFIX", confidence=0.9, is_clear=True)
 
     monkeypatch.setattr(routes_execute.crew_instance, "analyze_user_request", fake_analyze)
     monkeypatch.setattr(routes_execute.crew_instance, "save_analysis_report", lambda *a, **k: None)
@@ -120,7 +121,7 @@ def test_qualify_endpoint_forwards_has_repo_target(monkeypatch):
 
 
 def test_qualification_prompt_asks_for_repo_form_not_chat():
-    prompt = cq._build_qualification_prompt("corrige le bug")
+    prompt = qualification._build_qualification_prompt("corrige le bug")
     assert "Repository cible" in prompt and "« local »" in prompt
 
 
@@ -757,5 +758,5 @@ def test_file_withdrawn_in_the_same_response_is_not_committed():
 
 
 def test_qualification_examples_show_how_scope_is_filled():
-    examples = cq.QUALIFICATION_EXAMPLES
+    examples = qualification.QUALIFICATION_EXAMPLES
     assert "scope PETIT" in examples and examples.count("scope GRAND") >= 2

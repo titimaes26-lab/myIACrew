@@ -6,7 +6,7 @@ découvrirait qu'au milieu d'une exécution de plusieurs minutes, après avoir c
 import re
 from typing import Optional, get_args
 
-from crewquestion import RequestType
+from qualification import RequestType
 
 MAX_REQUEST_CHARS = 20_000
 # Dérivé du Literal de qualification : ajouter un workflow là-bas l'autorise ici sans second endroit à tenir.
