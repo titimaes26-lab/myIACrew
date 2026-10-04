@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.32 — Mise à jour le 2026-10-04
+> Version : 1.33 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -11,6 +11,7 @@
 > - 1.27–1.30 (10-04) : revue complète (écritures limitées à `crewai/…`, endpoints en threads, moteur SQL résilient, balayage atomique, logs `logging` sur une ligne).
 > - 1.31 (10-04) : consolidation du PRD (variantes de workflow, tableaux de modules, variables d'environnement, chiffres de tests).
 > - 1.32 (10-04) : résumé final structuré en 3 blocs, ligne de faits calculée en Python, résumé de repli sans modèle ; un 404 de proxy ne marque plus une exécution supprimée.
+> - 1.33 (10-04) : échec avec bloc « Déjà réalisé avant l'échec » (sans modèle) et prochaines étapes du résumé cliquables (préremplissent la saisie).
 
 ---
 
@@ -64,6 +65,10 @@ Contexte explicite par tâche (pas toutes les sorties précédentes) : `architec
 Le plafond de sortie de l'Architecte est de `ARCHITECT_MAX_OUTPUT_TOKENS` (8192 par défaut) ; ses garde-fous sont `_architecture_issues` (structure attendue) et `_truncation_issues` (sortie tronquée). L'Architecte et le Diagnostic reçoivent un résumé déterministe du projet (`project_summary.py`) et l'Architecte le plan du tour précédent.
 
 **Résumé final** (`## Résumé`, après `<!--crew-summary-->`) : une ligne « Faits » calculée en Python (`backend/summary.py` : type de demande, étapes terminées, fichiers produits par l'Analyste, verdict QA — jamais écrits par le modèle), puis la synthèse du modèle en 3 blocs (« Ce qui a été fait », « Pourquoi ces choix », « À faire ensuite »). Si la génération échoue (quota, délai), un résumé de repli sans modèle (première ligne utile de chaque agent) la remplace, signalé comme automatique.
+
+**Prochaines étapes cliquables** : les puces du bloc « À faire ensuite » deviennent des boutons sous le résumé (`utils/nextSteps.ts`, 3 au plus) ; un clic préremplit la zone de saisie (même mécanisme que « Relancer »), sans envoi automatique ; masqués pendant une exécution, une clarification ou un aperçu en attente.
+
+**Échec avec travail déjà fait** : `_persist_failure` ajoute, après le bloc GitHub, un bloc « Déjà réalisé avant l'échec » construit sans modèle depuis les sections des agents terminés (`partial_work_block`) ; le frontend l'affiche en carte (`splitPartialWork`, `FailureBlock`).
 
 Séparation voulue : l'Analyste ne peut pas écrire sur GitHub, le Développeur ne peut pas lire ni raisonner — il committe tel quel. Chaque agent rapporte son temps d'exécution (`execution_duration`), affiché dans l'UI.
 
@@ -308,7 +313,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (626 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (188 tests, 26 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (630 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (198 tests, 27 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : l'aperçu avant lancement et le fil restent utilisables à 390 px ; pas de layout mobile dédié pour le tableau de bord.
 - **Accessibilité** : attributs ARIA sur les contrôles récents (copie annoncée, aperçu en attente de confirmation, focus sur « Lancer ») ; pas d'audit WCAG complet.

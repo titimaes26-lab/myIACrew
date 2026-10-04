@@ -55,9 +55,11 @@ interface ChatMessageProps {
   retryDisabled: boolean;
   // Actions de l'aperçu avant lancement ; absentes, l'aperçu n'est tout simplement pas affiché.
   launch?: LaunchControls;
+  // Clic sur une prochaine étape du résumé : préremplit la zone de saisie (jamais d'envoi automatique).
+  onSuggest?: (text: string) => void;
 }
 
-function ChatMessage({ turn, onRetry, retryDisabled, launch }: ChatMessageProps) {
+function ChatMessage({ turn, onRetry, retryDisabled, launch, onSuggest }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
@@ -171,7 +173,7 @@ function ChatMessage({ turn, onRetry, retryDisabled, launch }: ChatMessageProps)
           <p className="note">{turn.result}</p>
         )}
 
-        {(isSuccess || isRunningWithAgents) && <ResultSections sections={sections} />}
+        {(isSuccess || isRunningWithAgents) && <ResultSections sections={sections} onSuggest={onSuggest} />}
       </div>
     </div>
   );

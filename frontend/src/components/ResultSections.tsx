@@ -3,6 +3,7 @@ import type { CrewResultSection } from '../utils/parseCrewResult';
 import { agentIcon } from '../constants/agentIcons';
 import AgentSummary from './AgentSummary';
 import CopyButton from './CopyButton';
+import { extractNextSteps } from '../utils/nextSteps';
 
 // Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer dans le bundle que si un
 // résultat d'agent est effectivement affiché.
@@ -14,7 +15,7 @@ const sectionTitle = (section: CrewResultSection) => section.agentName ?? 'Résu
 // amène à la section), « Tout déplier / replier » et « Copier tout » ; chaque section se copie seule.
 // <details> reste non contrôlé (nativement accessible au clavier) : la barre agit sur son attribut `open` ; seule la
 // DERNIÈRE section est ouverte par défaut (le résumé de synthèse quand il existe, sinon le dernier agent).
-export default function ResultSections({ sections }: { sections: CrewResultSection[] }) {
+export default function ResultSections({ sections, onSuggest }: { sections: CrewResultSection[]; onSuggest?: (text: string) => void }) {
   const container = useRef<HTMLDivElement>(null);
   const items = () => Array.from(container.current?.querySelectorAll<HTMLDetailsElement>(':scope > details.section-details') ?? []);
 
@@ -62,11 +63,29 @@ export default function ResultSections({ sections }: { sections: CrewResultSecti
                 <CopyButton text={section.content} subject={sectionTitle(section)} />
               </div>
               <MarkdownRenderer content={section.content} />
+              {onSuggest && section.agentName === 'Résumé' && <NextSteps content={section.content} onSuggest={onSuggest} />}
             </div>
           </details>
         ))}
       </div>
     </ResultBoundary>
+  );
+}
+
+// Prochaines étapes du résumé : un clic préremplit la zone de saisie (rien n'est envoyé).
+function NextSteps({ content, onSuggest }: { content: string; onSuggest: (text: string) => void }) {
+  const steps = extractNextSteps(content);
+  if (steps.length === 0) return null;
+  return (
+    <div className="next-steps" role="group" aria-label="Prochaines étapes proposées">
+      <p className="next-steps__title">Prochaines étapes</p>
+      {steps.map((step, index) => (
+        <button key={index} type="button" className="next-steps__item" onClick={() => onSuggest(step)}
+          aria-label={`Préremplir la zone de saisie : ${step}`}>
+          <span aria-hidden="true">➡️</span> {step}
+        </button>
+      ))}
+    </div>
   );
 }
 

@@ -70,6 +70,11 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   // rendu de Studio (déclenché ici environ toutes les 3s pendant une exécution, par le sondage
   // de progression de useConversation.ts) casserait cette comparaison superficielle et
   // re-rendrait TOUS les tours à chaque sondage, pas seulement celui en cours.
+  // Prochaine étape du résumé : préremplit la zone de saisie (même mécanisme que « Relancer », sans prepareRetry ni envoi).
+  const handleSuggest = useCallback((text: string) => {
+    setRetryDraft({ text, nonce: Date.now() });
+  }, []);
+
   const handleRetry = useCallback((turn: ChatTurn) => {
     prepareRetry(turn);
     setRetryDraft({ text: turn.userMessage, nonce: Date.now() });
@@ -121,7 +126,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
         <ErrorBanner message={error} />
       )}
 
-      <ChatThread turns={turns} onRetry={handleRetry} retryDisabled={retryDisabled} launch={launchControls} />
+      <ChatThread turns={turns} onRetry={handleRetry} retryDisabled={retryDisabled} launch={launchControls} onSuggest={retryDisabled ? undefined : handleSuggest} />
 
       <div className="stack--section">
         <ChatInput

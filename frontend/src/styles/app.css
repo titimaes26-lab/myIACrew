@@ -76,6 +76,10 @@ h3 { color: var(--fg); }
 .failure--transient .failure__title { color: var(--warning-fg); }
 .failure--transient .failure__text, .failure--transient .failure__hint, .failure--transient .failure__step { color: var(--warning-fg); }
 .failure__step { margin: 0 0 6px; font-size: var(--font-sm); color: var(--danger-fg-strong); }
+.next-steps { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.next-steps__title { margin: 0; font-weight: 600; font-size: var(--font-sm); }
+.next-steps__item { text-align: left; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--fg); font: inherit; font-size: var(--font-sm); cursor: pointer; overflow-wrap: anywhere; }
+.next-steps__item:hover, .next-steps__item:focus-visible { border-color: var(--accent, var(--fg)); }
 .github-work { margin-top: 10px; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--fg); font-size: var(--font-sm); }
 .github-work__title { margin: 0 0 4px; font-weight: 600; }
 .github-work ul { margin: 0; padding-left: 18px; }

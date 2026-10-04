@@ -82,4 +82,27 @@ describe('ResultSections', () => {
     expect(button).toHaveTextContent('Copie impossible');
     expect(screen.getByRole('status')).toHaveTextContent('Copie impossible');
   });
+
+  describe('prochaines étapes', () => {
+    const withSummary = [
+      ...sections,
+      { agentName: 'Résumé', content: '### À faire ensuite\n- Tester le panier\n- Ajouter un test', durationSeconds: null },
+    ];
+
+    it('un clic sur une étape appelle onSuggest avec son texte', async () => {
+      const onSuggest = vi.fn();
+      render(<ResultSections sections={withSummary} onSuggest={onSuggest} />);
+      await userEvent.click(screen.getByRole('button', { name: /Préremplir.*Tester le panier/ }));
+      expect(onSuggest).toHaveBeenCalledWith('Tester le panier');
+      expect(screen.getAllByRole('button', { name: /Préremplir/ })).toHaveLength(2);
+    });
+
+    it('rien sans callback, ni sans puces', () => {
+      const { unmount } = render(<ResultSections sections={withSummary} />);
+      expect(screen.queryByRole('group', { name: 'Prochaines étapes proposées' })).not.toBeInTheDocument();
+      unmount();
+      render(<ResultSections sections={[...sections, { agentName: 'Résumé', content: '### À faire ensuite\nRien de particulier.', durationSeconds: null }]} onSuggest={vi.fn()} />);
+      expect(screen.queryByRole('group', { name: 'Prochaines étapes proposées' })).not.toBeInTheDocument();
+    });
+  });
 });

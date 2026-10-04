@@ -69,3 +69,21 @@ def fallback_summary(sections: Iterable[tuple[str, str]]) -> str:
     if not lines:
         return ""
     return "\n".join(lines) + "\n\n_Résumé automatique : la synthèse rédigée n'a pas pu être générée._"
+
+
+PARTIAL_WORK_MARKER = "--- Déjà réalisé avant l'échec ---"
+
+
+def partial_work_block(sections: Iterable[tuple[str, str]]) -> str:
+    """Bloc ajouté à un message d'échec : ce que les agents déjà terminés avaient produit (sans modèle : un échec
+    vient souvent d'un quota). Vide quand aucune étape n'a rien produit d'exploitable."""
+    lines = []
+    done = 0
+    for agent_name, raw in sections:
+        done += 1
+        first = _first_meaningful_line(raw)
+        lines.append(f"- {agent_name} : {first}" if first else f"- {agent_name}")
+    if not done:
+        return ""
+    count = f"{done} étape{'s' if done > 1 else ''} terminée{'s' if done > 1 else ''} avant l'échec"
+    return "\n".join([PARTIAL_WORK_MARKER, count, *lines])

@@ -126,6 +126,47 @@ def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
     assert entry.result == "boum\n\n--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé"
 
 
+def _persist_failure_with_result(monkeypatch, previous_result):
+    async def fake_block(*args):
+        return "--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé"
+    monkeypatch.setattr(main, "_partial_delivery_block", fake_block)
+
+    class Session:
+        def add(self, *a):
+            pass
+
+        def commit(self):
+            pass
+
+        def refresh(self, *a):
+            pass
+
+    entry = SimpleNamespace(id=1, result=previous_result, status="running", current_step="qa", error_code=None,
+                            error_retryable=None, updated_at=None, api_calls_count=None)
+    monkeypatch.setattr(main, "_safe_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(main, "_cleanup_persisted_agents", lambda *a: None)
+    error = RuntimeError("boum")
+    asyncio.run(main._persist_failure(
+        Session(), entry, SimpleNamespace(updated_at=None), error, classify_exception(error), _data(), "crewai/b", "main",
+        True, main._RunState(),
+    ))
+    return entry.result
+
+
+def test_failure_lists_work_already_done_after_github_block(monkeypatch):
+    previous = "## Architecte Logiciel\n\nPlan en trois blocs\n\n---\n\n## Analyste Diagnostic Technique\n\nCause trouvée"
+    result = _persist_failure_with_result(monkeypatch, previous)
+    github = result.index("--- Travail déjà présent sur GitHub ---")
+    partial = result.index("--- Déjà réalisé avant l'échec ---")
+    assert github < partial
+    assert "2 étapes terminées avant l'échec" in result
+    assert "- Architecte Logiciel : Plan en trois blocs" in result and "- Analyste Diagnostic Technique : Cause trouvée" in result
+
+
+def test_failure_without_completed_agents_has_no_partial_block(monkeypatch):
+    assert "Déjà réalisé" not in _persist_failure_with_result(monkeypatch, None)
+
+
 # --- Orchestration : état d'une tentative, relance, succès, démarrage ------------------------------
 
 from sqlalchemy.pool import StaticPool  # noqa: E402

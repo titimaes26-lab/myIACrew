@@ -41,6 +41,26 @@ export interface SplitFailureMessage {
   githubLines: string[] | null;
 }
 
+const PARTIAL_MARKER = "--- Déjà réalisé avant l'échec ---";
+
+export interface PartialWork {
+  // « 2 étapes terminées avant l'échec »
+  summary: string;
+  // Une ligne par agent déjà terminé.
+  lines: string[];
+}
+
+// Retire du message le bloc « Déjà réalisé avant l'échec » (toujours en dernier, voir backend/summary.py) ; à appeler
+// AVANT splitGithubWork, dont le bloc le précède.
+export function splitPartialWork(message: string): { main: string; partial: PartialWork | null } {
+  const index = message.indexOf(PARTIAL_MARKER);
+  if (index === -1) return { main: message, partial: null };
+  const rows = message.slice(index + PARTIAL_MARKER.length).split('\n').map((row) => row.trim()).filter(Boolean);
+  const main = message.slice(0, index).trim();
+  if (rows.length === 0) return { main, partial: null };
+  return { main, partial: { summary: rows[0], lines: rows.slice(1).map((row) => row.replace(/^-\s+/, '')) } };
+}
+
 export function splitGithubWork(message: string): SplitFailureMessage {
   const index = message.indexOf(GITHUB_MARKER);
   if (index === -1) return { main: message, githubLines: null };

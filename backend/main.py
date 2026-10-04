@@ -34,6 +34,7 @@ import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from logs import get_logger
 from qa_report import final_verdict
+from summary import partial_work_block
 from errors import (
     AppError, DeliveryError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
@@ -1178,6 +1179,12 @@ async def _persist_failure(
             data.repo_owner, data.repo_name, work_branch, base_branch or "main", state.sha_before,
         )
     _safe_refresh(session, db_entry, "échec")
+    # Travail déjà accompli : les sections des agents terminés sont dans `result` jusqu'à ce qu'il soit écrasé
+    # ci-dessous. Ajouté APRÈS le bloc GitHub : le frontend le retire en premier (splitPartialWork).
+    completed = [(name, text) for name, text in _parse_completed_agents(db_entry.result or "").items()]
+    partial = partial_work_block(completed)
+    if partial:
+        detail += "\n\n" + partial
     # current_step : run_dynamic_crew l'efface sur l'échec de kickoff, mais pas sur un échec APRÈS lui
     # (mise en forme, résumé) — d'où cet effacement ici.
     db_entry.current_step = None

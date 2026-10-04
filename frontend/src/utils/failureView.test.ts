@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { failureCause, isTransientFailure, parseInline, splitGithubWork } from './failureView';
+import { failureCause, isTransientFailure, parseInline, splitGithubWork, splitPartialWork } from './failureView';
 
 describe('isTransientFailure', () => {
   it('fait confiance à retryable quand il est connu', () => {
@@ -62,5 +62,22 @@ describe('parseInline', () => {
 
   it("ne transforme jamais une autre adresse ni du HTML en lien", () => {
     expect(parseInline('http://evil.example/x <a href="x">')).toEqual([{ kind: 'text', value: 'http://evil.example/x <a href="x">' }]);
+  });
+});
+
+describe('splitPartialWork', () => {
+  const partial = "--- Déjà réalisé avant l'échec ---\n2 étapes terminées avant l'échec\n- Architecte : Plan\n- Analyste : Cause";
+
+  it('sépare le bloc de la fin du message', () => {
+    expect(splitPartialWork('boum')).toEqual({ main: 'boum', partial: null });
+    const { main, partial: work } = splitPartialWork(`boum\n\n${partial}`);
+    expect(main).toBe('boum');
+    expect(work).toEqual({ summary: "2 étapes terminées avant l'échec", lines: ['Architecte : Plan', 'Analyste : Cause'] });
+  });
+
+  it('laisse le bloc GitHub intact pour splitGithubWork, qui le précède', () => {
+    const github = '--- Travail déjà présent sur GitHub ---\n- Rien n\'a été poussé';
+    const { main } = splitPartialWork(`boum\n\n${github}\n\n${partial}`);
+    expect(splitGithubWork(main)).toEqual({ main: 'boum', githubLines: ["Rien n'a été poussé"] });
   });
 });

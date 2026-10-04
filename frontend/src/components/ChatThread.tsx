@@ -9,13 +9,14 @@ interface ChatThreadProps {
   // attente de réponse (voir Studio.tsx), pas seulement un envoi réseau en cours.
   retryDisabled: boolean;
   launch?: LaunchControls;
+  onSuggest?: (text: string) => void;
 }
 
 // Au-delà de cette marge (en pixels) sous le viewport, on considère que l'utilisateur a
 // délibérément remonté lire l'historique plutôt que de simplement suivre la conversation.
 const NEAR_BOTTOM_THRESHOLD_PX = 150;
 
-export default function ChatThread({ turns, onRetry, retryDisabled, launch }: ChatThreadProps) {
+export default function ChatThread({ turns, onRetry, retryDisabled, launch, onSuggest }: ChatThreadProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   // Vrai tant que l'utilisateur est resté "collé" au bas du fil (ou vient d'y être ramené par
@@ -120,7 +121,7 @@ export default function ChatThread({ turns, onRetry, retryDisabled, launch }: Ch
         // même conséquence si turn.id était utilisé ici (démontage/remontage de ce <ChatMessage>,
         // donc réinitialisation de son StepIndicator interne, en plein milieu d'une progression
         // "running" suivie).
-        <ChatMessage key={turn.createdAt} turn={turn} onRetry={onRetry} retryDisabled={retryDisabled} launch={launch} />
+        <ChatMessage key={turn.createdAt} turn={turn} onRetry={onRetry} retryDisabled={retryDisabled} launch={launch} onSuggest={onSuggest} />
       ))}
       <div ref={bottomRef} />
     </div>

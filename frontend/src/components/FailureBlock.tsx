@@ -2,7 +2,7 @@ import type { ChatTurn } from '../types';
 import { agentIcon } from '../constants/agentIcons';
 import { failureHint } from '../utils/errors';
 import {
-  LONG_FAILURE_TEXT_CHARS, describeDeliveryFailure, failureCause, isTransientFailure, parseInline, splitGithubWork,
+  LONG_FAILURE_TEXT_CHARS, describeDeliveryFailure, failureCause, isTransientFailure, parseInline, splitGithubWork, splitPartialWork, type PartialWork,
 } from '../utils/failureView';
 import type { FailureDetail } from '../utils/parseFailureDetail';
 import CopyButton from './CopyButton';
@@ -30,6 +30,23 @@ function GithubWorkCard({ lines }: { lines: string[] }) {
           <li key={index}><Inline line={line} /></li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// Ce que les agents déjà terminés avaient produit : reste disponible, « Relancer » reprend à l'étape en échec.
+function PartialWorkCard({ work }: { work: PartialWork }) {
+  return (
+    <div className="github-work">
+      <p className="github-work__title">✅ Déjà réalisé avant l'échec</p>
+      <p className="muted">{work.summary}</p>
+      {work.lines.length > 0 && (
+        <ul>
+          {work.lines.map((line, index) => (
+            <li key={index}><Inline line={line} /></li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -85,7 +102,8 @@ export default function FailureBlock({ turn, detail }: FailureBlockProps) {
   const isDelivery = turn.errorCode === 'DELIVERY_FAILED';
   // Pas de conseil générique pour une livraison : son bloc « Que faire ? » est plus précis.
   const hint = isDelivery ? null : failureHint(turn.errorCode);
-  const { main, githubLines } = splitGithubWork(detail ? detail.message : (turn.result ?? ''));
+  const { main: withGithub, partial } = splitPartialWork(detail ? detail.message : (turn.result ?? ''));
+  const { main, githubLines } = splitGithubWork(withGithub);
 
   return (
     <div role="alert" className={`failure${transient ? ' failure--transient' : ''}`}>
@@ -107,6 +125,7 @@ export default function FailureBlock({ turn, detail }: FailureBlockProps) {
           {githubLines && <GithubWorkCard lines={githubLines} />}
         </>
       )}
+      {partial && <PartialWorkCard work={partial} />}
       {hint && <p className="failure__hint">{hint}</p>}
     </div>
   );

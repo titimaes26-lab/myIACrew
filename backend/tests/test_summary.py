@@ -73,3 +73,17 @@ def test_fallback_ignores_unclosed_code_block():
     text = fallback_summary([(DIAG, "Intro utile\n<<<FICHIER: src/a.ts>>>\nexport const a = 1\n")])
     assert "Intro utile" in text and "export const" not in text
     assert "export const" not in fallback_summary([(DIAG, "<<<FICHIER: src/a.ts>>>\nexport const a = 1\n")])
+
+
+def test_partial_work_block_lists_agents_without_markers():
+    from summary import PARTIAL_WORK_MARKER, partial_work_block
+    block = partial_work_block([("Architecte", "## Architecte\n\nPlan simple"), (DIAG, FILES)])
+    lines = block.split("\n")
+    assert lines[0] == PARTIAL_WORK_MARKER and lines[1] == "2 étapes terminées avant l'échec"
+    assert "- Architecte : Plan simple" in lines and f"- {DIAG}" in lines
+    assert "<<<" not in block
+
+
+def test_partial_work_block_empty_without_sections():
+    from summary import partial_work_block
+    assert partial_work_block([]) == ""
