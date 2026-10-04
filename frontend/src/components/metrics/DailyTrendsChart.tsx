@@ -45,6 +45,11 @@ export default function DailyTrendsChart({ daily }: { daily: DailyMetricsRow[] }
     containerRef.current?.querySelectorAll<HTMLElement>('.viz-col')[target]?.focus();
   };
 
+  const success = dailyMetric('success');
+  const successText = (d: DailyMetricsRow) => {
+    const rate = success.value(d);
+    return rate === null ? '—' : success.format(rate);
+  };
   const valueText = (d: DailyMetricsRow) => {
     const value = metric.value(d);
     return value === null ? 'aucune donnée' : metric.format(value);
@@ -69,7 +74,7 @@ export default function DailyTrendsChart({ daily }: { daily: DailyMetricsRow[] }
           formatDay(d.date), String(d.executions), String(d.failed), formatInteger(d.llm_calls),
           d.tokens > 0 ? formatCompact(d.tokens) : '—',
           d.median_duration_seconds === null ? '—' : formatSeconds(d.median_duration_seconds),
-          dailyMetric('success').value(d) === null ? '—' : dailyMetric('success').format(dailyMetric('success').value(d) ?? 0),
+          successText(d),
         ]),
       }}
       empty={daily.length === 0 ? 'Aucune exécution terminée sur cette période.' : null}
@@ -107,7 +112,10 @@ export default function DailyTrendsChart({ daily }: { daily: DailyMetricsRow[] }
                 onFocus={(event) => { setFocusIndex(index); showAtElement(event.currentTarget, tooltipFor(d)); }}
                 onBlur={hide}
               >
-                {values[index] !== null && <div className="viz-colbar" style={{ height: `${((values[index] ?? 0) / max) * 100}%` }} />}
+                {values[index] !== null && (
+                  // Une vraie valeur à 0 garde un liseré (un jour SANS donnée, lui, n'a aucune colonne).
+                  <div className={`viz-colbar${values[index] === 0 ? ' viz-colbar--zero' : ''}`} style={{ height: values[index] === 0 ? '3px' : `${((values[index] ?? 0) / max) * 100}%` }} />
+                )}
                 {metric.labelPeak && index === peakIndex && peak > 0 && (
                   <span className="viz-collabel" style={{ bottom: `${((values[index] ?? 0) / max) * 100}%` }}>{metric.format(peak)}</span>
                 )}

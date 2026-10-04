@@ -153,6 +153,8 @@ export interface MetricsSummary {
   truncated?: boolean;
   // Mêmes statistiques d'exécutions sur la période PRÉCÉDENTE de même durée ; null sans donnée comparable.
   previous?: MetricsSummary['executions'] | null;
+  // Vrai quand la comparaison est abandonnée à cause de la limite alors que la période courante est complète.
+  comparison_limited?: boolean;
   daily: DailyMetricsRow[];
 }
 

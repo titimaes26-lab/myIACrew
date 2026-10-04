@@ -1627,10 +1627,15 @@ async def metrics_summary(
     # que si la coupure l'atteint ; la période précédente, elle, l'est dès que la limite est atteinte.
     cut = len(rows) >= _METRICS_EXECUTION_LIMIT
     truncated = cut and not previous_executions
+    # Comparaison abandonnée à cause de la limite alors que la période courante est complète : signalé à part.
+    comparison_limited = cut and bool(previous_executions)
     # Par paquets : une liste IN de milliers d'identifiants dépasse la limite de paramètres des anciennes
     # versions de SQLite (999) ; sans effet notable sous Postgres.
     runs: list[dict[str, Any]] = []
-    ids = [e["id"] for e in rows]
+    # Les mesures de la période précédente ne servent que si la comparaison est affichée : à la limite elle
+    # est abandonnée, inutile alors de charger jusqu'à 20 000 exécutions de mesures pour les jeter.
+    compare = bool(previous_executions) and not cut
+    ids = [e["id"] for e in (rows if compare else executions)]
     for start in range(0, len(ids), _IN_CLAUSE_CHUNK):
         runs.extend(
             row.model_dump()
@@ -1643,9 +1648,10 @@ async def metrics_summary(
     current_ids = {e["id"] for e in executions}
     result = summarize([r for r in runs if r["execution_id"] in current_ids], executions, days, workflow, tz_offset)
     result["truncated"] = truncated
+    result["comparison_limited"] = comparison_limited
     # Comparaison honnête seulement : sans exécution précédente, ou si la période précédente est incomplète
     # (limite atteinte), il n'y a rien à comparer — jamais un écart calculé sur un échantillon tronqué.
-    if previous_executions and not cut:
+    if compare:
         previous_ids = {e["id"] for e in previous_executions}
         result["previous"] = summarize(
             [r for r in runs if r["execution_id"] in previous_ids], previous_executions, days, workflow, tz_offset,

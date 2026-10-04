@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMetricsSummary } from '../../hooks/useMetricsSummary';
 import type { MetricsSummary, MetricsWorkflowFilter } from '../../types';
 import {
-  formatCompact, formatInteger, formatNumber, formatPercent, formatSecondsOrDash,
+  formatCompact, formatInteger, formatNumber, formatPercent, formatSecondsOrDash, successPercent,
 } from '../../utils/metricsFormat';
 import AgentDurationChart from './AgentDurationChart';
 import AgentTokensChart from './AgentTokensChart';
@@ -13,8 +13,6 @@ import MetricsFilters from './MetricsFilters';
 import StatTile from './StatTile';
 import { computeDelta } from '../../utils/metricsDelta';
 import './metrics.css';
-
-const successPercent = (success: number, total: number): number | null => (total > 0 ? (success / total) * 100 : null);
 
 function Tiles({ summary }: { summary: MetricsSummary }) {
   const e = summary.executions;
@@ -78,6 +76,9 @@ export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; 
       {!data && !error && <p className="viz-empty">Chargement…</p>}
       {data && data.executions.total === 0 && (
         <p className="viz-empty">Aucune exécution terminée sur cette période. Lancez une demande, puis revenez ici.</p>
+      )}
+      {data?.comparison_limited && !data.truncated && (
+        <p className="viz-sub">Comparaison indisponible : trop d'exécutions sur la période précédente.</p>
       )}
       {data?.truncated && (
         <p className="viz-sub">Trop d'exécutions sur cette période : les plus anciennes sont ignorées et aucune comparaison n'est affichée.</p>

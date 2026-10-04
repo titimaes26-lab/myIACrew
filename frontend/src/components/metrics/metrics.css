@@ -180,3 +180,4 @@
 .viz-delta--good { color: var(--viz-good); }
 .viz-delta--bad { color: var(--viz-bad); }
 .viz-metric-seg { margin-bottom: 8px; }
+.viz-colbar--zero { opacity: 0.55; border-radius: 2px; }

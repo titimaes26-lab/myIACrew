@@ -17,7 +17,7 @@ export default function StatTile({ label, value, sub, delta }: StatTileProps) {
         <div className={`viz-delta viz-delta--${delta.tone}`}>
           {/* Le texte visible porte le sens (flèche + signe) ; la phrase complète est pour les lecteurs d'écran. */}
           <span aria-hidden="true">{delta.text}</span>
-          <span className="sr-only">{delta.label}</span>
+          <span className="sr-only">{`${label} : ${delta.label}`}</span>
         </div>
       )}
       {sub && <div className="viz-tile-sub">{sub}</div>}

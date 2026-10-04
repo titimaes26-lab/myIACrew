@@ -23,6 +23,12 @@ export function formatSecondsOrDash(value: number | null | undefined): string {
   return value == null ? NO_VALUE : formatSeconds(value);
 }
 
+// Taux de succès en % (0 à 100), ou null sans exécution : UNE seule définition pour les tuiles, les
+// graphiques et les tableaux, pour qu'une même donnée ne s'affiche jamais différemment selon l'endroit.
+export function successPercent(success: number, total: number): number | null {
+  return total > 0 ? (success / total) * 100 : null;
+}
+
 export function formatPercent(part: number, total: number): string {
   return total === 0 ? NO_VALUE : `${INTEGER.format((part / total) * 100)} %`;
 }

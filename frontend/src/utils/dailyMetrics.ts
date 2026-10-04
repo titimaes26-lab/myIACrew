@@ -1,6 +1,6 @@
 import type { DailyMetricsRow } from '../types';
 import { formatSeconds } from './formatDuration';
-import { formatCompact, formatInteger, niceDurationTicks, niceTicks } from './metricsFormat';
+import { formatCompact, formatInteger, niceDurationTicks, niceTicks, successPercent } from './metricsFormat';
 
 export type DailyMetricKey = 'llm_calls' | 'duration' | 'success' | 'tokens';
 
@@ -17,8 +17,7 @@ export interface DailyMetricSpec {
   labelPeak: boolean;
 }
 
-const successRate = (day: DailyMetricsRow): number | null =>
-  day.executions > 0 ? ((day.executions - day.failed) / day.executions) * 100 : null;
+const successRate = (day: DailyMetricsRow): number | null => successPercent(day.executions - day.failed, day.executions);
 
 export const DAILY_METRICS: DailyMetricSpec[] = [
   {

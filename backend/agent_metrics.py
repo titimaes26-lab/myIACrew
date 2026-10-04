@@ -13,7 +13,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -339,10 +339,12 @@ def summarize(
     TERMINÉES (status success|failed) de la période, avec created_at / updated_at (datetime).
     tz_offset_minutes : décalage de l'utilisateur à l'est d'UTC, appliqué UNIQUEMENT au regroupement par
     jour (une exécution à 23 h 30 UTC appartient au lendemain pour quelqu'un à UTC+2)."""
-    durations = [
-        (e["updated_at"] - e["created_at"]).total_seconds()
+    # Une seule définition de « durée d'une exécution » : sert à la médiane globale ET à celle de chaque jour.
+    duration_by_execution = {
+        e["id"]: (e["updated_at"] - e["created_at"]).total_seconds()
         for e in executions if e.get("updated_at") and e.get("created_at")
-    ]
+    }
+    durations = list(duration_by_execution.values())
     by_execution_tokens: dict[int, int] = {}
     by_execution_calls: dict[int, int] = {}
     for run in runs:
@@ -383,8 +385,8 @@ def summarize(
         day["failed"] += 1 if e["status"] == "failed" else 0
         day["llm_calls"] += by_execution_calls.get(e["id"], 0)
         day["tokens"] += by_execution_tokens.get(e["id"], 0)
-        if e.get("updated_at") and e.get("created_at"):
-            daily_durations.setdefault(execution_day[e["id"]], []).append((e["updated_at"] - e["created_at"]).total_seconds())
+        if e["id"] in duration_by_execution:
+            daily_durations.setdefault(execution_day[e["id"]], []).append(duration_by_execution[e["id"]])
     for date, values in daily.items():
         # None (pas 0) un jour sans durée mesurable : le graphique n'y trace aucune barre.
         values["median_duration_seconds"] = _round(percentile(daily_durations.get(date, []), 0.5))
@@ -427,22 +429,20 @@ def sort_pipeline(rows: list[dict]) -> list[dict]:
     return sorted(rows, key=lambda row: order.get(row["agent"], len(order)))
 
 
-__all__ = [
-    "AgentStats", "ExecutionMetrics", "track_execution_metrics", "register_event_listeners", "flush_events",
-    "build_agent_run_rows", "summarize", "percentile", "parse_usage", "step_for_role", "agent_run_view",
-    "sort_pipeline", "PIPELINE_ORDER", "AGENT_LABELS", "SYSTEM_BUCKET", "OTHER_BUCKET",
-]
-
-
 def split_by_period(executions: list[dict], since: Any) -> tuple[list[dict], list[dict]]:
     """(période courante, période précédente) d'une liste d'exécutions couvrant les DEUX périodes :
     created_at >= since / created_at < since. SQLite renvoie des dates naïves (UTC), Postgres des dates
     avec fuseau : les deux sont comparées en UTC."""
-    from datetime import timezone
-
     def as_utc(value: Any) -> Any:
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
     current = [e for e in executions if as_utc(e["created_at"]) >= since]
     previous = [e for e in executions if as_utc(e["created_at"]) < since]
     return current, previous
+
+
+__all__ = [
+    "AgentStats", "ExecutionMetrics", "track_execution_metrics", "register_event_listeners", "flush_events",
+    "build_agent_run_rows", "summarize", "percentile", "parse_usage", "step_for_role", "agent_run_view",
+    "sort_pipeline", "split_by_period", "PIPELINE_ORDER", "AGENT_LABELS", "SYSTEM_BUCKET", "OTHER_BUCKET",
+]

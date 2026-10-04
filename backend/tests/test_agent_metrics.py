@@ -599,6 +599,7 @@ def test_no_comparison_when_the_limit_cuts_the_previous_period(session, monkeypa
     result = _summary(session)
     assert result["previous"] is None            # 3 lignes lues : la période précédente est incomplète
     assert result["truncated"] is False          # …mais la période courante, elle, est complète
+    assert result["comparison_limited"] is True  # et l'interface peut dire POURQUOI il n'y a pas de comparaison
     assert result["executions"]["total"] == 2
 
 
@@ -622,3 +623,39 @@ def test_daily_median_duration_is_none_for_a_day_without_measurable_duration():
     result = summarize([], [{"id": 1, "status": "success", "created_at": base, "updated_at": None,
                              "rate_limit_hits": None, "total_wait_time_seconds": None}], 30)
     assert result["daily"][0]["median_duration_seconds"] is None
+
+
+def test_comparison_limited_is_false_when_nothing_is_cut(session):
+    _execution(session, "u1", age_days=2)
+    _execution(session, "u1", age_days=40)
+    result = _summary(session)
+    assert result["comparison_limited"] is False and result["previous"] is not None
+
+
+def test_current_period_cut_by_the_limit_is_reported_as_truncated(session, monkeypatch):
+    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 2)
+    for age in (1, 2, 3):
+        _execution(session, "u1", age_days=age)
+    result = _summary(session)
+    assert result["truncated"] is True and result["previous"] is None and result["comparison_limited"] is False
+
+
+def test_measures_of_the_discarded_previous_period_are_not_loaded(session, monkeypatch):
+    from sqlalchemy import event
+    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 3)
+    monkeypatch.setattr(main, "_IN_CLAUSE_CHUNK", 1)  # une requête de mesures par exécution chargée
+    for age in (1, 2, 40, 41):
+        _agent_run(session, _execution(session, "u1", age_days=age))
+    queries = []
+    engine = session.get_bind()
+
+    def count(conn, cursor, statement, *args):
+        if "FROM agentrun" in statement:
+            queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        _summary(session)
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    assert len(queries) == 2  # seulement les 2 exécutions de la période courante, pas les 3 lues

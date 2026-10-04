@@ -68,7 +68,7 @@ describe('MetricsPanel — comparaison à la période précédente', () => {
     respondWith(summary());
     render(<MetricsPanel apiUrl="" accessToken="t" />);
     await screen.findByText('Exécutions terminées');
-    expect(within(tile('Durée médiane')).getByText('en baisse de 18 % par rapport à la période précédente')).toBeInTheDocument();
+    expect(within(tile('Durée médiane')).getByText('Durée médiane : en baisse de 18 % par rapport à la période précédente')).toBeInTheDocument();
   });
 
   it('n’affiche aucun écart sans période précédente comparable', async () => {
@@ -83,6 +83,15 @@ describe('MetricsPanel — comparaison à la période précédente', () => {
     respondWith(summary({ truncated: true, previous: null }));
     render(<MetricsPanel apiUrl="" accessToken="t" />);
     expect(await screen.findByText(/Trop d'exécutions sur cette période/)).toBeInTheDocument();
+  });
+});
+
+describe('MetricsPanel — limites', () => {
+  it('explique l’absence de comparaison quand la limite coupe la période précédente', async () => {
+    respondWith(summary({ previous: null, comparison_limited: true, truncated: false }));
+    render(<MetricsPanel apiUrl="" accessToken="t" />);
+    expect(await screen.findByText(/Comparaison indisponible : trop d'exécutions sur la période précédente/)).toBeInTheDocument();
+    expect(screen.queryByText(/Trop d'exécutions sur cette période/)).not.toBeInTheDocument();
   });
 });
 
@@ -102,6 +111,21 @@ describe('MetricsPanel — tendances quotidiennes', () => {
     expect(screen.getByText('Taux de succès par jour')).toBeInTheDocument();
     expect(screen.getByRole('group', { name: /1 oct\. : Taux de succès 75 %/ })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: /2 oct\. : Taux de succès 100 %/ })).toBeInTheDocument();
+  });
+
+  it('trace un liseré pour une vraie valeur à zéro, et rien pour un jour sans donnée', async () => {
+    const user = userEvent.setup();
+    respondWith(summary({
+      daily: [
+        { date: '2026-10-01', executions: 2, failed: 2, llm_calls: 4, tokens: 0, median_duration_seconds: 50 },
+        { date: '2026-10-02', executions: 0, failed: 0, llm_calls: 0, tokens: 0, median_duration_seconds: null },
+      ],
+    }));
+    render(<MetricsPanel apiUrl="" accessToken="t" />);
+    await screen.findByText('Appels LLM par jour');
+    await user.click(screen.getByRole('button', { name: 'Taux de succès' }));
+    expect(document.querySelectorAll('.viz-colbar--zero')).toHaveLength(1); // 0 % de succès le 1er : vraie valeur
+    expect(document.querySelectorAll('.viz-colbar')).toHaveLength(1);       // le 2 : aucune donnée, aucune colonne
   });
 
   it('ne trace pas de colonne un jour sans durée mesurée', async () => {
