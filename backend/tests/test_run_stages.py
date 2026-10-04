@@ -14,6 +14,7 @@ import schemas  # noqa: E402
 import execution  # noqa: E402
 import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
+import execution_resume  # noqa: E402
 import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
@@ -452,11 +453,11 @@ def test_snapshot_is_still_read_for_a_small_feature_because_the_diagnostic_runs(
 
 def test_a_small_feature_failure_is_judged_against_its_own_steps():
     # Sans l'architecture, l'étape 1 est le Diagnostic (reprenable) et l'étape 2 le développement (jamais rejoué).
-    before_dev = execution_context.failed_before_development(CrewStepError(1, 3, "Analyste", RuntimeError("x")), "FEATURE", "PETIT")
-    in_dev = execution_context.failed_before_development(CrewStepError(2, 3, "Développeur", RuntimeError("x")), "FEATURE", "PETIT")
+    before_dev = execution_resume.failed_before_development(CrewStepError(1, 3, "Analyste", RuntimeError("x")), "FEATURE", "PETIT")
+    in_dev = execution_resume.failed_before_development(CrewStepError(2, 3, "Développeur", RuntimeError("x")), "FEATURE", "PETIT")
     assert before_dev is True and in_dev is False
     # Même rang d'étape dans le parcours complet : c'est l'architecture (reprenable) pour 1, le diagnostic pour 2.
-    assert execution_context.failed_before_development(CrewStepError(2, 4, "Analyste", RuntimeError("x")), "FEATURE") is True
+    assert execution_resume.failed_before_development(CrewStepError(2, 4, "Analyste", RuntimeError("x")), "FEATURE") is True
 
 
 def test_qualification_scope_defaults_to_the_safe_full_path():

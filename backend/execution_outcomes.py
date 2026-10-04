@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 import database
 import execution_context
+import execution_resume
 import execution_persistence
 import execution_state
 from crewquestion import CrewStepError, resumable_prefix, workflow_step_keys
@@ -22,7 +23,7 @@ from qa_report import final_verdict
 from schemas import WorkflowExecutionInput
 from summary import partial_work_block
 
-log = get_logger("main")
+log = get_logger("execution_outcomes")
 
 async def partial_delivery_block(owner: str, repo: str, branch: str, base_branch: str, sha_before) -> str:
     """Bloc « Travail déjà présent sur GitHub » d'un échec. Ne lève jamais et reste borné dans le
@@ -190,11 +191,11 @@ async def retry_outputs_if_transient(
     les étapes réussies sont reprises. Plus tard (développement, QA, vérification), l'utilisateur relance :
     il faudrait réécrire sur GitHub et repayer ces étapes. Sans le point de reprise de CHAQUE étape déjà
     réussie, relancer les repayerait pour rien. L'attente se fait chez l'appelant, hors sémaphore."""
-    # isinstance (en plus de execution_context.failed_before_development) : `exc.step_index` ci-dessous ne dépend ainsi pas
+    # isinstance (en plus de execution_resume.failed_before_development) : `exc.step_index` ci-dessous ne dépend ainsi pas
     # d'un couplage implicite entre ces deux conditions.
     if not isinstance(exc, CrewStepError):
         return None
-    if not (auto_retry_allowed and info.retryable and execution_context.failed_before_development(exc, data.target_workflow, data.scope)):
+    if not (auto_retry_allowed and info.retryable and execution_resume.failed_before_development(exc, data.target_workflow, data.scope)):
         return None
     saved = await asyncio.to_thread(execution_persistence.load_checkpoints_for, db_entry_id)
     prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)

@@ -23,14 +23,13 @@ from error_handlers import CORS_ALLOW_CREDENTIALS, CORS_ALLOW_ORIGINS, register_
 
 log = get_logger("main")
 
-# 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
+# Instanciation de FastAPI (avant tout décorateur d'événement).
 app = FastAPI(title="CrewAI App Development API")
 
 
 # Délai (best-effort, voir on_shutdown) accordé aux exécutions de crew encore en tâche de fond
-# pour se terminer avant que le process ne s'arrête. Constante de module (comme
-# execution_state.MAX_CONCURRENT_EXECUTIONS ci-dessus), pas locale à on_shutdown, pour rester visible/réutilisable
-# sans dupliquer sa valeur (ex: un futur endpoint de santé qui voudrait l'exposer).
+# pour se terminer avant que le process ne s'arrête. Constante de module, pas locale à on_shutdown, pour rester
+# visible/réutilisable sans dupliquer sa valeur (ex: un futur endpoint de santé qui voudrait l'exposer).
 _SHUTDOWN_DRAIN_TIMEOUT_S = 20
 
 _BACKFILL_BATCH = 200
@@ -64,7 +63,7 @@ def _backfill_qa_verdicts() -> None:
     except Exception as e:
         log.warning(f"rattrapage des verdicts QA ignoré : {type(e).__name__}: {e}")
 
-# 2. ÉVÉNEMENT DE DÉMARRAGE (Création des tables BDD)
+# Démarrage : création des tables, rattrapage des verdicts QA, balayage des exécutions orphelines.
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
@@ -122,7 +121,6 @@ app.include_router(routes_conversations.router)
 app.include_router(routes_execute.router)
 
 
-# 4. ENDPOINTS API
 @app.get("/")
 def read_root():
     return {"status": "API CrewAI opérationnelle"}

@@ -53,7 +53,7 @@ def metrics_summary(
     since = now - timedelta(days=days)
     uid = user.get("id")
     statement = (
-        select(  # type: ignore[misc]  # trop de colonnes pour l'inférence de mypy
+        select(
             ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.workflow,
             ExecutionHistory.created_at, ExecutionHistory.updated_at,
             ExecutionHistory.rate_limit_hits, ExecutionHistory.total_wait_time_seconds,
@@ -137,7 +137,7 @@ def metrics_executions(
     since = datetime.now(timezone.utc) - timedelta(days=days)
     uid = user.get("id")
     statement = (
-        select(  # type: ignore[misc]  # trop de colonnes pour l'inférence de mypy
+        select(
             ExecutionHistory.id, ExecutionHistory.conversation_id,
             # Début de la demande seulement : une demande peut faire des milliers de caractères.
             func.substr(ExecutionHistory.user_request, 1, REQUEST_FETCH_CHARS),

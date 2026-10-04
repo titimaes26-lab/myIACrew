@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 import execution
 import execution_context
+import execution_resume
 import execution_state
 import memory_monitor
 from auth import get_current_user
@@ -156,7 +157,7 @@ async def execute_workflow(
         session.refresh(conversation)
 
     # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
-    resume_outputs = execution_context.resumable_outputs(session, data, user.get("id"), conversation.id)
+    resume_outputs = execution_resume.resumable_outputs(session, data, user.get("id"), conversation.id)
 
     # Normalisé une seule fois : utilisé à la fois pour comparer aux tours précédents et
     # pour ce qui est stocké sur ce tour, afin que les deux restent cohérents (sinon un

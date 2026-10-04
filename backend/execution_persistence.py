@@ -13,7 +13,7 @@ from crewquestion import (
 from database import AgentRun, ExecutionCheckpoint, ExecutionHistory
 from logs import get_logger
 
-log = get_logger("main")
+log = get_logger("execution_persistence")
 
 # --- TRACKER D'AGENTS PERSISTÉS POUR IDEMPOTENCE ---
 # Structure: {execution_id: set(agent_names_persisted)}

@@ -4,7 +4,7 @@ from typing import NamedTuple, Optional
 
 from logs import get_logger
 
-log = get_logger("main")
+log = get_logger("memory_monitor")
 
 
 def current_memory_mb() -> Optional[float]:

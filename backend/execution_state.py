@@ -15,7 +15,7 @@ from errors import ErrorCode
 from logs import get_logger
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS
 
-log = get_logger("main")
+log = get_logger("execution_state")
 
 # Seconde tentative automatique (une seule) après un échec transitoire : délai avant de relancer.
 AUTO_RETRY_DELAY_S = float(os.getenv("AUTO_RETRY_DELAY_S", "90"))

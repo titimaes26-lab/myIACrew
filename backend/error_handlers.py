@@ -10,7 +10,7 @@ import memory_monitor
 from errors import AppError, ErrorCode, code_for_status, error_body, is_retryable_status
 from logs import get_logger
 
-log = get_logger("main")
+log = get_logger("error_handlers")
 
 # 3. CONFIGURATION CORS
 # Constantes (pas juste inline dans add_middleware) : relues par _log_unhandled_exception plus

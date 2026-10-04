@@ -21,7 +21,7 @@ from github_tools import track_read_cache, track_write_scope
 from logs import get_logger
 from schemas import WorkflowExecutionInput
 
-log = get_logger("main")
+log = get_logger("execution")
 
 async def execute_crew_and_persist(
     db_entry_id: int,
