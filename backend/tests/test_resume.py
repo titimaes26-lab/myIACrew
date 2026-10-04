@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 import crewquestion as cq  # noqa: E402
 import crew_workflow  # noqa: E402
 import crew_retry  # noqa: E402
+import crew_run  # noqa: E402
 import schemas  # noqa: E402
 import routes_conversations  # noqa: E402
 import routes_history  # noqa: E402
@@ -61,7 +62,7 @@ def TaskOutputFactory(raw):
 
 def _run(monkeypatch, resume_outputs, request_type="DESIGN_AND_DEV", scope=None):
     _FakeCrew.received = []
-    monkeypatch.setattr(cq, "Crew", _FakeCrew)
+    monkeypatch.setattr(crew_run, "Crew", _FakeCrew)
     monkeypatch.setattr(crew_retry.quota_mgr, "adaptive_pause", lambda *a, **k: None)
     persisted, steps = [], []
 
@@ -121,7 +122,7 @@ def test_reused_output_becomes_the_context_of_the_next_step(monkeypatch):
             seen["context_raw"] = [getattr(t.output, "raw", None) for t in (first.context or [])]
             await super().kickoff_async(inputs)
 
-    monkeypatch.setattr(cq, "Crew", _Spy)
+    monkeypatch.setattr(crew_run, "Crew", _Spy)
     monkeypatch.setattr(crew_retry.quota_mgr, "adaptive_pause", lambda *a, **k: None)
 
     async def go():

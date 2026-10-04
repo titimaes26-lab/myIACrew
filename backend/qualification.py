@@ -1,5 +1,5 @@
 """Qualification du besoin (étape 1) : types de demande, rapport d'analyse, seuil de confiance, prompt et lecture du JSON."""
-from typing import Any, List, Literal, Optional
+from typing import Any, List, Literal, Optional, get_args
 
 from pydantic import BaseModel, Field
 
@@ -122,7 +122,7 @@ def _build_qualification_prompt(user_prompt: str, conversation_context: str = ""
         renseigne pas), ou de répondre « local » pour travailler sans repository.
         """
 
-_REQUEST_TYPES = set(RequestType.__args__)
+_REQUEST_TYPES = set(get_args(RequestType))
 
 def _as_bool(value: Any) -> bool:
     """bool() tel quel ferait de la chaîne "false" (fréquente dans un JSON extrait à la main) un True."""

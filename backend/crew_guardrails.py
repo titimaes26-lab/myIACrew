@@ -64,7 +64,8 @@ def _consume_adjacent_paths(text: str, start: int, patterns: dict) -> tuple[int,
         # SANS virgule d'une mention négative) ne doit pas plus réclamer src/a.ts que ne le
         # ferait une liste à plusieurs éléments.
         gap = _LOOKAHEAD_GAP.match(text, end)
-        if NOT_DELIVERED_MARKER.match(text, gap.end()):
+        # `\s{0,3}` correspond toujours (éventuellement à vide) : le repli sur `end` n'est là que pour le typage.
+        if NOT_DELIVERED_MARKER.match(text, gap.end() if gap else end):
             break
         pos = end
         found.add(path)
