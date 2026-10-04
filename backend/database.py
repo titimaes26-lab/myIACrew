@@ -116,7 +116,7 @@ class ExecutionHistory(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-# Performance d'UN agent pour UNE exécution (voir agent_metrics.build_agent_run_rows). Table NEUVE :
+# Performance d'UN agent pour UNE exécution (voir metrics_collect.build_agent_run_rows). Table NEUVE :
 # create_all la crée sur une base existante, aucune migration ALTER n'est nécessaire.
 class AgentRun(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

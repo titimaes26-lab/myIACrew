@@ -177,7 +177,7 @@ def test_the_real_client_methods_are_wrapped_once_crewquestion_is_imported():
 
 
 def test_limiter_waits_are_counted_in_the_execution_metrics_of_the_calling_context():
-    from agent_metrics import track_execution_metrics
+    from metrics_collect import track_execution_metrics
     from crew_retry import _record_limiter_wait
 
     async def scenario():

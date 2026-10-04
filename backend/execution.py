@@ -13,7 +13,7 @@ import execution_outcomes
 import execution_persistence
 import execution_state
 import memory_monitor
-from agent_metrics import flush_events
+from metrics_collect import flush_events
 from crewquestion import AppDevelopmentCrew, track_execution_metrics
 from database import Conversation, ExecutionHistory
 from errors import ExecutionTimeoutError, classify_exception

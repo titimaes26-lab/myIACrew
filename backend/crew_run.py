@@ -10,7 +10,7 @@ import crew_cache
 import crew_result
 import crew_retry
 import crew_workflow
-from agent_metrics import _current_metrics
+from metrics_collect import _current_metrics
 from github_edit_failures import track_edit_failures
 from logs import get_logger
 

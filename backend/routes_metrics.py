@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import case
 from sqlmodel import Session, col, func, select
 
-from agent_metrics import agent_run_view, list_executions, split_by_period, sort_pipeline, summarize
+from metrics_report import agent_run_view, list_executions, split_by_period, sort_pipeline, summarize
 from auth import get_current_user
 from database import AgentRun, ExecutionHistory, get_session
 

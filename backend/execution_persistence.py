@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 
 import database
 import execution_state
-from agent_metrics import build_agent_run_rows
+from metrics_collect import build_agent_run_rows
 from metrics_roles import step_for_role
 from crew_workflow import AGENT_SECTION_SEPARATOR, MAX_AGENT_NAME_LENGTH, MAX_AGENT_OUTPUT_SIZE, RESUMABLE_STEPS
 from database import AgentRun, ExecutionCheckpoint, ExecutionHistory
@@ -56,7 +56,7 @@ def validate_agent_data(
     return agent_name, agent_output, duration_seconds
 
 def persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics) -> None:
-    """Une ligne AgentRun par agent mesuré (voir agent_metrics). Best-effort : une mesure qui ne
+    """Une ligne AgentRun par agent mesuré (voir metrics_collect.build_agent_run_rows). Best-effort : une mesure qui ne
     s'enregistre pas ne doit jamais faire échouer ni masquer le résultat de l'exécution."""
     try:
         rows = build_agent_run_rows(

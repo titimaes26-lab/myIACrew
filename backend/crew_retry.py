@@ -5,7 +5,7 @@ import re
 import time
 from typing import Any, Callable
 
-from agent_metrics import _current_metrics
+from metrics_collect import _current_metrics
 from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
 
 # Partagés entre retry_on_rate_limit_async (utilisé par analyze_user_request) et le

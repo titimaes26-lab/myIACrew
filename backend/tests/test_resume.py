@@ -578,7 +578,7 @@ def test_queue_position_counts_running_executions_and_older_queued_ones(engine):
 
 
 def _run_crew_with_deadline(monkeypatch, fake_run, cancel_event=None):
-    from agent_metrics import _current_metrics  # noqa: F401
+    from metrics_collect import _current_metrics  # noqa: F401
     monkeypatch.setattr(execution_state, "EXECUTION_TIMEOUT_S", 0.05)
     monkeypatch.setattr(execution_state, "abandoned_execution_ids", set())
 
@@ -626,7 +626,7 @@ def _new_failed_execution(engine, result):
 
 
 def test_the_timeout_message_blames_the_quota_when_waiting_dominated(monkeypatch):
-    from agent_metrics import _current_metrics
+    from metrics_collect import _current_metrics
     from errors import ErrorCode, classify_exception
 
     async def quota_bound(self, **kwargs):

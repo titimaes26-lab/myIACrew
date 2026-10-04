@@ -17,7 +17,8 @@ import execution  # noqa: E402
 import execution_persistence  # noqa: E402
 import database  # noqa: E402
 import routes_metrics  # noqa: E402
-from agent_metrics import ExecutionMetrics, _current_metrics, build_agent_run_rows, flush_events, parse_usage, percentile, summarize, track_execution_metrics
+from metrics_collect import ExecutionMetrics, _current_metrics, build_agent_run_rows, flush_events, parse_usage, track_execution_metrics
+from metrics_report import percentile, summarize
 from metrics_roles import step_for_role
 from database import AgentRun, ExecutionHistory  # noqa: E402
 
@@ -503,7 +504,7 @@ def test_endpoint_handles_the_maximum_number_of_executions_with_the_real_chunk_s
 # --- Échecs par cause ---------------------------------------------------------------------------
 
 def test_failure_causes_group_sort_and_label_failed_executions_only():
-    from agent_metrics import failure_causes
+    from metrics_report import failure_causes
     executions = [
         {"status": "failed", "error_code": "QUOTA_EXHAUSTED"},
         {"status": "failed", "error_code": "GUARDRAIL_FAILED"},
@@ -538,7 +539,7 @@ def test_summary_endpoint_exposes_failure_causes_for_the_user_and_period_only(se
 
 def test_every_code_the_classifier_can_emit_has_a_dashboard_label():
     import asyncio as _asyncio
-    from agent_metrics import FAILURE_LABELS
+    from metrics_report import FAILURE_LABELS
     from errors import ErrorCode, classify_exception
     samples = [
         RuntimeError("429 quota"), RuntimeError("503 unavailable"), _asyncio.TimeoutError(),
@@ -671,7 +672,7 @@ def test_final_verdict_takes_the_last_mention_and_none_when_absent():
 
 
 def test_execution_cost_needs_a_configured_price():
-    from agent_metrics import execution_cost
+    from metrics_report import execution_cost
     assert execution_cost(1_000_000, 500_000, (2.0, 8.0)) == 6.0
     assert execution_cost(1000, 1000, None) is None
     assert execution_cost(1000, 1000, (0.0, 0.0)) is None
