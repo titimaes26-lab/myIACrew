@@ -3,7 +3,8 @@ from summary import delivery_facts, fallback_summary
 
 DIAG = "Analyste Diagnostic Technique"
 QA = "QA Engineer / Automated Tester"
-FILES = "<<<FILE: src/a.ts>>>\nexport const a = 1\n<<<END_FILE>>>\n"
+FILES = "<<<FICHIER: src/a.ts>>>\nexport const a = 1\n<<<FIN FICHIER>>>\n<<<FICHIER: src/b.ts>>>\nx\n<<<FIN FICHIER>>>\n"
+EDIT = "<<<MODIFICATION: src/c.ts>>>\n<<<<<<< CHERCHER\na\n=======\nb\n>>>>>>> REMPLACER\n<<<FIN MODIFICATION>>>\n"
 
 
 def test_facts_from_code_only():
@@ -49,3 +50,26 @@ def test_compose_body_falls_back_without_model_summary():
 
 def test_compose_body_empty_without_sections_or_summary():
     assert cq._compose_summary_body([], "BUGFIX", None, None) == ""
+
+
+def test_facts_count_files_and_edits_by_unique_path():
+    assert "2 fichiers produits" in delivery_facts([(DIAG, FILES)])
+    assert "1 fichier produit" in delivery_facts([(DIAG, EDIT)])
+    assert "3 fichiers produits" in delivery_facts([(DIAG, FILES + EDIT)])
+
+
+def test_facts_report_unusable_file_without_closing_tag():
+    facts = delivery_facts([(DIAG, "<<<FICHIER: src/a.ts>>>\nx\n")])
+    assert "1 inexploitable" in facts
+
+
+def test_fallback_skips_markers_and_raw_html():
+    text = fallback_summary([(DIAG, FILES + "\nCorrection du bouton"), ("Architecte", "<div>x</div>\nPlan simple")])
+    assert "<<<" not in text and "<div>" not in text
+    assert "Correction du bouton" in text and "Plan simple" in text
+
+
+def test_fallback_ignores_unclosed_code_block():
+    text = fallback_summary([(DIAG, "Intro utile\n<<<FICHIER: src/a.ts>>>\nexport const a = 1\n")])
+    assert "Intro utile" in text and "export const" not in text
+    assert "export const" not in fallback_summary([(DIAG, "<<<FICHIER: src/a.ts>>>\nexport const a = 1\n")])

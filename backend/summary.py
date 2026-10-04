@@ -6,12 +6,14 @@ modèle ne peut donc pas les inventer, et ils restent présents quand sa génér
 import re
 from typing import Iterable, Optional
 
-from analyst_output import parse_file_sections
+from analyst_output import parse_edit_sections, parse_file_sections
 from qa_report import final_verdict
 
 MAX_FALLBACK_LINE_CHARS = 220
 _MARKDOWN_EMPHASIS = re.compile(r"\*\*|__|`")
-_NOISE_LINE = re.compile(r"^(#|<!--|```|---|\|)")
+# Blocs de code livrés (fichiers, modifications) : leur contenu n'est pas du texte à citer dans un résumé.
+_CODE_BLOCK = re.compile(r"^<<<\s*(FICHIER|MODIFICATION)\b.*?^<<<\s*FIN[\s_]+\1\b[^\n]*$", re.IGNORECASE | re.DOTALL | re.MULTILINE)
+_NOISE_LINE = re.compile(r"^(#|<|```|---|\|)")
 
 VERDICT_LABELS = {"GO": "GO", "GO_AVEC_RESERVES": "GO avec réserves", "NO_GO": "NO GO"}
 
@@ -34,10 +36,13 @@ def delivery_facts(sections: Iterable[tuple[str, str]], request_type: Optional[s
     for agent_name, raw in sections:
         if _is_role(agent_name, "diagnostic"):
             files, broken = parse_file_sections(raw)
-            if files or broken:
-                text = f"{len(files)} fichier{'s' if len(files) > 1 else ''} produit{'s' if len(files) > 1 else ''}"
-                if broken:
-                    text += f", {len(broken)} inexploitable{'s' if len(broken) > 1 else ''}"
+            edits, broken_edits = parse_edit_sections(raw)
+            produced = len({f["path"] for f in files} | set(edits))
+            unusable = len(set(broken) | set(broken_edits))
+            if produced or unusable:
+                text = f"{produced} fichier{'s' if produced > 1 else ''} produit{'s' if produced > 1 else ''}"
+                if unusable:
+                    text += f", {unusable} inexploitable{'s' if unusable > 1 else ''}"
                 parts.append(text)
         elif _is_role(agent_name, "qa"):
             verdict = final_verdict(raw)
@@ -47,7 +52,7 @@ def delivery_facts(sections: Iterable[tuple[str, str]], request_type: Optional[s
 
 
 def _first_meaningful_line(raw: str) -> str:
-    for line in (raw or "").splitlines():
+    for line in _CODE_BLOCK.sub("", raw or "").splitlines():
         text = _MARKDOWN_EMPHASIS.sub("", line.strip().lstrip(">-• ")).strip()
         if text and not _NOISE_LINE.match(line.strip()):
             return text[:MAX_FALLBACK_LINE_CHARS] + ("…" if len(text) > MAX_FALLBACK_LINE_CHARS else "")
