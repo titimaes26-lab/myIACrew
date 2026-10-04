@@ -13,8 +13,8 @@ import execution_outcomes
 import execution_persistence
 import execution_state
 import memory_monitor
-from metrics_collect import flush_events
-from crewquestion import AppDevelopmentCrew, track_execution_metrics
+from metrics_collect import flush_events, track_execution_metrics
+from crewquestion import AppDevelopmentCrew
 from database import Conversation, ExecutionHistory
 from errors import ExecutionTimeoutError, classify_exception
 from github_guards import track_write_scope

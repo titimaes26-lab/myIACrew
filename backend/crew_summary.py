@@ -114,7 +114,7 @@ async def _generate_summary(user_request: str, result) -> str | None:
         # loop.run_in_executor() ne copie PAS automatiquement le contexte courant dans le
         # thread (contrairement à asyncio.to_thread, qui le fait mais impose son propre
         # executor par défaut) : sans ce copy_context().run(...) explicite, l'appel à
-        # crew_retry.quota_mgr.adaptive_pause() dans _call() perdrait de vue le _current_metrics de
+        # crew_retry.quota_mgr.adaptive_pause() dans _call() perdrait de vue le current_metrics de
         # CETTE requête (il verrait la valeur par défaut, None), et le temps d'attente
         # de cet appel ne serait jamais comptabilisé dans les métriques renvoyées.
         ctx = copy_context()

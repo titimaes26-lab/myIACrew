@@ -20,11 +20,10 @@ from tools import check_syntax
 log = get_logger("crew")
 from github_write import github_create_branch, github_write_file, github_write_files
 from github_read import github_read_file, github_list_directory
-from metrics_collect import ExecutionMetrics, _current_metrics, register_event_listeners, track_execution_metrics  # noqa: F401
+from metrics_collect import register_event_listeners
 
 # --- MÉTRIQUES & PAUSES ---
-# ExecutionMetrics, _current_metrics et track_execution_metrics vivent dans metrics_collect.py (mesure
-# par agent à partir des événements CrewAI) ; réexportés ici car execution.py les importe d'ici.
+# La mesure par agent (metrics_collect.py) se nourrit des événements CrewAI : abonnement à l'import de ce module.
 register_event_listeners()
 
 

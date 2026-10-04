@@ -133,17 +133,17 @@ class ExecutionMetrics:
 # contextvars (et non un simple global) : isolé entre requêtes concurrentes, propagé dans un thread
 # lancé via asyncio.to_thread (kickoff_async) et copié par le bus d'événements CrewAI. Attention :
 # loop.run_in_executor() nu ne copie PAS ce contexte (cf. _generate_summary, qui le fait explicitement).
-_current_metrics: ContextVar[Optional[ExecutionMetrics]] = ContextVar("current_metrics", default=None)
+current_metrics: ContextVar[Optional[ExecutionMetrics]] = ContextVar("current_metrics", default=None)
 
 @contextmanager
 def track_execution_metrics():
     """Active un ExecutionMetrics dédié le temps du bloc, à lire une fois celui-ci terminé."""
     metrics = ExecutionMetrics()
-    token = _current_metrics.set(metrics)
+    token = current_metrics.set(metrics)
     try:
         yield metrics
     finally:
-        _current_metrics.reset(token)
+        current_metrics.reset(token)
 
 # --- Événements CrewAI --------------------------------------------------------------------------
 _listeners_registered = False
@@ -167,7 +167,7 @@ def register_event_listeners() -> bool:
 
         def safely(record):
             def handler(source, event):
-                metrics = _current_metrics.get()
+                metrics = current_metrics.get()
                 if metrics is None:
                     return
                 try:

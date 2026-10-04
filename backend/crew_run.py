@@ -10,7 +10,7 @@ import crew_cache
 import crew_result
 import crew_retry
 import crew_workflow
-from metrics_collect import _current_metrics
+from metrics_collect import current_metrics
 from github_edit_failures import track_edit_failures
 from logs import get_logger
 
@@ -175,7 +175,7 @@ class CrewRun:
                 verbose=True
             )
 
-            m = _current_metrics.get()
+            m = current_metrics.get()
             if m is not None:
                 m.record_attempt()
             try:
@@ -211,7 +211,7 @@ class CrewRun:
             # task_obj.execution_duration : propriété CrewAI (start_time/end_time posés
             # en interne pendant task_obj.execute()), None si l'un des deux est absent.
             duration = task_obj.execution_duration
-            current = _current_metrics.get()
+            current = current_metrics.get()
             if current is not None:
                 current.record_agent_done(agent_name, duration)
             try:

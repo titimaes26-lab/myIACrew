@@ -17,7 +17,7 @@ import execution  # noqa: E402
 import execution_persistence  # noqa: E402
 import database  # noqa: E402
 import routes_metrics  # noqa: E402
-from metrics_collect import ExecutionMetrics, _current_metrics, build_agent_run_rows, flush_events, parse_usage, track_execution_metrics
+from metrics_collect import ExecutionMetrics, current_metrics, build_agent_run_rows, flush_events, parse_usage, track_execution_metrics
 from metrics_report import percentile, summarize
 from metrics_roles import step_for_role
 from database import AgentRun, ExecutionHistory  # noqa: E402
@@ -396,7 +396,7 @@ def test_successful_run_persists_agent_runs_and_real_llm_call_count(run_engine, 
         crewai_event_bus.emit(None, _llm_event(usage={"prompt_tokens": 30, "completion_tokens": 10}, call_id="a"))
         crewai_event_bus.emit(None, _llm_event(usage={"prompt_tokens": 20, "completion_tokens": 5}, call_id="b"))
         crewai_event_bus.emit(None, _llm_event(role="QA Engineer / Automated Tester", call_id="c"))
-        metrics = _current_metrics.get()
+        metrics = current_metrics.get()
         metrics.record_agent_done(DESIGNER, 3.5)
         metrics.record_agent_done("QA Engineer / Automated Tester", 6.0)
         return SimpleNamespace(raw="résultat final")
@@ -416,7 +416,7 @@ def test_failed_run_still_persists_what_was_measured_and_marks_incomplete_agents
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         crewai_event_bus.emit(None, _llm_event(usage={"total_tokens": 12}, call_id="x"))
-        _current_metrics.get().record_agent_done(DESIGNER, 2.0)
+        current_metrics.get().record_agent_done(DESIGNER, 2.0)
         crewai_event_bus.emit(None, _llm_event(role="Analyste Diagnostic Technique", usage={"total_tokens": 8}, call_id="y"))
         raise RuntimeError("boom inattendu")
 

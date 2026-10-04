@@ -20,7 +20,7 @@ log = get_logger("github")
 # tort d'échecs d'un tour précédent (déjà résolus, potentiellement via github_write_file,
 # qui ne réinitialise pas ce compteur) et déclencherait une fausse alerte "échec répété" dès
 # la première tentative d'un tour suivant sur ce même fichier — même raisonnement que
-# _current_metrics dans crew_tools.py (qui a évité ce même piège pour les métriques de
+# current_metrics dans crew_tools.py (qui a évité ce même piège pour les métriques de
 # coût/performance). track_edit_failures() (ci-dessous) délimite sa portée à une seule
 # exécution de crew, appelé par run_dynamic_crew aux côtés de track_execution_metrics.
 _edit_failure_counts: ContextVar[dict[tuple[str, str, str, str], int] | None] = ContextVar(

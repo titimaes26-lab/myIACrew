@@ -5,7 +5,7 @@ import re
 import time
 from typing import Any, Callable
 
-from metrics_collect import _current_metrics
+from metrics_collect import current_metrics
 from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
 
 # Partagés entre retry_on_rate_limit_async (utilisé par analyze_user_request) et le
@@ -26,7 +26,7 @@ def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             retries = 0
             while True:
-                m = _current_metrics.get()
+                m = current_metrics.get()
                 if m is not None:
                     m.record_attempt()
                 try:
@@ -55,7 +55,7 @@ class QuotaManager:
         elapsed = time.time() - self.last_execution_time
         if elapsed < self.min_interval_seconds:
             wait_time = self.min_interval_seconds - elapsed
-            m = _current_metrics.get()
+            m = current_metrics.get()
             if m is not None:
                 m.record_wait(wait_time)
             time.sleep(wait_time)
@@ -65,6 +65,6 @@ quota_mgr = QuotaManager()
 
 def _record_limiter_wait(wait_seconds: float) -> None:
     """Attente imposée par le limiteur global Gemini : comptée dans les mesures de l'exécution quand le contexte la voit."""
-    metrics = _current_metrics.get()
+    metrics = current_metrics.get()
     if metrics is not None:
         metrics.record_wait(wait_seconds)
