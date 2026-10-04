@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.62 — Mise à jour le 2026-10-04
+> Version : 1.63 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -58,6 +58,7 @@
 > - 1.62 (10-04) : PRD remis en phase avec le code : table des modules (§3.1) et organisation du code (§3.3), noms de fonctions
 >   déplacés, couverture mypy, organisation des tests et règle des 300 lignes (§6.1).
 
+> - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 ---
 
 ## 1. Synthèse & Vision
@@ -210,7 +211,9 @@ qui refuse une fois.
 | QA | Tableau `Critère \| Statut \| Preuve \| Correctif suggéré` ; KO avec `fichier:ligne` et correctif ; NON VÉRIFIABLE avec raison et test manuel | **Verdict minimal imposé** : `NO_GO` si un critère est KO, un problème bloquant est listé ou aucun fichier n'est committé ; `GO_AVEC_RESERVES` si des fichiers sont non livrés ou un critère NON VÉRIFIABLE. Un verdict plus indulgent est réécrit en place avec une note ; un plus sévère est conservé. Rapport de l'outil enrichi du périmètre (fichiers hors plan de l'architecte ou manquants) et de la cohérence des imports |
 
 **Limites assumées** : la validation TypeScript/JavaScript est heuristique (délimiteurs équilibrés, imports, exports) — il n'y a
-ni `tsc` ni build ; la vérification de PR côté QA reste celle de l'outil et du backend, pas du LLM.
+ni `tsc` ni build. Seule la signature d'une coupure en fin de fichier (accolade ou `${` jamais refermée, template ou commentaire non
+terminé) bloque un commit : mesurée à 0 faux positif sur `frontend/src` et 1 500 fichiers de bibliothèques, elle attrape environ 89 %
+des fichiers coupés au hasard ; les autres indices (parenthèse ou crochet isolé) restent des conseils ; la vérification de PR côté QA reste celle de l'outil et du backend, pas du LLM.
 
 ### 2.8 Mesure de performance par agent
 
@@ -477,7 +480,7 @@ Response { id: number | null; status: string | null; current_step: string | null
 
 // Autres
 POST /api/conversations (title?) · GET /api/conversations
-GET  /api/conversations/{id}/messages → ExecutionHistory[]
+GET  /api/conversations/{id}/messages?limit=100&before_id= → ExecutionHistory[]  (derniers tours, 500 au plus, ordre chronologique)
 GET  /api/repo-targets → { repo_owner, repo_name, base_branch }[]   (20 derniers, distincts)
 
 // GET /api/metrics/summary?days=30&workflow=BUGFIX&tz_offset=120   (days borné à 1-365 ; workflow optionnel ;
@@ -509,7 +512,7 @@ Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_se
            tokens_known, prompt_tokens, completion_tokens, total_tokens, tool_calls, tool_errors }[]
 GET  /api/history?limit&offset → HistoryListEntry[]  (l'exécution SANS `result` ni `clarifications`, ni champs internes : le résultat s'obtient par GET /api/executions/{id} ou avec la conversation)
 GET  /api/executions/{id} → ExecutionHistory  (résultat complet ; 404 si elle n'est pas à l'utilisateur ; sert à resynchroniser un tour en cours)
-GET  /api/conversations/{id}/messages → ExecutionHistory[]  (conversation complète, résultats compris) · DELETE /api/history/{id}
+GET  /api/conversations/{id}/messages → ExecutionHistory[]  (100 derniers tours par défaut, résultats compris) · DELETE /api/history/{id}
 POST /api/execute { …, resume_from_execution_id?: number, scope?: 'PETIT' | 'GRAND' }  → { status, id, conversation_id, resumed_steps: string[] }  (reprise : voir 2.9)
 POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [{id, reason: "running"|"not_found"}]}  (un seul commit ; supprime aussi les `agentrun` ; id étranger/inconnu → not_found ; en cours → running)
 ```
@@ -620,7 +623,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (800 cas, 547 fonctions, `backend/tests/` plus `backend/test_progressive_agents.py`) rangée
+- **Tests** : suite backend `pytest` (856 cas, 562 fonctions, `backend/tests/` plus `backend/test_progressive_agents.py`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont
@@ -661,7 +664,7 @@ périmètre).
 - **Lint backend** (`backend/ruff.toml`) : erreurs réelles seulement (imports et variables inutilisés, noms indéfinis, erreurs de
   syntaxe, arguments mutables par défaut) ; pas de règles de style, qui réécriraient l'historique sans corriger de bug.
 - **Types backend** (`backend/mypy.ini`) : tous les modules du backend sont vérifiés (API, exécution, orchestration, analyse de la
-  sortie, GitHub, mesures), sauf `database.py`, `logs.py`, `project_summary.py` et `tools.py`. Pour `main.py`, `routes_*`,
+  sortie, GitHub, mesures), sauf `database.py`, `logs.py` et `project_summary.py`. Pour `main.py`, `routes_*`,
   `execution_*` et les mixins du crew, les codes `arg-type`, `union-attr`, `operator` et `call-overload` sont désactivés (bruit
   des clés primaires `Optional[int]` de SQLModel) ; attribut inexistant, variable non annotée, affectation incompatible et retour
   manquant y restent contrôlés. Les outils de développement sont épinglés (`requirements-dev.txt`, dont `types-PyYAML`) et alignés
@@ -693,6 +696,7 @@ périmètre).
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | — | Validation du token côté backend |
 | `LOCAL_WORKSPACE_DIR` | — | Espace de travail local sans repository cible |
 | `LOG_LEVEL` | `INFO` | Niveau de journalisation |
+| `CREW_LOG_FILE` | — | Chemin du journal détaillé de CrewAI (prompts et sorties complets) ; absent : aucun fichier |
 | `ARCHITECT_MAX_OUTPUT_TOKENS` | 8192 | Plafond de sortie de l'Architecte |
 | `MAX_USER_RUNNING_EXECUTIONS` / `MAX_USER_EXECUTIONS_PER_HOUR` / `MAX_USER_QUALIFY_PER_MINUTE` | 1 / 30 / 20 | Plafonds par utilisateur (429 `RATE_LIMITED`) |
 | `AUTO_RETRY_DELAY_S` | 90 | Attente avant la seconde tentative automatique |
@@ -718,7 +722,8 @@ périmètre).
 - [ ] Supabase : la protection au niveau des lignes (RLS) est-elle activée sur `conversation`, `executionhistory`,
       `executionlaunch` et les autres tables, ou le schéma `public` est-il retiré de l'API REST exposée ? La clé anonyme est
       publique côté frontend ; le backend, lui, se connecte en direct à Postgres et n'en dépend pas.
-- [ ] Le CORS `allow_origins=["*"]` doit-il être restreint au domaine Vercel de production ?
+- [ ] Le CORS `allow_origins=["*"]` doit-il être restreint au domaine Vercel de production ? Les identifiants CORS (`allow_credentials=True`) sont inutiles : l'API utilise un jeton Bearer, pas de cookies.
+- [ ] Risque accepté à confirmer : les agents lisent des fichiers du dépôt cible, dont le contenu peut contenir des consignes hostiles (injection de prompt) ; l'impact est borné par les écritures confinées (branche `crewai/…`, fichiers sensibles refusés).
 - [ ] Les fichiers `docs/*.md` écrits sur le disque local de Render ont-ils encore une utilité maintenant que l'écriture se fait
       directement sur GitHub ?
 - [ ] Faut-il ajouter une vraie compilation (`tsc`, build) dans un bac à sable pour la QA, au lieu des vérifications statiques ?

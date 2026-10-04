@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 import execution_context
 import execution_state
@@ -52,23 +52,35 @@ def list_conversations(
     )
     return session.exec(statement).all()
 
+# Une conversation longue renvoyait le résultat COMPLET de chaque tour à chaque resynchronisation (plusieurs Mo) :
+# par défaut, les MESSAGES_DEFAULT_LIMIT derniers tours ; `before_id` remonte plus loin dans l'historique.
+MESSAGES_DEFAULT_LIMIT = 100
+MESSAGES_MAX_LIMIT = 500
+
+
 @router.get("/api/conversations/{conversation_id}/messages", response_model=List[ExecutionHistory])
 def get_conversation_messages(
     conversation_id: int,
+    limit: int = MESSAGES_DEFAULT_LIMIT,
+    before_id: Optional[int] = None,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
 ):
-    """Messages (échanges qualify+execute) d'une conversation, dans l'ordre chronologique."""
+    """Derniers messages (échanges qualify+execute) d'une conversation, dans l'ordre chronologique. `limit` (1 à
+    MESSAGES_MAX_LIMIT) borne le nombre de tours ; `before_id` ne garde que les tours d'identifiant inférieur."""
     conversation = session.get(Conversation, conversation_id)
     if not conversation or conversation.user_id != user.get("id"):
         raise HTTPException(status_code=404, detail="Conversation introuvable.")
 
-    statement = (
-        select(ExecutionHistory)
-        .where(ExecutionHistory.conversation_id == conversation_id)
-        .order_by(col(ExecutionHistory.created_at).asc())
-    )
-    return session.exec(statement).all()
+    limit = min(max(limit, 1), MESSAGES_MAX_LIMIT)
+    statement = select(ExecutionHistory).where(ExecutionHistory.conversation_id == conversation_id)
+    if before_id is not None:
+        statement = statement.where(ExecutionHistory.id < before_id)
+    rows = session.exec(
+        statement.order_by(col(ExecutionHistory.created_at).desc(), col(ExecutionHistory.id).desc()).limit(limit)
+    ).all()
+    return list(reversed(rows))
+
 
 def _queue_ahead(session: Session, execution_id: int, current_step: Optional[str], created_at: datetime) -> int:
     """Nombre d'exécutions (tous utilisateurs) devant celle-ci : celles qui tournent réellement (étape réelle) et celles
@@ -130,6 +142,9 @@ def get_conversation_progress(
         "queue_ahead": _queue_ahead(session, row[0], row[2], row[4]) if row[2] == execution_state.QUEUED_STEP else None,
     }
 
+REPO_TARGETS_LIMIT = 20
+
+
 @router.get("/api/repo-targets")
 def list_repo_targets(
     session: Session = Depends(get_session),
@@ -141,18 +156,11 @@ def list_repo_targets(
         .where(ExecutionHistory.user_id == user.get("id"))
         .where(col(ExecutionHistory.repo_owner).is_not(None))
         .where(col(ExecutionHistory.repo_name).is_not(None))
-        .order_by(col(ExecutionHistory.created_at).desc())
+        .group_by(ExecutionHistory.repo_owner, ExecutionHistory.repo_name, ExecutionHistory.base_branch)
+        .order_by(func.max(ExecutionHistory.created_at).desc())
+        .limit(REPO_TARGETS_LIMIT)
     )
-    rows = session.exec(statement).all()
-
-    seen = set()
-    targets = []
-    for repo_owner, repo_name, base_branch in rows:
-        key = (repo_owner, repo_name, base_branch)
-        if key in seen:
-            continue
-        seen.add(key)
-        targets.append({"repo_owner": repo_owner, "repo_name": repo_name, "base_branch": base_branch})
-        if len(targets) >= 20:
-            break
-    return targets
+    return [
+        {"repo_owner": repo_owner, "repo_name": repo_name, "base_branch": base_branch}
+        for repo_owner, repo_name, base_branch in session.exec(statement).all()
+    ]
