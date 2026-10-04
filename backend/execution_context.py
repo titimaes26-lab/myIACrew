@@ -8,7 +8,8 @@ from typing import Optional
 from sqlmodel import Session, col, func, select
 
 import database
-from agent_metrics import ExecutionMetrics, step_for_role
+from agent_metrics import ExecutionMetrics
+from metrics_roles import step_for_role
 from conversation_context import MAX_PRIOR_TURNS_IN_CONTEXT, build_conversation_context
 from crew_workflow import AGENT_SECTION_REGEX_PATTERN, workflow_step_keys
 from database import Conversation, ExecutionHistory

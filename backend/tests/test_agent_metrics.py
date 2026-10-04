@@ -17,17 +17,8 @@ import execution  # noqa: E402
 import execution_persistence  # noqa: E402
 import database  # noqa: E402
 import routes_metrics  # noqa: E402
-from agent_metrics import (  # noqa: E402
-    ExecutionMetrics,
-    _current_metrics,
-    build_agent_run_rows,
-    flush_events,
-    parse_usage,
-    percentile,
-    step_for_role,
-    summarize,
-    track_execution_metrics,
-)
+from agent_metrics import ExecutionMetrics, _current_metrics, build_agent_run_rows, flush_events, parse_usage, percentile, summarize, track_execution_metrics
+from metrics_roles import step_for_role
 from database import AgentRun, ExecutionHistory  # noqa: E402
 
 DESIGNER = "Lead Product / Game Designer"

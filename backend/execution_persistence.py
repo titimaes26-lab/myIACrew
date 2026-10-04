@@ -6,7 +6,8 @@ from sqlmodel import Session, select
 
 import database
 import execution_state
-from agent_metrics import build_agent_run_rows, step_for_role
+from agent_metrics import build_agent_run_rows
+from metrics_roles import step_for_role
 from crew_workflow import AGENT_SECTION_SEPARATOR, MAX_AGENT_NAME_LENGTH, MAX_AGENT_OUTPUT_SIZE, RESUMABLE_STEPS
 from database import AgentRun, ExecutionCheckpoint, ExecutionHistory
 from logs import get_logger

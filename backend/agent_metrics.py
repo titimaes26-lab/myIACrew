@@ -7,71 +7,20 @@ et sous-estimait fortement la consommation du quota Gemini. Le bus d'événement
 des exécutions concurrentes. Les agrégats (percentiles, moyennes, séries par jour) sont des fonctions
 pures, testables sans base ni réseau."""
 import math
-import re
 import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta, timezone
-from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from errors import ErrorCode
 from logs import get_logger
 
-import yaml
+import metrics_roles
 
 log = get_logger("metrics")
-
-SYSTEM_BUCKET = "system"  # appels LLM hors agent (ex : synthèse finale du résultat)
-OTHER_BUCKET = "other"
-
-# Ordre du pipeline, clés alignées sur WORKFLOW_STEPS côté frontend.
-PIPELINE_ORDER = ["design", "architecture", "diagnostic", "development", "qa", SYSTEM_BUCKET, OTHER_BUCKET]
-STEP_BY_AGENT_CONFIG = {
-    "product_designer_agent": "design",
-    "architect_agent": "architecture",
-    "diagnostic_agent": "diagnostic",
-    "developer_agent": "development",
-    "qa_agent": "qa",
-}
-AGENT_LABELS = {
-    "design": "Conception",
-    "architecture": "Architecture",
-    "diagnostic": "Diagnostic",
-    "development": "Développement",
-    "qa": "QA",
-    SYSTEM_BUCKET: "Synthèse (hors agent)",
-    OTHER_BUCKET: "Autre",
-}
-
-
-def _normalize_role(role: Optional[str]) -> str:
-    return re.sub(r"\s+", " ", (role or "").strip()).lower()
-
-
-def _load_role_map() -> dict[str, str]:
-    """{rôle normalisé -> clé d'étape} lu dans agentsquestion.yaml : le rôle d'un événement CrewAI
-    est le texte de `role:`, la seule source de vérité pour relier un appel à son agent."""
-    try:
-        config = yaml.safe_load((Path(__file__).resolve().parent / "agentsquestion.yaml").read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return {
-        _normalize_role(config[name]["role"]): step
-        for name, step in STEP_BY_AGENT_CONFIG.items()
-        if isinstance(config.get(name), dict) and config[name].get("role")
-    }
-
-
-ROLE_TO_STEP = _load_role_map()
-
-
-def step_for_role(role: Optional[str]) -> str:
-    if not role or not role.strip():
-        return SYSTEM_BUCKET
-    return ROLE_TO_STEP.get(_normalize_role(role), OTHER_BUCKET)
 
 
 # --- Usage de tokens ----------------------------------------------------------------------------
@@ -142,7 +91,7 @@ class ExecutionMetrics:
             return sum(stats.llm_calls for stats in self.agents.values())
 
     def _stats(self, role: Optional[str]) -> AgentStats:
-        return self.agents.setdefault(step_for_role(role), AgentStats())
+        return self.agents.setdefault(metrics_roles.step_for_role(role), AgentStats())
 
     def record_attempt(self):
         with self._lock:
@@ -273,11 +222,11 @@ def build_agent_run_rows(
     pipeline. `incomplete` : appels faits mais tâche jamais terminée (échec en cours d'agent)."""
     snapshot = metrics.agent_snapshot()
     rows = []
-    for step in PIPELINE_ORDER:
+    for step in metrics_roles.PIPELINE_ORDER:
         stats = snapshot.get(step)
         if stats is None or (stats.llm_calls == 0 and stats.tool_calls == 0 and stats.duration_seconds is None):
             continue
-        if step in (SYSTEM_BUCKET, OTHER_BUCKET):
+        if step in (metrics_roles.SYSTEM_BUCKET, metrics_roles.OTHER_BUCKET):
             status = "n/a"
         else:
             status = "completed" if stats.duration_seconds is not None else "incomplete"
@@ -381,14 +330,14 @@ def summarize(
     verdicts = {name: sum(1 for e in executions if e.get("qa_verdict") == name) for name in QA_VERDICTS}
 
     agents = []
-    for step in PIPELINE_ORDER:
+    for step in metrics_roles.PIPELINE_ORDER:
         step_runs = [r for r in runs if r["agent"] == step]
         if not step_runs:
             continue
         measured = [r["duration_seconds"] for r in step_runs if r["duration_seconds"] is not None]
         with_tokens = [r for r in step_runs if r["usage_calls"] > 0]
         agents.append({
-            "agent": step, "label": AGENT_LABELS[step],
+            "agent": step, "label": metrics_roles.AGENT_LABELS[step],
             "runs": len(step_runs),
             "incomplete": sum(1 for r in step_runs if r["status"] == "incomplete"),
             "duration_p50": _round(percentile(measured, 0.5)),
@@ -452,7 +401,7 @@ def summarize(
 def agent_run_view(row: dict) -> dict:
     """Une ligne AgentRun prête pour l'API/l'interface (libellé ajouté, durées arrondies)."""
     return {
-        "agent": row["agent"], "label": AGENT_LABELS.get(row["agent"], row["agent"]),
+        "agent": row["agent"], "label": metrics_roles.AGENT_LABELS.get(row["agent"], row["agent"]),
         "status": row["status"], "duration_seconds": _round(row["duration_seconds"], 2),
         "llm_calls": row["llm_calls"], "llm_errors": row["llm_errors"],
         "tokens_known": row["usage_calls"] > 0,
@@ -463,7 +412,7 @@ def agent_run_view(row: dict) -> dict:
 
 
 def sort_pipeline(rows: list[dict]) -> list[dict]:
-    order = {step: index for index, step in enumerate(PIPELINE_ORDER)}
+    order = {step: index for index, step in enumerate(metrics_roles.PIPELINE_ORDER)}
     return sorted(rows, key=lambda row: order.get(row["agent"], len(order)))
 
 
@@ -525,10 +474,3 @@ def list_executions(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
     return {"total": len(ordered), "items": ordered[offset:offset + limit]}
-
-
-__all__ = [
-    "AgentStats", "ExecutionMetrics", "track_execution_metrics", "register_event_listeners", "flush_events",
-    "build_agent_run_rows", "summarize", "percentile", "parse_usage", "step_for_role", "agent_run_view",
-    "sort_pipeline", "split_by_period", "list_executions", "execution_cost", "PIPELINE_ORDER", "AGENT_LABELS", "SYSTEM_BUCKET", "OTHER_BUCKET",
-]
