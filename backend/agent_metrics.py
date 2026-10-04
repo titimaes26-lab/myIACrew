@@ -374,6 +374,7 @@ def summarize(
         })
 
     daily: dict[str, dict] = {}
+    daily_durations: dict[str, list[float]] = {}
     shift = timedelta(minutes=tz_offset_minutes)
     execution_day = {e["id"]: (e["created_at"] + shift).date().isoformat() for e in executions if e.get("created_at")}
     for e in executions:
@@ -382,6 +383,11 @@ def summarize(
         day["failed"] += 1 if e["status"] == "failed" else 0
         day["llm_calls"] += by_execution_calls.get(e["id"], 0)
         day["tokens"] += by_execution_tokens.get(e["id"], 0)
+        if e.get("updated_at") and e.get("created_at"):
+            daily_durations.setdefault(execution_day[e["id"]], []).append((e["updated_at"] - e["created_at"]).total_seconds())
+    for date, values in daily.items():
+        # None (pas 0) un jour sans durée mesurable : le graphique n'y trace aucune barre.
+        values["median_duration_seconds"] = _round(percentile(daily_durations.get(date, []), 0.5))
 
     return {
         "period_days": days,
@@ -426,3 +432,17 @@ __all__ = [
     "build_agent_run_rows", "summarize", "percentile", "parse_usage", "step_for_role", "agent_run_view",
     "sort_pipeline", "PIPELINE_ORDER", "AGENT_LABELS", "SYSTEM_BUCKET", "OTHER_BUCKET",
 ]
+
+
+def split_by_period(executions: list[dict], since: Any) -> tuple[list[dict], list[dict]]:
+    """(période courante, période précédente) d'une liste d'exécutions couvrant les DEUX périodes :
+    created_at >= since / created_at < since. SQLite renvoie des dates naïves (UTC), Postgres des dates
+    avec fuseau : les deux sont comparées en UTC."""
+    from datetime import timezone
+
+    def as_utc(value: Any) -> Any:
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    current = [e for e in executions if as_utc(e["created_at"]) >= since]
+    previous = [e for e in executions if as_utc(e["created_at"]) < since]
+    return current, previous

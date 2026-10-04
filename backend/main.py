@@ -26,7 +26,7 @@ from database import (
     create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
 )
 from agent_metrics import (
-    ExecutionMetrics, agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
+    ExecutionMetrics, agent_run_view, split_by_period, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
 )
 from auth import get_current_user, close_http_client
 import validation
@@ -1578,7 +1578,9 @@ async def list_repo_targets(
     return targets
 
 _IN_CLAUSE_CHUNK = 500
-_METRICS_EXECUTION_LIMIT = 1000
+# Garde-fou mémoire, pas une limite de produit : au-delà, le tableau de bord signale `truncated` et ne fait
+# plus de comparaison. Assez haut pour que 365 jours d'un usage normal soient calculés EXACTEMENT.
+_METRICS_EXECUTION_LIMIT = 20_000
 
 @app.get("/api/metrics/summary")
 async def metrics_summary(
@@ -1593,8 +1595,10 @@ async def metrics_summary(
     `tz_offset` : minutes à l'est d'UTC (celui du navigateur), pour regrouper par jour LOCAL."""
     days = max(1, min(days, 365))
     tz_offset = max(-840, min(tz_offset, 840))
-    # Borne AVEC fuseau : SQLModel refuse de lier un datetime naïf à ces colonnes.
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    # Bornes AVEC fuseau : SQLModel refuse de lier un datetime naïf à ces colonnes. On lit les DEUX périodes
+    # (courante et précédente, de même durée) en une seule requête pour la comparaison.
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
     uid = user.get("id")
     statement = (
         select(
@@ -1604,24 +1608,29 @@ async def metrics_summary(
             ExecutionHistory.error_code,
         )
         .where(ExecutionHistory.user_id == uid)
-        .where(ExecutionHistory.created_at >= since)
+        .where(ExecutionHistory.created_at >= now - timedelta(days=2 * days))
         .where(col(ExecutionHistory.status).in_(("success", "failed")))
         .order_by(col(ExecutionHistory.created_at).desc())
         .limit(_METRICS_EXECUTION_LIMIT)
     )
     if workflow:
         statement = statement.where(ExecutionHistory.workflow == workflow)
-    executions = [
+    rows = [
         {
             "id": r[0], "status": r[1], "workflow": r[2], "created_at": r[3], "updated_at": r[4],
             "rate_limit_hits": r[5], "total_wait_time_seconds": r[6], "error_code": r[7],
         }
         for r in session.exec(statement).all()
     ]
-    # Par paquets : une liste IN de ~1000 identifiants dépasse la limite de paramètres des anciennes
+    executions, previous_executions = split_by_period(rows, since)
+    # Limite atteinte : les plus anciennes exécutions ont été coupées. La période courante n'est incomplète
+    # que si la coupure l'atteint ; la période précédente, elle, l'est dès que la limite est atteinte.
+    cut = len(rows) >= _METRICS_EXECUTION_LIMIT
+    truncated = cut and not previous_executions
+    # Par paquets : une liste IN de milliers d'identifiants dépasse la limite de paramètres des anciennes
     # versions de SQLite (999) ; sans effet notable sous Postgres.
     runs: list[dict[str, Any]] = []
-    ids = [e["id"] for e in executions]
+    ids = [e["id"] for e in rows]
     for start in range(0, len(ids), _IN_CLAUSE_CHUNK):
         runs.extend(
             row.model_dump()
@@ -1631,10 +1640,18 @@ async def metrics_summary(
                 .where(col(AgentRun.execution_id).in_(ids[start:start + _IN_CLAUSE_CHUNK]))
             ).all()
         )
-    result = summarize(runs, executions, days, workflow, tz_offset)
-    # Tout le tableau de bord (dont les échecs par cause) est calculé sur cet échantillon : on le dit quand
-    # la limite est atteinte plutôt que de laisser croire que la période entière est couverte.
-    result["truncated"] = len(executions) >= _METRICS_EXECUTION_LIMIT
+    current_ids = {e["id"] for e in executions}
+    result = summarize([r for r in runs if r["execution_id"] in current_ids], executions, days, workflow, tz_offset)
+    result["truncated"] = truncated
+    # Comparaison honnête seulement : sans exécution précédente, ou si la période précédente est incomplète
+    # (limite atteinte), il n'y a rien à comparer — jamais un écart calculé sur un échantillon tronqué.
+    if previous_executions and not cut:
+        previous_ids = {e["id"] for e in previous_executions}
+        result["previous"] = summarize(
+            [r for r in runs if r["execution_id"] in previous_ids], previous_executions, days, workflow, tz_offset,
+        )["executions"]
+    else:
+        result["previous"] = None
     return result
 
 @app.get("/api/executions/{execution_id}/agent-runs")

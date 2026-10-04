@@ -1,8 +1,8 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.12 — Mise à jour le 2026-10-04
+> Version : 1.13 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
-> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants · 1.12 (2026-10-04) qualité du code : CI, lint, types, tests frontend, exécution découpée en étapes.
+> Historique : 1.0 (2026-09-17) version initiale · 1.1 (2026-10-01) temps d'exécution, quota Gemini · 1.2 (2026-10-02) 6 agents, contrôles automatiques de qualité, conversations, contrats d'API à jour · 1.3 (2026-10-02) mesure de performance par agent et tableau de bord · 1.4 (2026-10-03) sélection multiple et suppression groupée dans l'historique · 1.5 (2026-10-03) gestion des erreurs typées · 1.6 (2026-10-03) exécutions orphelines et écritures GitHub partielles · 1.7 (2026-10-03) validation des entrées, contrôle préalable GitHub, perte de connexion visible · 1.8 (2026-10-03) échecs par cause dans le tableau de bord · 1.9 (2026-10-03) reprise à l'étape en échec et seconde tentative automatique · 1.10 (2026-10-03) système de design (jetons, composants de base) et thème sombre sur toute l'interface · 1.11 (2026-10-03) colonne de lecture, frise de progression, échecs plus parlants · 1.12 (2026-10-04) qualité du code : CI, lint, types, tests frontend, exécution découpée en étapes · 1.13 (2026-10-04) historique des performances : comparaison à la période précédente, tendances quotidiennes, calcul exact.
 
 ---
 
@@ -97,7 +97,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 - **Ce qui est mesuré, par agent et par exécution** : durée de la tâche, appels LLM réels, erreurs LLM, tokens (entrée, sortie, total), appels d'outils et erreurs d'outils. Un usage de tokens absent ou tout à zéro est **inconnu**, jamais « 0 token » : il n'entre pas dans les moyennes.
 - **Changement de sens** : `api_calls_count` (par exécution) compte désormais les appels LLM réels. Il ne comptait avant que les tentatives de `kickoff`, ce qui sous-estimait fortement la consommation du quota.
 - **Persistance** : une ligne `agentrun` par agent mesuré, écrite en fin d'exécution (succès ou échec). Un agent qui a fait des appels sans terminer sa tâche est marqué `incomplete`. L'écriture est « au mieux » : elle n'échoue jamais l'exécution.
-- **Tableau de bord** (bouton « 📊 Performance » du Studio, chargé à la demande) : filtres période (7, 30, 90 jours) et workflow ; tuiles (exécutions, taux de succès, durée médiane, appels LLM, tokens, pauses quota) ; durée par agent (médiane en barre, p95 en point, un seul axe) ; tokens par agent (entrée/sortie empilées) ; échecs par cause (nombre d'exécutions en échec par `error_code`, du plus fréquent au moins fréquent ; les échecs d'avant le suivi des causes sont regroupés sous « Cause non enregistrée ») ; appels LLM par jour ; tableau de détail. Chaque graphique a un jumeau tableau, une infobulle (souris et clavier) et des couleurs validées en clair et en sombre.
+- **Tableau de bord** (bouton « 📊 Performance » du Studio, chargé à la demande) : filtres période (7, 30, 90 jours) et workflow ; tuiles (exécutions, taux de succès, durée médiane, appels LLM, tokens, pauses quota) ; durée par agent (médiane en barre, p95 en point, un seul axe) ; tokens par agent (entrée/sortie empilées) ; échecs par cause (nombre d'exécutions en échec par `error_code`, du plus fréquent au moins fréquent ; les échecs d'avant le suivi des causes sont regroupés sous « Cause non enregistrée ») ; tendances quotidiennes (une métrique à la fois : appels LLM, durée médiane, taux de succès, tokens ; un jour sans donnée n'a pas de colonne) ; tableau de détail. Chaque tuile affiche son **écart par rapport à la période précédente de même durée** (flèche, signe et couleur : vert = mieux, rouge = moins bien selon la métrique ; le taux de succès en points, le reste en pourcentage ; aucun écart depuis une valeur nulle ou sans période comparable). Chaque graphique a un jumeau tableau, une infobulle (souris et clavier) et des couleurs validées en clair et en sombre.
 - **Détail d'une exécution** : sous chaque message terminé, « Voir la performance par agent » affiche durée, appels LLM, tokens et outils de cette exécution.
 
 ### 2.9 Gestion des erreurs
@@ -191,15 +191,16 @@ GET  /api/repo-targets → { repo_owner, repo_name, base_branch }[]   (20 dernie
 
 // GET /api/metrics/summary?days=30&workflow=BUGFIX&tz_offset=120   (days borné à 1-365 ; workflow optionnel ;
 //   tz_offset = minutes à l'est d'UTC du navigateur, borné à ±840, pour regrouper `daily` par jour LOCAL)
-// Exécutions TERMINÉES de l'utilisateur sur la période (1000 au plus, les plus récentes).
+// Exécutions TERMINÉES de l'utilisateur sur la période courante ET la précédente (20 000 au plus, les plus récentes : garde-fou mémoire, pas une limite de produit ; un usage normal sur 365 jours est calculé exactement).
 Response { period_days: number; workflow: string | null;
            executions: { total, success, failed, median_duration_seconds, avg_llm_calls, avg_tokens,
                          token_executions, rate_limit_hits, wait_seconds };
            agents: { agent, label, runs, incomplete, duration_p50, duration_p95, avg_llm_calls, llm_errors,
                      token_runs, avg_prompt_tokens, avg_completion_tokens, avg_tool_calls, tool_errors }[];
            failures: { code, label, count }[];   // échecs par cause (error_code), du plus fréquent au moins fréquent
-           truncated: boolean;                   // vrai si la limite de 1000 exécutions est atteinte (la période n'est pas couverte en entier)
-           daily: { date, executions, failed, llm_calls, tokens }[] }
+           truncated: boolean;                   // vrai si la limite de sécurité (20 000 exécutions) coupe la période courante
+           previous: { …mêmes champs que `executions` } | null;   // période précédente de même durée ; null sans donnée ou si la limite la coupe
+           daily: { date, executions, failed, llm_calls, tokens, median_duration_seconds | null }[] }
 
 // GET /api/executions/{id}/agent-runs   → détail par agent d'UNE exécution (404 si elle n'est pas à l'utilisateur)
 Response { agent, label, status: 'completed' | 'incomplete' | 'n/a', duration_seconds, llm_calls, llm_errors,

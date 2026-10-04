@@ -7,22 +7,34 @@ import {
 import AgentDurationChart from './AgentDurationChart';
 import AgentTokensChart from './AgentTokensChart';
 import ChartCard from './ChartCard';
-import DailyCallsChart from './DailyCallsChart';
+import DailyTrendsChart from './DailyTrendsChart';
 import FailureCausesChart from './FailureCausesChart';
 import MetricsFilters from './MetricsFilters';
 import StatTile from './StatTile';
+import { computeDelta } from '../../utils/metricsDelta';
 import './metrics.css';
+
+const successPercent = (success: number, total: number): number | null => (total > 0 ? (success / total) * 100 : null);
 
 function Tiles({ summary }: { summary: MetricsSummary }) {
   const e = summary.executions;
+  const p = summary.previous; // null : pas de période précédente comparable (aucune donnée, ou limite atteinte)
+  const delta = {
+    total: p ? computeDelta(e.total, p.total, 'none') : null,
+    success: p ? computeDelta(successPercent(e.success, e.total), successPercent(p.success, p.total), 'up', 'points') : null,
+    duration: p ? computeDelta(e.median_duration_seconds, p.median_duration_seconds, 'down') : null,
+    calls: p ? computeDelta(e.avg_llm_calls, p.avg_llm_calls, 'down') : null,
+    tokens: p ? computeDelta(e.avg_tokens, p.avg_tokens, 'down') : null,
+    pauses: p ? computeDelta(e.rate_limit_hits, p.rate_limit_hits, 'down') : null,
+  };
   return (
     <div className="viz-tiles">
-      <StatTile label="Exécutions terminées" value={formatInteger(e.total)} sub={`${e.success} réussie${e.success > 1 ? 's' : ''} · ${e.failed} en échec`} />
-      <StatTile label="Taux de succès" value={formatPercent(e.success, e.total)} sub="exécutions terminées" />
-      <StatTile label="Durée médiane" value={formatSecondsOrDash(e.median_duration_seconds)} sub="par exécution" />
-      <StatTile label="Appels LLM" value={formatNumber(e.avg_llm_calls)} sub="par exécution (appels réels)" />
-      <StatTile label="Tokens" value={formatCompact(e.avg_tokens)} sub={e.token_executions > 0 ? `par exécution · ${e.token_executions}/${e.total} mesurées` : 'usage non fourni par le modèle'} />
-      <StatTile label="Pauses quota" value={formatInteger(e.rate_limit_hits)} sub={`${formatSecondsOrDash(e.wait_seconds)} d'attente au total`} />
+      <StatTile label="Exécutions terminées" value={formatInteger(e.total)} delta={delta.total} sub={`${e.success} réussie${e.success > 1 ? 's' : ''} · ${e.failed} en échec`} />
+      <StatTile label="Taux de succès" value={formatPercent(e.success, e.total)} delta={delta.success} sub="exécutions terminées" />
+      <StatTile label="Durée médiane" value={formatSecondsOrDash(e.median_duration_seconds)} delta={delta.duration} sub="par exécution" />
+      <StatTile label="Appels LLM" value={formatNumber(e.avg_llm_calls)} delta={delta.calls} sub="par exécution (appels réels)" />
+      <StatTile label="Tokens" value={formatCompact(e.avg_tokens)} delta={delta.tokens} sub={e.token_executions > 0 ? `par exécution · ${e.token_executions}/${e.total} mesurées` : 'usage non fourni par le modèle'} />
+      <StatTile label="Pauses quota" value={formatInteger(e.rate_limit_hits)} delta={delta.pauses} sub={`${formatSecondsOrDash(e.wait_seconds)} d'attente au total`} />
     </div>
   );
 }
@@ -68,7 +80,10 @@ export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; 
         <p className="viz-empty">Aucune exécution terminée sur cette période. Lancez une demande, puis revenez ici.</p>
       )}
       {data?.truncated && (
-        <p className="viz-sub">Calculé sur les 1000 exécutions les plus récentes de la période.</p>
+        <p className="viz-sub">Trop d'exécutions sur cette période : les plus anciennes sont ignorées et aucune comparaison n'est affichée.</p>
+      )}
+      {data && data.executions.total > 0 && data.previous && (
+        <p className="viz-sub">Écarts calculés par rapport aux {data.period_days} jours précédents.</p>
       )}
       {data && data.executions.total > 0 && (
         <div className={loading ? 'viz-loading' : undefined}>
@@ -76,7 +91,7 @@ export default function MetricsPanel({ apiUrl, accessToken }: { apiUrl: string; 
           <AgentDurationChart agents={data.agents} />
           <AgentTokensChart agents={data.agents} />
           <FailureCausesChart failures={data.failures ?? []} total={data.executions.total} />
-          <DailyCallsChart daily={data.daily} />
+          <DailyTrendsChart daily={data.daily} />
           <AgentTable summary={data} />
         </div>
       )}

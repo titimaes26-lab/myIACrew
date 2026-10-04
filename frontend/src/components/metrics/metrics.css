@@ -13,6 +13,8 @@
   --viz-border: rgba(11, 11, 11, 0.1);
   --viz-s1: #2a78d6;
   --viz-s2: #eb6834;
+  --viz-good: #1a7f37;
+  --viz-bad: #b42318;
   --viz-shadow: 0 6px 18px rgba(11, 11, 11, 0.14);
 }
 @media (prefers-color-scheme: dark) {
@@ -29,6 +31,8 @@
     --viz-border: rgba(255, 255, 255, 0.1);
     --viz-s1: #3987e5;
     --viz-s2: #d95926;
+    --viz-good: #4ade80;
+    --viz-bad: #f87171;
     --viz-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
   }
 }
@@ -45,6 +49,8 @@
   --viz-border: rgba(255, 255, 255, 0.1);
   --viz-s1: #3987e5;
   --viz-s2: #d95926;
+  --viz-good: #4ade80;
+  --viz-bad: #f87171;
   --viz-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 }
 
@@ -168,3 +174,9 @@
 .viz-break .viz-table td, .viz-break .viz-table th { padding: 4px 6px; }
 .viz-miniplot { display: block; position: relative; height: 12px; min-width: 70px; }
 .viz-miniplot > i { position: absolute; left: 0; top: 0; height: 12px; background: var(--viz-s1); border-radius: 0 4px 4px 0; min-width: 2px; }
+
+/* --- Écart par rapport à la période précédente --- */
+.viz-delta { font-size: 12px; font-weight: 600; margin-top: 2px; color: var(--viz-ink-2); }
+.viz-delta--good { color: var(--viz-good); }
+.viz-delta--bad { color: var(--viz-bad); }
+.viz-metric-seg { margin-bottom: 8px; }

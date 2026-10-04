@@ -185,8 +185,8 @@ def test_summarize_computes_percentiles_averages_and_daily_series():
     assert design["token_runs"] == 1 and design["avg_prompt_tokens"] == 75.0
     assert [a["agent"] for a in result["agents"]] == ["design", "qa"]
     assert result["daily"] == [
-        {"date": "2026-10-01", "executions": 1, "failed": 0, "llm_calls": 4, "tokens": 200},
-        {"date": "2026-10-02", "executions": 1, "failed": 1, "llm_calls": 2, "tokens": 0},
+        {"date": "2026-10-01", "executions": 1, "failed": 0, "llm_calls": 4, "tokens": 200, "median_duration_seconds": 60.0},
+        {"date": "2026-10-02", "executions": 1, "failed": 1, "llm_calls": 2, "tokens": 0, "median_duration_seconds": 100.0},
     ]
     assert result["workflow"] == "BUGFIX" and result["period_days"] == 30
 
@@ -557,3 +557,68 @@ def test_summary_flags_truncation_when_the_execution_limit_is_reached(session, m
     assert result["truncated"] is True and result["executions"]["total"] == 2
     fewer = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u9"}))
     assert fewer["truncated"] is False
+
+
+# --- Comparaison à la période précédente et exactitude au-delà de 1 000 exécutions ------------------
+
+def _summary(session, days=30, workflow=None, user="u1"):
+    return asyncio.run(main.metrics_summary(days=days, workflow=workflow, tz_offset=0, session=session, user={"id": user}))
+
+
+def test_summary_compares_with_the_previous_period_of_the_same_length(session):
+    _execution(session, "u1", status="success", age_days=5, seconds=100)
+    _execution(session, "u1", status="failed", age_days=10, seconds=300)
+    _execution(session, "u1", status="success", age_days=40, seconds=50)   # période précédente
+    _execution(session, "u1", status="success", age_days=45, seconds=70)   # période précédente
+    _execution(session, "u1", status="failed", age_days=90, seconds=10)    # trop ancienne : hors des deux
+    result = _summary(session)
+    assert result["executions"]["total"] == 2 and result["executions"]["median_duration_seconds"] == 200.0
+    previous = result["previous"]
+    assert previous["total"] == 2 and previous["success"] == 2 and previous["failed"] == 0
+    assert previous["median_duration_seconds"] == 60.0
+
+
+def test_summary_has_no_comparison_without_a_previous_period(session):
+    _execution(session, "u1", age_days=2)
+    assert _summary(session)["previous"] is None
+
+
+def test_previous_period_is_scoped_to_the_user_and_the_workflow(session):
+    _execution(session, "u1", workflow="BUGFIX", age_days=2)
+    _execution(session, "u1", workflow="BUGFIX", age_days=40)
+    _execution(session, "u1", workflow="FEATURE", age_days=40)
+    _execution(session, "u2", workflow="BUGFIX", age_days=40)
+    assert _summary(session)["previous"]["total"] == 2           # BUGFIX + FEATURE de u1
+    assert _summary(session, workflow="BUGFIX")["previous"]["total"] == 1
+
+
+def test_no_comparison_when_the_limit_cuts_the_previous_period(session, monkeypatch):
+    monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 3)
+    for age in (1, 2, 40, 41):
+        _execution(session, "u1", age_days=age)
+    result = _summary(session)
+    assert result["previous"] is None            # 3 lignes lues : la période précédente est incomplète
+    assert result["truncated"] is False          # …mais la période courante, elle, est complète
+    assert result["executions"]["total"] == 2
+
+
+def test_summary_is_exact_beyond_the_old_thousand_executions_limit(session):
+    assert main._METRICS_EXECUTION_LIMIT > 1000
+    from datetime import datetime as dt
+    stamp = dt.now(timezone.utc) - timedelta(days=3)
+    session.add_all([
+        ExecutionHistory(user_request="r", workflow="BUGFIX", status="success", user_id="u1",
+                         created_at=stamp, updated_at=stamp + timedelta(seconds=60))
+        for _ in range(1200)
+    ])
+    session.commit()
+    result = _summary(session)
+    assert result["executions"]["total"] == 1200 and result["truncated"] is False
+    assert result["daily"][0]["executions"] == 1200
+
+
+def test_daily_median_duration_is_none_for_a_day_without_measurable_duration():
+    base = datetime(2026, 10, 1, 10, 0, 0)
+    result = summarize([], [{"id": 1, "status": "success", "created_at": base, "updated_at": None,
+                             "rate_limit_hits": None, "total_wait_time_seconds": None}], 30)
+    assert result["daily"][0]["median_duration_seconds"] is None

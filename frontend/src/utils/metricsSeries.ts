@@ -16,6 +16,6 @@ export function fillDays(daily: DailyMetricsRow[]): DailyMetricsRow[] {
   const byDate = new Map(daily.map((row) => [row.date, row]));
   return Array.from({ length: span }, (_, index) => {
     const date = new Date(first + index * 86_400_000).toISOString().slice(0, 10);
-    return byDate.get(date) ?? { date, executions: 0, failed: 0, llm_calls: 0, tokens: 0 };
+    return byDate.get(date) ?? { date, executions: 0, failed: 0, llm_calls: 0, tokens: 0, median_duration_seconds: null };
   });
 }

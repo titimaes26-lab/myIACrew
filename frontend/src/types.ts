@@ -123,6 +123,8 @@ export interface DailyMetricsRow {
   failed: number;
   llm_calls: number;
   tokens: number;
+  // Médiane des durées d'exécution du jour ; null quand aucune durée n'est mesurable ce jour-là.
+  median_duration_seconds: number | null;
 }
 
 export interface FailureCauseRow {
@@ -149,6 +151,8 @@ export interface MetricsSummary {
   failures: FailureCauseRow[];
   // Vrai quand la limite d'exécutions analysées est atteinte (la période n'est alors pas couverte en entier).
   truncated?: boolean;
+  // Mêmes statistiques d'exécutions sur la période PRÉCÉDENTE de même durée ; null sans donnée comparable.
+  previous?: MetricsSummary['executions'] | null;
   daily: DailyMetricsRow[];
 }
 

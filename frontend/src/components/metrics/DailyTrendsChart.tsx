@@ -2,16 +2,22 @@ import { useCallback, useState, type KeyboardEvent } from 'react';
 import type { DailyMetricsRow } from '../../types';
 import { useChartTooltip } from '../../hooks/useChartTooltip';
 import { useElementWidth } from '../../hooks/useElementWidth';
-import { formatDay, formatInteger, niceTicks } from '../../utils/metricsFormat';
+import { DAILY_METRICS, dailyMetric, type DailyMetricKey } from '../../utils/dailyMetrics';
+import { formatCompact, formatDay, formatInteger } from '../../utils/metricsFormat';
 import { fillDays } from '../../utils/metricsSeries';
+import { formatSeconds } from '../../utils/formatDuration';
 import { ChartTooltip, TipRow } from './ChartTooltip';
 import ChartCard from './ChartCard';
 
 const MAX_X_LABELS = 6;
 const MIN_PX_PER_LABEL = 64; // largeur d'une date (« 29 sept. ») plus de l'air
 
-// Appels LLM par jour : une seule série (le titre la nomme, pas de légende), colonnes <= 24 px.
-export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] }) {
+// Tendance quotidienne d'UNE métrique à la fois (sélecteur : appels LLM, durée médiane, taux de succès,
+// tokens) : une seule série (le titre la nomme, pas de légende), colonnes <= 24 px. Un jour sans donnée
+// n'a pas de colonne.
+export default function DailyTrendsChart({ daily }: { daily: DailyMetricsRow[] }) {
+  const [metricKey, setMetricKey] = useState<DailyMetricKey>('llm_calls');
+  const metric = dailyMetric(metricKey);
   const { containerRef, tip, showAtPointer, showAtElement, hide, hideUnlessTouch } = useChartTooltip();
   const { width, ref: widthRef } = useElementWidth();
   // Le même élément sert au positionnement de l'infobulle ET à la mesure de largeur.
@@ -22,10 +28,11 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
   // Une seule colonne dans l'ordre de tabulation (« roving tabindex ») ; les flèches changent de jour.
   const [focusIndex, setFocusIndex] = useState(0);
   const days = fillDays(daily);
-  const peak = Math.max(0, ...days.map((d) => d.llm_calls));
-  const ticks = niceTicks(peak, 3);
+  const values = days.map((d) => metric.value(d));
+  const peak = Math.max(0, ...values.map((value) => value ?? 0));
+  const ticks = metric.ticks(peak);
   const max = ticks[ticks.length - 1] || 1;
-  const peakIndex = days.findIndex((d) => d.llm_calls === peak);
+  const peakIndex = values.findIndex((value) => value !== null && value === peak);
   // Autant d'étiquettes que la largeur en permet (2 au minimum : premier et dernier jour).
   const fitting = Math.min(MAX_X_LABELS, Math.max(2, Math.floor((width || 600) / MIN_PX_PER_LABEL)));
   const labelStep = Math.ceil(days.length / fitting);
@@ -38,30 +45,46 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
     containerRef.current?.querySelectorAll<HTMLElement>('.viz-col')[target]?.focus();
   };
 
+  const valueText = (d: DailyMetricsRow) => {
+    const value = metric.value(d);
+    return value === null ? 'aucune donnée' : metric.format(value);
+  };
+
   const tooltipFor = (d: DailyMetricsRow) => (
     <>
       <div className="viz-tip-title">{formatDay(d.date)}</div>
-      <TipRow label="Appels LLM" value={formatInteger(d.llm_calls)} keyColor="s1" />
+      <TipRow label={metric.label} value={valueText(d)} keyColor="s1" />
       <TipRow label="Exécutions" value={formatInteger(d.executions)} />
       <TipRow label="Échecs" value={formatInteger(d.failed)} />
-      <TipRow label="Tokens" value={d.tokens > 0 ? formatInteger(d.tokens) : '—'} />
     </>
   );
 
   return (
     <ChartCard
-      title="Appels LLM par jour"
-      subtitle="Appels réels au modèle, toutes exécutions terminées du jour."
+      title={metric.title}
+      subtitle={metric.subtitle}
       table={{
-        columns: ['Jour', 'Exécutions', 'Échecs', 'Appels LLM', 'Tokens'],
-        rows: daily.map((d) => [formatDay(d.date), String(d.executions), String(d.failed), formatInteger(d.llm_calls), d.tokens > 0 ? formatInteger(d.tokens) : '—']),
+        columns: ['Jour', 'Exécutions', 'Échecs', 'Appels LLM', 'Tokens', 'Durée médiane', 'Taux de succès'],
+        rows: daily.map((d) => [
+          formatDay(d.date), String(d.executions), String(d.failed), formatInteger(d.llm_calls),
+          d.tokens > 0 ? formatCompact(d.tokens) : '—',
+          d.median_duration_seconds === null ? '—' : formatSeconds(d.median_duration_seconds),
+          dailyMetric('success').value(d) === null ? '—' : dailyMetric('success').format(dailyMetric('success').value(d) ?? 0),
+        ]),
       }}
       empty={daily.length === 0 ? 'Aucune exécution terminée sur cette période.' : null}
     >
+      <div className="viz-seg viz-metric-seg" role="group" aria-label="Métrique affichée">
+        {DAILY_METRICS.map((option) => (
+          <button key={option.key} type="button" aria-pressed={metricKey === option.key} onClick={() => setMetricKey(option.key)}>
+            {option.label}
+          </button>
+        ))}
+      </div>
       <div className="viz-cwrap" ref={setContainer}>
         <div className="viz-yaxis" aria-hidden="true">
           {ticks.map((tick) => (
-            <span key={tick} className="viz-ytick" style={{ bottom: `${(tick / max) * 100}%` }}>{formatInteger(tick)}</span>
+            <span key={tick} className="viz-ytick" style={{ bottom: `${(tick / max) * 100}%` }}>{metric.format(tick)}</span>
           ))}
         </div>
         <div className="viz-cplot">
@@ -76,7 +99,7 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
                 tabIndex={index === Math.min(focusIndex, days.length - 1) ? 0 : -1}
                 role="group"
                 data-viz-mark=""
-                aria-label={`${formatDay(d.date)} : ${d.llm_calls} appels LLM, ${d.executions} exécution${d.executions > 1 ? 's' : ''}, ${d.failed} échec${d.failed > 1 ? 's' : ''}`}
+                aria-label={`${formatDay(d.date)} : ${metric.label} ${valueText(d)}, ${d.executions} exécution${d.executions > 1 ? 's' : ''}, ${d.failed} échec${d.failed > 1 ? 's' : ''}`}
                 onPointerDown={(event) => showAtPointer(event, tooltipFor(d))}
                 onPointerMove={(event) => showAtPointer(event, tooltipFor(d))}
                 onPointerLeave={hideUnlessTouch}
@@ -84,9 +107,9 @@ export default function DailyCallsChart({ daily }: { daily: DailyMetricsRow[] })
                 onFocus={(event) => { setFocusIndex(index); showAtElement(event.currentTarget, tooltipFor(d)); }}
                 onBlur={hide}
               >
-                {d.llm_calls > 0 && <div className="viz-colbar" style={{ height: `${(d.llm_calls / max) * 100}%` }} />}
-                {index === peakIndex && peak > 0 && (
-                  <span className="viz-collabel" style={{ bottom: `${(d.llm_calls / max) * 100}%` }}>{formatInteger(d.llm_calls)}</span>
+                {values[index] !== null && <div className="viz-colbar" style={{ height: `${((values[index] ?? 0) / max) * 100}%` }} />}
+                {metric.labelPeak && index === peakIndex && peak > 0 && (
+                  <span className="viz-collabel" style={{ bottom: `${((values[index] ?? 0) / max) * 100}%` }}>{metric.format(peak)}</span>
                 )}
               </div>
             ))}
