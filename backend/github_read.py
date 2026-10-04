@@ -134,7 +134,8 @@ def _read_file_uncached(owner: str, repo: str, path: str, branch: str) -> str:
         if content is None:
             # `error` est déjà formaté ("ERREUR_GITHUB : ...", "ERREUR : ...") sauf pour
             # PRESENT_UNREADABLE, qui n'a pas ce préfixe : ne jamais l'imbriquer deux fois.
-            return error if error.startswith("ERREUR") else f"ERREUR : {error}"
+            message = error or "contenu illisible"  # `error` est toujours renseigné quand `content` est None
+            return message if message.startswith("ERREUR") else f"ERREUR : {message}"
         return content
     except GithubException as e:
         if e.status == 404:

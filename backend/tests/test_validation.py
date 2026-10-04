@@ -21,7 +21,7 @@ import validation  # noqa: E402
 from auth import get_current_user  # noqa: E402
 from database import Conversation, ExecutionHistory, ExecutionLaunch  # noqa: E402
 from errors import AppError  # noqa: E402
-from github_tools import GitHubAccessProblem, check_github_access  # noqa: E402
+from github_access import GitHubAccessProblem, check_github_access  # noqa: E402
 
 
 @pytest.mark.parametrize("owner", ["octocat", "a", "my-org", "A1-b2", "x" * 39, "jdoe_acme"])

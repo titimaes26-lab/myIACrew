@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest  # noqa: E402
+import github_snapshot  # noqa: E402
 import github_client  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
@@ -21,7 +22,8 @@ import execution_state  # noqa: E402
 import database  # noqa: E402
 from database import Conversation, ExecutionHistory  # noqa: E402
 from delivery import render_partial_delivery_block  # noqa: E402
-from github_tools import GitHubVerificationUnavailable, PartialDelivery, describe_partial_delivery  # noqa: E402
+from github_delivery import PartialDelivery, describe_partial_delivery
+from github_snapshot import GitHubVerificationUnavailable
 from orphans import INTERRUPTED_MESSAGE, ORPHAN_AFTER_SECONDS, sweep_stale_executions  # noqa: E402
 
 OLD = timedelta(seconds=ORPHAN_AFTER_SECONDS + 60)
@@ -136,7 +138,6 @@ def test_block_when_nothing_was_pushed_or_github_is_unreachable():
 
 
 def test_describe_partial_delivery_reads_branch_commits_and_pr(monkeypatch):
-    import github_tools
 
     class Pull:
         state, merged_at, html_url = "open", None, "https://github.com/o/r/pull/1"
@@ -148,12 +149,12 @@ def test_describe_partial_delivery_reads_branch_commits_and_pr(monkeypatch):
         def get_pulls(self, **kwargs):
             return [Pull()]
 
-    monkeypatch.setattr(github_tools, "get_branch_head_sha", lambda *a: "new")
+    monkeypatch.setattr(github_snapshot, "get_branch_head_sha", lambda *a: "new")
     monkeypatch.setattr(github_client, "_get_repo", lambda *a: Repo())
     assert describe_partial_delivery("o", "r", "b", "main", "old") == PartialDelivery(
         "b", True, True, 2, "https://github.com/o/r/pull/1", "open")
     assert describe_partial_delivery("o", "r", "b", "main", "new").new_commits is False
-    monkeypatch.setattr(github_tools, "get_branch_head_sha", lambda *a: None)
+    monkeypatch.setattr(github_snapshot, "get_branch_head_sha", lambda *a: None)
     assert describe_partial_delivery("o", "r", "b", "main", None).branch_exists is False
 
 
@@ -201,7 +202,6 @@ def test_github_unreachable_during_failure_report_is_stated_not_hidden(monkeypat
 
 
 def test_pr_lookup_failure_is_reported_as_unverified_not_as_absent(monkeypatch):
-    import github_tools
 
     class Repo:
         def compare(self, base, head):
@@ -210,7 +210,7 @@ def test_pr_lookup_failure_is_reported_as_unverified_not_as_absent(monkeypatch):
         def get_pulls(self, **kwargs):
             raise RuntimeError("rate limit")
 
-    monkeypatch.setattr(github_tools, "get_branch_head_sha", lambda *a: "sha")
+    monkeypatch.setattr(github_snapshot, "get_branch_head_sha", lambda *a: "sha")
     monkeypatch.setattr(github_client, "_get_repo", lambda *a: Repo())
     partial = describe_partial_delivery("o", "r", "b", "main", "sha")
     assert partial.pr_checked is False

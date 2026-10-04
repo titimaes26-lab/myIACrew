@@ -157,7 +157,7 @@ def check_syntax_content(content: str, file_path: str) -> str:
     Factorée en fonction Python pure pour être appelable directement — par l'agent (via l'outil
     check_syntax ci-dessous, un objet Tool crewai qui n'est lui-même PAS directement appelable
     comme une fonction) OU en interne par github_write_file/github_write_files (voir
-    github_tools.py, _reject_invalid_syntax) comme garde-fou avant un commit, sans dépendre de
+    github_guards.py, _reject_invalid_syntax) comme garde-fou avant un commit, sans dépendre de
     l'objet Tool de crewai ni de son compteur d'usage partagé (qui serait sinon incrémenté par
     les deux appelants indifféremment).
     """

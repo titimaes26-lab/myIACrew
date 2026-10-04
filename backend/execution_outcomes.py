@@ -15,9 +15,7 @@ from crew_workflow import CrewStepError, resumable_prefix, workflow_step_keys
 from database import Conversation, ExecutionHistory
 from delivery import render_partial_delivery_block
 from errors import DeliveryError, ErrorCode, ErrorInfo
-from github_tools import (
-    DeliveredPullRequest, DeliveryIssue, describe_partial_delivery, verify_github_delivery,
-)
+from github_delivery import DeliveredPullRequest, DeliveryIssue, describe_partial_delivery, verify_github_delivery
 from logs import get_logger
 from qa_report import final_verdict
 from schemas import WorkflowExecutionInput

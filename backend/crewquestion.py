@@ -106,7 +106,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # le raisonnement complet de cette séparation.
             # Pas de github_edit_file ici, volontairement : cet outil remplace un extrait exact
             # (old_string/new_string) et, sur échec (occurrences 0 ou >1), son propre message
-            # d'erreur (voir github_tools.py, _record_edit_failure) instruit l'agent appelant de
+            # d'erreur (voir github_edit_failures.py, _record_edit_failure) instruit l'agent appelant de
             # RELIRE le fichier avec github_read_file avant de retenter — un outil que cet agent
             # n'a justement plus (voir plus haut). diagnostic_task ne produit d'ailleurs jamais de
             # old_string/new_string, seulement le contenu complet de chaque fichier : github_write_file/

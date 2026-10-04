@@ -153,10 +153,10 @@ def classify_exception(exc: BaseException) -> ErrorInfo:
 
 
 def _classify_single(exc: BaseException) -> ErrorInfo:
-    # GitHubVerificationUnavailable est importée ici pour ne pas lier ce module à github_tools
-    # à l'import (github_tools importe beaucoup de dépendances).
+    # GitHubVerificationUnavailable est importée ici pour ne pas lier ce module à github_snapshot
+    # à l'import (github_snapshot importe PyGithub).
     try:
-        from github_tools import GitHubVerificationUnavailable
+        from github_snapshot import GitHubVerificationUnavailable
         if isinstance(exc, GitHubVerificationUnavailable):
             return ErrorInfo(ErrorCode.GITHUB_UNAVAILABLE, True, _USER_MESSAGES[ErrorCode.GITHUB_UNAVAILABLE])
     except Exception:

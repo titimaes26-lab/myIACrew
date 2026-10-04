@@ -9,7 +9,7 @@ from analyst_output import build_delivery_report, find_import_problems, format_m
 from delivery import (
     build_pull_request_body, conventional_commit_message, extract_section,
 )
-from github_tools import open_or_update_pull_request
+from github_pull_request import open_or_update_pull_request
 from github_write import write_files_to_branch
 from github_read import make_dir_lister, make_file_fetcher
 from logs import get_logger

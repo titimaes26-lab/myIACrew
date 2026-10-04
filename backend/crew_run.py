@@ -180,7 +180,7 @@ class CrewRun:
                 m.record_attempt()
             try:
                 # track_edit_failures() : isole le suivi des échecs répétés de github_edit_file à CETTE exécution
-                # (voir _edit_failure_counts dans github_tools.py).
+                # (voir _edit_failure_counts dans github_edit_failures.py).
                 with track_edit_failures():
                     await dynamic_crew.kickoff_async(inputs=self.inputs)
                 return  # succès : toutes les tâches de `remaining` ont rejoint completed_keys

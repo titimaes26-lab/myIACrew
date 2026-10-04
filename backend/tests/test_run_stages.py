@@ -23,7 +23,7 @@ import database  # noqa: E402
 import memory_monitor  # noqa: E402
 from crew_workflow import CrewStepError  # noqa: E402
 from errors import classify_exception  # noqa: E402
-from github_tools import GitHubVerificationUnavailable  # noqa: E402
+from github_snapshot import GitHubVerificationUnavailable  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

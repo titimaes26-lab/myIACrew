@@ -16,7 +16,7 @@ import database  # noqa: E402
 from auth import get_current_user  # noqa: E402
 from database import ExecutionHistory  # noqa: E402
 from errors import AppError, DeliveryError, ErrorCode, classify_exception, http_status_for  # noqa: E402
-from github_tools import GitHubVerificationUnavailable  # noqa: E402
+from github_snapshot import GitHubVerificationUnavailable  # noqa: E402
 
 
 @pytest.mark.parametrize("exc, code, retryable", [

@@ -5,9 +5,12 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-gt = pytest.importorskip("github_tools")
+pytest.importorskip("github_write")  # saute le fichier si PyGithub/crewai ne sont pas installés
+import github_pull_request  # noqa: E402
+import github_snapshot  # noqa: E402
 import github_write  # noqa: E402
 import github_edit  # noqa: E402
+import github_edit_failures  # noqa: E402
 import github_read  # noqa: E402
 import github_guards  # noqa: E402
 import github_client  # noqa: E402
@@ -184,7 +187,7 @@ def test_delivery_checks_never_read_from_or_fill_the_file_cache(counting):
 
 
 def test_repo_snapshot_lists_the_root_reads_the_config_files_and_src(counting):
-    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    snapshot = github_snapshot.build_repo_snapshot("o", "r", "main")
     assert "branche lue : main" in snapshot
     assert "## Racine" in snapshot and "## Résumé du projet" in snapshot and "- Nom : app" in snapshot
     assert "mode strict activé" in snapshot and "## src" in snapshot and "src/App.tsx" in snapshot
@@ -195,22 +198,22 @@ def test_repo_snapshot_skips_missing_files_truncates_and_degrades_to_empty(count
     del counting.files[("main", "tsconfig.json")]
     counting.dirs[("main", "")] = [("package.json", "file"), ("src", "dir")]
     counting.files[("main", "package.json")] = b"x" * 7000
-    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    snapshot = github_snapshot.build_repo_snapshot("o", "r", "main")
     assert "## tsconfig.json" not in snapshot and "[… tronqué]" in snapshot and "x" * 6001 not in snapshot
-    assert gt.build_repo_snapshot("o", "r", "inconnue") == ""   # racine illisible : l'agent lira lui-même
+    assert github_snapshot.build_repo_snapshot("o", "r", "inconnue") == ""   # racine illisible : l'agent lira lui-même
 
 
 def test_repo_snapshot_caps_long_listings(counting):
     counting.dirs[("main", "")] = [("package.json", "file"), ("src", "dir")]
     counting.dirs[("main", "src")] = [(f"src/f{i}.ts", "file") for i in range(400)]
-    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    snapshot = github_snapshot.build_repo_snapshot("o", "r", "main")
     assert "src/f149.ts" in snapshot and "src/f150.ts" not in snapshot
     assert "… 250 autres entrées" in snapshot
 
 
 def test_repo_snapshot_of_an_empty_repository_says_so(counting):
     counting.dirs[("main", "")] = []
-    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    snapshot = github_snapshot.build_repo_snapshot("o", "r", "main")
     assert "dépôt vide" in snapshot and "branche lue : main" in snapshot
 
 
@@ -233,7 +236,7 @@ def test_read_cache_logs_nothing_when_no_read_happened(caplog):
 
 def test_repo_snapshot_falls_back_to_the_raw_files_when_package_json_is_not_json(counting):
     counting.files[("main", "package.json")] = b"{ ceci n'est pas du json"
-    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    snapshot = github_snapshot.build_repo_snapshot("o", "r", "main")
     assert "## package.json" in snapshot and "ceci n'est pas du json" in snapshot
     assert "## Résumé du projet" not in snapshot and "## tsconfig.json" in snapshot
 
@@ -363,7 +366,7 @@ def test_a_stopped_execution_can_no_longer_write_or_open_a_pull_request(counting
         assert github_write.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": "src/a.ts", "content": "x"}]).startswith("ERREUR")
         assert github_write.github_create_branch.func("o", "r", "crewai/a", "main").startswith("ERREUR")
         monkeypatch.setattr(github_client, "_get_repo", lambda *a: (_ for _ in ()).throw(AssertionError("aucun appel réseau attendu")))
-        assert gt.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, github_guards.STOPPED_EXECUTION_MESSAGE)
+        assert github_pull_request.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, github_guards.STOPPED_EXECUTION_MESSAGE)
     assert counting.created == []
     assert github_guards._reject_protected_branch("crewai/a") is None              # hors du contexte : plus de signal
 
@@ -380,3 +383,23 @@ def test_the_stop_signal_is_seen_by_a_thread_that_copied_the_context():
         worker.start()
         worker.join()
     assert seen == [True]
+
+
+def test_an_edit_success_resets_the_consecutive_failure_count_of_that_file():
+    with github_edit_failures.track_edit_failures():
+        first = github_edit_failures._record_edit_failure("o", "r", "a.ts", "b", "raison.", "relis.")
+        github_edit_failures._record_edit_success("o", "r", "a.ts", "b")
+        after_success = github_edit_failures._record_edit_failure("o", "r", "a.ts", "b", "raison.", "relis.")
+        second = github_edit_failures._record_edit_failure("o", "r", "a.ts", "b", "raison.", "relis.")
+    assert "ÉCHEC RÉPÉTÉ" not in first and "ÉCHEC RÉPÉTÉ" not in after_success   # le succès intermédiaire a remis le compte à 0
+    assert "ÉCHEC RÉPÉTÉ (2x DE SUITE)" in second
+
+
+def test_failures_are_counted_per_file_and_forgotten_outside_the_tracking_scope():
+    with github_edit_failures.track_edit_failures():
+        github_edit_failures._record_edit_failure("o", "r", "a.ts", "b", "raison.", "relis.")
+        other = github_edit_failures._record_edit_failure("o", "r", "b.ts", "b", "raison.", "relis.")
+    assert "ÉCHEC RÉPÉTÉ" not in other
+    # Hors de la portée d'une exécution : jamais escaladé (rien ne permet de compter).
+    for _ in range(3):
+        assert "ÉCHEC RÉPÉTÉ" not in github_edit_failures._record_edit_failure("o", "r", "a.ts", "b", "raison.", "relis.")
