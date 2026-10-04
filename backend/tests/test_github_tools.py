@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 gt = pytest.importorskip("github_tools")
+import github_guards  # noqa: E402
 import github_client  # noqa: E402
 from github import GithubException  # noqa: E402
 
@@ -269,17 +270,17 @@ def test_refusal_names_the_rule_so_the_agent_can_correct_itself(counting):
     "crewai/sous/dossier-1", "crewai/v1.2-x",
 ])
 def test_work_branches_are_accepted(branch):
-    assert gt._reject_protected_branch(branch) is None
+    assert github_guards._reject_protected_branch(branch) is None
 
 
 def test_write_scope_restricts_the_execution_to_its_own_work_branch():
-    assert gt._reject_protected_branch("crewai/b") is None   # sans périmètre : la règle du préfixe seule
-    with gt.track_write_scope("crewai/a"):
-        assert gt._reject_protected_branch("crewai/a") is None
-        refused = gt._reject_protected_branch("crewai/b")
+    assert github_guards._reject_protected_branch("crewai/b") is None   # sans périmètre : la règle du préfixe seule
+    with github_guards.track_write_scope("crewai/a"):
+        assert github_guards._reject_protected_branch("crewai/a") is None
+        refused = github_guards._reject_protected_branch("crewai/b")
         assert refused and "crewai/a" in refused
-        assert gt._reject_protected_branch("test")          # le préfixe reste exigé
-    assert gt._reject_protected_branch("crewai/b") is None   # le périmètre disparaît avec le contexte
+        assert github_guards._reject_protected_branch("test")          # le préfixe reste exigé
+    assert github_guards._reject_protected_branch("crewai/b") is None   # le périmètre disparaît avec le contexte
 
 
 def test_the_commit_helper_used_by_the_crew_refuses_other_branches(counting):
@@ -290,7 +291,7 @@ def test_the_commit_helper_used_by_the_crew_refuses_other_branches(counting):
 def test_a_refused_write_is_logged_without_file_content(counting, caplog):
     caplog.set_level("INFO", logger="myiacrew")
     gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "test", "msg")
-    with gt.track_write_scope("crewai/a"):
+    with github_guards.track_write_scope("crewai/a"):
         gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "crewai/b", "msg")
     gt.github_write_file.func("o", "r", "src/x.ts", "x", "crewai/x\nFAUSSE LIGNE", "msg")
     refusals = [record for record in caplog.records if "écriture GitHub refusée" in record.getMessage()]
@@ -315,7 +316,7 @@ ALLOWED = [".env.example", ".env.sample", "app/.env.template", "src/docker-utils
 
 @pytest.mark.parametrize("path", SENSITIVE)
 def test_sensitive_files_are_refused_without_any_network_call(counting, path):
-    refused = gt._reject_sensitive_path(path)
+    refused = github_guards._reject_sensitive_path(path)
     assert refused and refused.startswith("ERREUR") and "non livré" in refused
     assert gt.github_write_file.func("o", "r", path, "x", "crewai/a", "msg").startswith("ERREUR")
     assert gt.github_edit_file.func("o", "r", path, "crewai/a", "a", "b", "msg").startswith("ERREUR")
@@ -326,7 +327,7 @@ def test_sensitive_files_are_refused_without_any_network_call(counting, path):
 
 @pytest.mark.parametrize("path", ALLOWED)
 def test_ordinary_files_are_not_mistaken_for_sensitive_ones(path):
-    assert gt._reject_sensitive_path(path) is None
+    assert github_guards._reject_sensitive_path(path) is None
 
 
 def test_the_commit_helper_reports_sensitive_files_in_the_rejection_sink(counting):
@@ -350,18 +351,18 @@ def test_a_refused_sensitive_write_is_logged_without_content(counting, caplog):
 def test_a_stopped_execution_can_no_longer_write_or_open_a_pull_request(counting, monkeypatch):
     import threading
     event = threading.Event()
-    with gt.track_write_scope("crewai/a", event):
-        assert gt._reject_protected_branch("crewai/a") is None          # avant l'arrêt : écriture permise
+    with github_guards.track_write_scope("crewai/a", event):
+        assert github_guards._reject_protected_branch("crewai/a") is None          # avant l'arrêt : écriture permise
         event.set()                                                     # posé par un autre thread (délai dépassé)
-        refused = gt._reject_protected_branch("crewai/a")
-        assert refused == gt.STOPPED_EXECUTION_MESSAGE and "arrêtée" in refused
+        refused = github_guards._reject_protected_branch("crewai/a")
+        assert refused == github_guards.STOPPED_EXECUTION_MESSAGE and "arrêtée" in refused
         assert gt.github_write_file.func("o", "r", "src/a.ts", "x", "crewai/a", "msg").startswith("ERREUR")
         assert gt.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": "src/a.ts", "content": "x"}]).startswith("ERREUR")
         assert gt.github_create_branch.func("o", "r", "crewai/a", "main").startswith("ERREUR")
         monkeypatch.setattr(github_client, "_get_repo", lambda *a: (_ for _ in ()).throw(AssertionError("aucun appel réseau attendu")))
-        assert gt.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, gt.STOPPED_EXECUTION_MESSAGE)
+        assert gt.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, github_guards.STOPPED_EXECUTION_MESSAGE)
     assert counting.created == []
-    assert gt._reject_protected_branch("crewai/a") is None              # hors du contexte : plus de signal
+    assert github_guards._reject_protected_branch("crewai/a") is None              # hors du contexte : plus de signal
 
 
 def test_the_stop_signal_is_seen_by_a_thread_that_copied_the_context():
@@ -369,9 +370,9 @@ def test_the_stop_signal_is_seen_by_a_thread_that_copied_the_context():
     import threading
     event = threading.Event()
     seen = []
-    with gt.track_write_scope("crewai/a", event):
+    with github_guards.track_write_scope("crewai/a", event):
         context = contextvars.copy_context()
-        worker = threading.Thread(target=lambda: context.run(lambda: seen.append(gt.writes_cancelled())))
+        worker = threading.Thread(target=lambda: context.run(lambda: seen.append(github_guards.writes_cancelled())))
         event.set()
         worker.start()
         worker.join()

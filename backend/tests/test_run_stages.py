@@ -8,6 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest  # noqa: E402
+import github_guards  # noqa: E402
 import github_client  # noqa: E402
 
 import routes_execute  # noqa: E402
@@ -553,11 +554,10 @@ def test_crew_inputs_carry_the_previous_plan_with_an_empty_default():
 # --- Périmètre d'écriture GitHub de l'exécution -------------------------------------------------------------------
 
 def test_the_crew_runs_with_its_write_scope_limited_to_the_work_branch(engine, monkeypatch):
-    import github_tools
     seen_scopes: list = []
 
     async def run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None, **kwargs):
-        seen_scopes.append(github_tools._write_scope.get())
+        seen_scopes.append(github_guards._write_scope.get())
         return SimpleNamespace(raw="résultat")
 
     monkeypatch.setattr(execution, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
@@ -565,12 +565,11 @@ def test_the_crew_runs_with_its_write_scope_limited_to_the_work_branch(engine, m
     execution_id, conversation_id = _new_execution(engine, "FEATURE")
     asyncio.run(execution.run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/feature-ab12cd34", "main", "p", "c"))
     assert seen_scopes == ["crewai/feature-ab12cd34"]
-    assert github_tools._write_scope.get() is None   # jamais conservé après l'exécution
+    assert github_guards._write_scope.get() is None   # jamais conservé après l'exécution
 
 
 def test_work_branches_are_named_with_the_shared_prefix():
-    import github_tools
-    assert routes_execute.WORK_BRANCH_PREFIX == github_tools.WORK_BRANCH_PREFIX == "crewai/"
+    assert routes_execute.WORK_BRANCH_PREFIX == github_guards.WORK_BRANCH_PREFIX == "crewai/"
 
 
 # --- Lecture ciblée des tours précédents ---------------------------------------------------------------------------

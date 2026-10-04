@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, normalize_path
-from github_tools import _reject_invalid_syntax
+from github_guards import _reject_invalid_syntax
 
 # Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
 # de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en

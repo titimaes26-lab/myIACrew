@@ -16,7 +16,8 @@ from crewquestion import AppDevelopmentCrew
 from qualification import QualificationResult
 from database import Conversation, ExecutionHistory, get_session
 from errors import AppError, ErrorCode, classify_exception, http_status_for
-from github_tools import GitHubAccessProblem, WORK_BRANCH_PREFIX, check_github_access
+from github_tools import GitHubAccessProblem, check_github_access
+from github_guards import WORK_BRANCH_PREFIX
 from limits import check_qualify_rate, check_user_execution_quota, record_execution_launch
 from logs import get_logger
 from orphans import sweep_stale_executions
