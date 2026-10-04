@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
@@ -166,7 +167,7 @@ def test_failed_execution_reports_what_github_already_has(monkeypatch):
     monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
     monkeypatch.setattr(execution_context, "get_branch_head_sha", lambda *a: "sha0")
     monkeypatch.setattr(
-        main, "describe_partial_delivery",
+        execution_outcomes, "describe_partial_delivery",
         lambda *a: PartialDelivery("crewai/b", True, True, 1, None, None),
     )
     with Session(engine) as db:
@@ -190,8 +191,8 @@ def test_failed_execution_reports_what_github_already_has(monkeypatch):
 def test_github_unreachable_during_failure_report_is_stated_not_hidden(monkeypatch):
     def unavailable(*args):
         raise GitHubVerificationUnavailable("api down")
-    monkeypatch.setattr(main, "describe_partial_delivery", unavailable)
-    block = asyncio.run(main._partial_delivery_block("o", "r", "b", "main", None))
+    monkeypatch.setattr(execution_outcomes, "describe_partial_delivery", unavailable)
+    block = asyncio.run(execution_outcomes.partial_delivery_block("o", "r", "b", "main", None))
     assert "Impossible de vérifier GitHub (api down)" in block
 
 
@@ -216,8 +217,8 @@ def test_pr_lookup_failure_is_reported_as_unverified_not_as_absent(monkeypatch):
 def test_timeout_while_checking_github_is_readable(monkeypatch):
     def slow(*args):
         raise asyncio.TimeoutError()
-    monkeypatch.setattr(main, "describe_partial_delivery", slow)
-    block = asyncio.run(main._partial_delivery_block("o", "r", "b", "main", None))
+    monkeypatch.setattr(execution_outcomes, "describe_partial_delivery", slow)
+    block = asyncio.run(execution_outcomes.partial_delivery_block("o", "r", "b", "main", None))
     assert "délai dépassé" in block and "TimeoutError" not in block
 
 

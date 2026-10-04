@@ -1,6 +1,5 @@
 import asyncio
 import threading
-import os
 import uuid
 from datetime import datetime, timezone
 
@@ -14,8 +13,8 @@ from sqlalchemy.orm import defer
 from sqlmodel import Session, col, select
 
 from crewquestion import (
-    AppDevelopmentCrew, CrewStepError, QualificationResult,
-    track_execution_metrics, workflow_step_keys, resumable_prefix,
+    AppDevelopmentCrew, QualificationResult,
+    track_execution_metrics,
 )
 import database
 from database import (
@@ -29,16 +28,15 @@ from orphans import sweep_stale_executions
 from logs import get_logger
 from qa_report import final_verdict
 from limits import check_qualify_rate, check_user_execution_quota, record_execution_launch
-from summary import partial_work_block
 from errors import (
-    AppError, DeliveryError, ErrorCode, ErrorInfo, ExecutionTimeoutError, classify_exception, http_status_for,
+    AppError, ErrorCode, ExecutionTimeoutError, classify_exception, http_status_for,
 )
 from github_tools import (
-    verify_github_delivery, describe_partial_delivery, check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue, track_read_cache,
+    check_github_access, GitHubAccessProblem, track_read_cache,
     track_write_scope, WORK_BRANCH_PREFIX,
 )
-from delivery import render_partial_delivery_block
 import execution_context
+import execution_outcomes
 import execution_persistence
 import execution_state
 import memory_monitor
@@ -158,23 +156,8 @@ _GITHUB_ACCESS_ERRORS = {
 }
 
 _GITHUB_PRECHECK_TIMEOUT_S = 15
-# Seconde tentative automatique (une seule) après un échec transitoire : délai avant de relancer.
-AUTO_RETRY_DELAY_S = float(os.getenv("AUTO_RETRY_DELAY_S", "90"))
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
-
-
-async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branch: str, sha_before) -> str:
-    """Bloc « Travail déjà présent sur GitHub » d'un échec. Ne lève jamais et reste borné dans le
-    temps : constater l'état de GitHub ne doit ni masquer l'échec d'origine ni le retarder."""
-    try:
-        partial = await asyncio.wait_for(
-            asyncio.to_thread(describe_partial_delivery, owner, repo, branch, base_branch, sha_before), timeout=20,
-        )
-        return render_partial_delivery_block(owner, repo, branch, base_branch, partial)
-    except Exception as e:
-        reason = "délai dépassé" if isinstance(e, (asyncio.TimeoutError, TimeoutError)) else (str(e) or type(e).__name__)
-        return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
 
 
 async def _execute_crew_and_persist(
@@ -220,7 +203,7 @@ async def _execute_crew_and_persist(
         try:
             await asyncio.to_thread(execution_state.persist_current_step, db_entry_id, execution_state.QUEUED_STEP)
             await asyncio.to_thread(execution_state.set_attempts, db_entry_id, 2)
-            await asyncio.sleep(AUTO_RETRY_DELAY_S)
+            await asyncio.sleep(execution_state.AUTO_RETRY_DELAY_S)
             async with execution_state.execution_semaphore:
                 await _run_crew_and_persist(
                     db_entry_id, conversation_id, data, has_repo_target, should_verify_github_delivery,
@@ -285,207 +268,6 @@ async def _run_crew(
                 raise
 
 
-# Rapport de l'agent joint à un échec de livraison ; le détail technique stocké garde en plus la place du constat
-# (sans cette marge, la fin du rapport serait coupée, c'est précisément la cause qui disparaîtrait).
-_AGENT_REPORT_CHARS = 3000
-_TECHNICAL_DETAIL_CHARS = _AGENT_REPORT_CHARS + 1500
-
-
-def _delivery_failure_message(issue: DeliveryIssue, raw_result: str) -> str:
-    """Message d'une livraison non confirmée sur GitHub. `likely_access_problem` (champ structuré, pas un
-    texte à parser) distingue « branche introuvable / API injoignable » (vérifier GITHUB_TOKEN est juste) du
-    cas « branche et commits confirmés mais PR manquante » (l'agent n'a pas terminé : conseil de jeton faux).
-    Le rapport de l'agent est joint tel quel, non vérifié, pour juger s'il faut relancer ou reformuler."""
-    if issue.likely_access_problem:
-        remediation = (
-            "Vérifie la configuration GITHUB_TOKEN du backend (présence, permissions d'écriture sur ce "
-            "repository) puis relance."
-        )
-    else:
-        remediation = (
-            "Cela peut venir d'un manque de permissions d'écriture du GITHUB_TOKEN configuré sur ce "
-            "repository, ou du Développeur qui n'a pas terminé sa procédure GitHub : vérifie les deux, puis relance."
-        )
-    return (
-        "Un repository GitHub cible était configuré mais la vérification après coup "
-        f"a échoué : {issue.message} {remediation}\n\n"
-        "--- Rapport de l'agent (non vérifié sur GitHub) ---\n"
-        f"{raw_result[:_AGENT_REPORT_CHARS]}"
-    )
-
-
-async def _verify_delivery(
-    data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], sha_before: Optional[str],
-    raw_result: str,
-) -> Optional[DeliveredPullRequest]:
-    """Vérifie via l'API GitHub (jamais d'après le texte d'un agent : la QA n'a aucun outil pour ça) qu'une
-    branche et une PR à jour existent. Renvoie la PR confirmée ; lève RuntimeError sinon. Appel bloquant :
-    dans un thread."""
-    delivered_pr, issue = await asyncio.to_thread(
-        verify_github_delivery, data.repo_owner, data.repo_name, work_branch, base_branch, sha_before,
-    )
-    if issue:
-        raise DeliveryError(_delivery_failure_message(issue, raw_result))
-    return delivered_pr
-
-
-def _with_pull_request_line(raw_result: str, delivered_pr: Optional[DeliveredPullRequest]) -> str:
-    """Ajoute l'URL de la PR réellement observée à la SUITE du résultat, sans nouveau séparateur de section :
-    le frontend ne découpe que sur « \\n\\n---\\n\\n## », donc la ligne reste dans la dernière section."""
-    if delivered_pr is None:
-        return raw_result
-    state_label = "fusionnée" if delivered_pr.merged else "ouverte"
-    return f"{raw_result}\n\n**Pull Request {state_label} :** {delivered_pr.html_url}"
-
-
-def _record_run_metrics(session: Session, db_entry: ExecutionHistory, state: execution_context.RunState) -> None:
-    if state.metrics is None:
-        return
-    db_entry.api_calls_count = state.metrics.api_calls_count
-    db_entry.rate_limit_hits = state.metrics.rate_limit_hits
-    db_entry.total_wait_time_seconds = state.metrics.total_wait_time
-    execution_persistence.persist_agent_runs(session, db_entry, state.metrics)
-
-
-def _commit_outcome(session: Session, db_entry: ExecutionHistory, conversation: Conversation) -> None:
-    now = datetime.now(timezone.utc)
-    db_entry.updated_at = now
-    conversation.updated_at = now
-    session.add(db_entry)
-    session.add(conversation)
-    session.commit()
-
-
-async def _persist_success(
-    session: Session, db_entry: ExecutionHistory, conversation: Conversation, raw_result: str, state: execution_context.RunState,
-) -> None:
-    execution_state.safe_refresh(session, db_entry, "succès")
-    db_entry.result = raw_result
-    db_entry.status = "success"
-    db_entry.qa_verdict = final_verdict(raw_result)
-    db_entry.current_step = None
-    _record_run_metrics(session, db_entry, state)
-    _commit_outcome(session, db_entry, conversation)
-    log.info(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).")
-    # Après le commit du succès, dans sa propre Session et au mieux : purger une ressource optionnelle ne
-    # doit jamais faire échouer (ni être validée par) le chemin d'une exécution réussie.
-    await asyncio.to_thread(execution_persistence.delete_checkpoints_for, db_entry.id)
-    execution_persistence.cleanup_persisted_agents(db_entry.id)
-
-
-async def _persist_success_safely(
-    db_entry_id: int, conversation_id: int, session: Session, db_entry: ExecutionHistory,
-    conversation: Conversation, raw_result: str, state: execution_context.RunState,
-) -> None:
-    """_persist_success, avec UNE reprise sur une Session neuve si la première tentative échoue (connexion
-    périmée après une longue exécution). Si la reprise échoue aussi, l'erreur est journalisée et la ligne
-    reste « running » : le balayage des orphelines la libérera, plutôt que de la déclarer en échec à tort."""
-    try:
-        await _persist_success(session, db_entry, conversation, raw_result, state)
-        return
-    except Exception as first_error:
-        log.warning(f"validation du succès impossible (execution_id={db_entry_id}), nouvel essai : "
-              f"{type(first_error).__name__}: {first_error}")
-    try:
-        with Session(database.engine) as fresh:
-            fresh_entry = fresh.get(ExecutionHistory, db_entry_id)
-            fresh_conversation = fresh.get(Conversation, conversation_id)
-            if fresh_entry is None or fresh_conversation is None:
-                return
-            await _persist_success(fresh, fresh_entry, fresh_conversation, raw_result, state)
-    except Exception as second_error:
-        log.error(f"succès non enregistré (execution_id={db_entry_id}) : {type(second_error).__name__}: "
-              f"{second_error}")
-        execution_persistence.cleanup_persisted_agents(db_entry_id)
-
-
-def _failure_detail(exc: BaseException, info: ErrorInfo) -> str:
-    """Message d'échec : cause lisible (sinon texte d'origine) suivie du détail technique tronqué — sans lui,
-    ni l'utilisateur ni la base ne diraient POURQUOI (ce que reproche un garde-fou, délai « retry after »)."""
-    technical = str(exc).strip()[:_TECHNICAL_DETAIL_CHARS]
-    reason = f"{info.message} (détail : {technical})" if info.message and technical else (info.message or technical)
-    if isinstance(exc, CrewStepError):
-        return f"Échec à l'étape {exc.step_index}/{exc.total_steps} ({exc.agent_role}) : {reason}"
-    return reason
-
-
-async def _persist_failure(
-    session: Session, db_entry: ExecutionHistory, conversation: Conversation, exc: BaseException, info: ErrorInfo,
-    data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], should_verify: bool,
-    state: execution_context.RunState,
-) -> None:
-    detail = _failure_detail(exc, info)
-    # Écritures GitHub partielles : l'échec peut venir après qu'une branche, des commits ou une PR ont DÉJÀ
-    # été créés. Constaté via l'API (jamais d'après un agent) pour que l'utilisateur sache quoi reprendre.
-    if should_verify and data.repo_owner and data.repo_name and work_branch:
-        detail += "\n\n" + await _partial_delivery_block(
-            data.repo_owner, data.repo_name, work_branch, base_branch or "main", state.sha_before,
-        )
-    execution_state.safe_refresh(session, db_entry, "échec")
-    # Travail déjà accompli : les sections des agents terminés sont dans `result` jusqu'à ce qu'il soit écrasé
-    # ci-dessous. Ajouté APRÈS le bloc GitHub : le frontend le retire en premier (splitPartialWork).
-    completed = [(name, text) for name, text in execution_context.parse_completed_agents(db_entry.result or "").items()]
-    partial = partial_work_block(completed)
-    if partial:
-        detail += "\n\n" + partial
-    # current_step : run_dynamic_crew l'efface sur l'échec de kickoff, mais pas sur un échec APRÈS lui
-    # (mise en forme, résumé) — d'où cet effacement ici.
-    db_entry.current_step = None
-    db_entry.status = "failed"
-    db_entry.result = detail
-    db_entry.error_code = info.code
-    db_entry.error_retryable = info.retryable
-    _record_run_metrics(session, db_entry, state)
-    _commit_outcome(session, db_entry, conversation)
-    execution_persistence.cleanup_persisted_agents(db_entry.id)
-
-
-async def _retry_outputs_if_transient(
-    exc: BaseException, info: ErrorInfo, db_entry_id: int, data: "WorkflowExecutionInput", auto_retry_allowed: bool,
-) -> Optional[dict[str, str]]:
-    """Sorties à réutiliser pour la seconde tentative AUTOMATIQUE (une seule), ou None (échec définitif).
-    Seulement après un échec transitoire survenu AVANT l'écriture du code : rien n'a été poussé sur GitHub et
-    les étapes réussies sont reprises. Plus tard (développement, QA, vérification), l'utilisateur relance :
-    il faudrait réécrire sur GitHub et repayer ces étapes. Sans le point de reprise de CHAQUE étape déjà
-    réussie, relancer les repayerait pour rien. L'attente se fait chez l'appelant, hors sémaphore."""
-    # isinstance (en plus de execution_context.failed_before_development) : `exc.step_index` ci-dessous ne dépend ainsi pas
-    # d'un couplage implicite entre ces deux conditions.
-    if not isinstance(exc, CrewStepError):
-        return None
-    if not (auto_retry_allowed and info.retryable and execution_context.failed_before_development(exc, data.target_workflow, data.scope)):
-        return None
-    saved = await asyncio.to_thread(execution_persistence.load_checkpoints_for, db_entry_id)
-    prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
-    if len(prefix) < exc.step_index - 1:
-        return None
-    log.info(f"execution_id={db_entry_id} : échec transitoire ({info.code}), nouvelle tentative "
-        f"automatique dans {AUTO_RETRY_DELAY_S}s.")
-    return {key: saved[key] for key in prefix}
-
-
-def _mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
-    """Dernier filet : l'ouverture de la Session ou les `get` initiaux ont échoué (pool épuisé, coupure base).
-    Sans lui la ligne resterait « running » pour toujours. Best-effort : si la base est injoignable, rien de
-    mieux n'est possible depuis ce process."""
-    log.warning(f"échec du démarrage de la tâche de fond pour db_entry={db_entry_id} : {exc}")
-    try:
-        with Session(database.engine) as session:
-            db_entry = session.get(ExecutionHistory, db_entry_id)
-            if db_entry is not None and db_entry.status == "running":
-                db_entry.status = "failed"
-                db_entry.result = f"Erreur interne au démarrage de l'exécution en tâche de fond : {exc}"
-                db_entry.error_code = ErrorCode.INTERNAL_ERROR
-                db_entry.error_retryable = False
-                db_entry.current_step = None
-                db_entry.updated_at = datetime.now(timezone.utc)
-                session.add(db_entry)
-                session.commit()
-    except Exception:
-        pass
-    finally:
-        execution_persistence.cleanup_persisted_agents(db_entry_id)
-
-
 async def _run_crew_and_persist(
     db_entry_id: int,
     conversation_id: int,
@@ -502,10 +284,10 @@ async def _run_crew_and_persist(
     """Lance le crew et persiste son issue (succès ou échec) en base ; tourne en tâche de fond (voir
     execute_workflow, qui répond « running » tout de suite) avec sa PROPRE Session — celle de la requête est
     fermée bien avant la fin d'une exécution de plusieurs minutes. Renvoie les sorties à reprendre quand une
-    seconde tentative automatique est demandée (voir _retry_outputs_if_transient), sinon None.
+    seconde tentative automatique est demandée (voir execution_outcomes.retry_outputs_if_transient), sinon None.
 
     Étapes : capturer le SHA de référence et instancier le crew → lancer (_run_crew) → vérifier la livraison
-    GitHub → persister le succès ; toute exception passe par le chemin d'échec (_persist_failure).
+    GitHub → persister le succès ; toute exception passe par le chemin d'échec (execution_outcomes.persist_failure).
     """
     state = execution_context.RunState()
     try:
@@ -551,17 +333,17 @@ async def _run_crew_and_persist(
                 # l'agent, jamais une exception). Vérifié seulement quand du code a été écrit (pas ANALYSE_ONLY).
                 delivered_pr = None
                 if should_verify_github_delivery:
-                    delivered_pr = await _verify_delivery(
+                    delivered_pr = await execution_outcomes.verify_delivery(
                         data, work_branch, normalized_base_branch, state.sha_before, raw_result)
-                raw_result = _with_pull_request_line(raw_result, delivered_pr)
+                raw_result = execution_outcomes.with_pull_request_line(raw_result, delivered_pr)
             except Exception as e:
                 memory_monitor.log_memory(f"execution_id={db_entry.id}, exception attrapée")
                 log.error("erreur CrewAI pendant l'exécution", exc_info=True)
                 info = classify_exception(e)
-                retry_outputs = await _retry_outputs_if_transient(e, info, db_entry.id, data, auto_retry_allowed)
+                retry_outputs = await execution_outcomes.retry_outputs_if_transient(e, info, db_entry.id, data, auto_retry_allowed)
                 if retry_outputs is not None:
                     return retry_outputs
-                await _persist_failure(
+                await execution_outcomes.persist_failure(
                     session, db_entry, conversation, e, info, data, work_branch, normalized_base_branch,
                     should_verify_github_delivery, state,
                 )
@@ -569,10 +351,10 @@ async def _run_crew_and_persist(
                 # Hors du try du crew : une erreur APRÈS le succès (connexion coupée par le pooler en pleine
                 # validation) ne doit jamais faire passer en échec une exécution dont la PR est déjà ouverte
                 # et vérifiée — elle proposerait un nouvel essai, donc du travail en double.
-                await _persist_success_safely(db_entry_id, conversation_id, session, db_entry, conversation, raw_result, state)
+                await execution_outcomes.persist_success_safely(db_entry_id, conversation_id, session, db_entry, conversation, raw_result, state)
         return None
     except Exception as e:
-        _mark_startup_failure(db_entry_id, e)
+        execution_outcomes.mark_startup_failure(db_entry_id, e)
         return None
 
 

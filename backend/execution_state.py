@@ -1,6 +1,7 @@
 """État partagé des exécutions de crew en tâche de fond : suivi des tâches, créneau d'exécution, battement de cœur et
 écritures d'avancement (étape courante, tentatives, échec interne)."""
 import asyncio
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -15,6 +16,9 @@ from logs import get_logger
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS
 
 log = get_logger("main")
+
+# Seconde tentative automatique (une seule) après un échec transitoire : délai avant de relancer.
+AUTO_RETRY_DELAY_S = float(os.getenv("AUTO_RETRY_DELAY_S", "90"))
 
 # Références fortes vers les exécutions de crew en tâche de fond (voir _execute_crew_and_persist,
 # lancée via asyncio.create_task dans execute_workflow) : un Task asyncio sans référence conservée

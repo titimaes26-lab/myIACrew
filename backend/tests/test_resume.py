@@ -432,7 +432,7 @@ def test_checkpoint_purge_failure_never_fails_a_successful_execution(engine, mon
 
 
 def test_cancellation_during_the_retry_wait_does_not_leave_the_row_running(engine, monkeypatch):
-    monkeypatch.setattr(main, "AUTO_RETRY_DELAY_S", 5)
+    monkeypatch.setattr(execution_state, "AUTO_RETRY_DELAY_S", 5)
     calls = []
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):

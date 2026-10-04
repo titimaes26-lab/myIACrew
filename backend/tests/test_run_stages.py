@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import main  # noqa: E402
+import execution_outcomes  # noqa: E402
 import execution_context  # noqa: E402
 import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
@@ -62,48 +63,48 @@ def test_capture_branch_sha_is_best_effort(monkeypatch):
 
 
 def test_delivery_failure_message_depends_on_the_kind_of_problem():
-    access = main._delivery_failure_message(SimpleNamespace(message="branche introuvable", likely_access_problem=True), "rapport")
-    other = main._delivery_failure_message(SimpleNamespace(message="PR manquante", likely_access_problem=False), "rapport")
+    access = execution_outcomes.delivery_failure_message(SimpleNamespace(message="branche introuvable", likely_access_problem=True), "rapport")
+    other = execution_outcomes.delivery_failure_message(SimpleNamespace(message="PR manquante", likely_access_problem=False), "rapport")
     assert "Vérifie la configuration GITHUB_TOKEN" in access and "branche introuvable" in access
     assert "n'a pas terminé sa procédure" in other and "PR manquante" in other
     assert "--- Rapport de l'agent (non vérifié sur GitHub) ---\nrapport" in access
-    long = main._delivery_failure_message(SimpleNamespace(message="m", likely_access_problem=True), "x" * 5000)
+    long = execution_outcomes.delivery_failure_message(SimpleNamespace(message="m", likely_access_problem=True), "x" * 5000)
     assert long.endswith("x" * 3000) and "x" * 3001 not in long
 
 
 def test_pull_request_line_is_appended_on_its_own_lines_without_a_section_separator():
     merged = SimpleNamespace(merged=True, html_url="https://github.com/o/r/pull/1")
     opened = SimpleNamespace(merged=False, html_url="https://github.com/o/r/pull/2")
-    out = main._with_pull_request_line("## Résumé\n\ntexte", merged)
+    out = execution_outcomes.with_pull_request_line("## Résumé\n\ntexte", merged)
     assert out == "## Résumé\n\ntexte\n\n**Pull Request fusionnée :** https://github.com/o/r/pull/1"
-    assert "**Pull Request ouverte :**" in main._with_pull_request_line("x", opened)
+    assert "**Pull Request ouverte :**" in execution_outcomes.with_pull_request_line("x", opened)
     assert "\n\n---\n\n## " not in out and "\\n" not in out
-    assert main._with_pull_request_line("x", None) == "x"
+    assert execution_outcomes.with_pull_request_line("x", None) == "x"
 
 
 def test_failure_detail_names_the_step_and_keeps_the_technical_text():
     error = CrewStepError(2, 5, "Architecte", RuntimeError("429 quota " + "z" * 600))
-    detail = main._failure_detail(error, classify_exception(error))
+    detail = execution_outcomes.failure_detail(error, classify_exception(error))
     assert detail.startswith("Échec à l'étape 2/5 (Architecte) : Le quota du modèle IA")
     assert "(détail : 429 quota" in detail and len(detail) < 800 + 3800
     # Régression : le rapport de l'agent joint à un échec de livraison ne doit pas être coupé à 500 caractères.
     # Même avec un constat très long, la fin du rapport (3000 caractères au plus) reste.
     issue = SimpleNamespace(message="m" * 600, likely_access_problem=False)
     report = "RAPPORT-FINAL " + "r" * 2900 + " FIN-DU-RAPPORT"
-    delivery = main.DeliveryError(main._delivery_failure_message(issue, report))
+    delivery = execution_outcomes.DeliveryError(execution_outcomes.delivery_failure_message(issue, report))
     info = classify_exception(delivery)
-    kept = main._failure_detail(delivery, info)
+    kept = execution_outcomes.failure_detail(delivery, info)
     assert info.code == "DELIVERY_FAILED" and "Rapport de l'agent" in kept and "FIN-DU-RAPPORT" in kept
     assert kept.startswith("Un repository GitHub cible")
     plain = RuntimeError("bug interne")
-    assert main._failure_detail(plain, classify_exception(plain)) == "bug interne"
+    assert execution_outcomes.failure_detail(plain, classify_exception(plain)) == "bug interne"
 
 
 def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
     # Régression : un « \\n » littéral (au lieu d'un saut de ligne) collait le bloc GitHub au message.
     async def fake_block(*args):
         return "--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé"
-    monkeypatch.setattr(main, "_partial_delivery_block", fake_block)
+    monkeypatch.setattr(execution_outcomes, "partial_delivery_block", fake_block)
 
     class Session:
         def add(self, *a):
@@ -124,7 +125,7 @@ def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
     monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
     monkeypatch.setattr(execution_persistence, "cleanup_persisted_agents", lambda *a: None)
     error = RuntimeError("boum")
-    asyncio.run(main._persist_failure(
+    asyncio.run(execution_outcomes.persist_failure(
         Session(), entry, conversation, error, classify_exception(error), _data(), "crewai/b", "main", True, execution_context.RunState(),
     ))
     assert entry.status == "failed" and entry.current_step is None
@@ -134,7 +135,7 @@ def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
 def _persist_failure_with_result(monkeypatch, previous_result):
     async def fake_block(*args):
         return "--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé"
-    monkeypatch.setattr(main, "_partial_delivery_block", fake_block)
+    monkeypatch.setattr(execution_outcomes, "partial_delivery_block", fake_block)
 
     class Session:
         def add(self, *a):
@@ -151,7 +152,7 @@ def _persist_failure_with_result(monkeypatch, previous_result):
     monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
     monkeypatch.setattr(execution_persistence, "cleanup_persisted_agents", lambda *a: None)
     error = RuntimeError("boum")
-    asyncio.run(main._persist_failure(
+    asyncio.run(execution_outcomes.persist_failure(
         Session(), entry, SimpleNamespace(updated_at=None), error, classify_exception(error), _data(), "crewai/b", "main",
         True, execution_context.RunState(),
     ))
@@ -231,7 +232,7 @@ def test_analysis_with_a_repo_target_still_learns_that_the_work_branch_exists(en
 def test_success_persistence_error_never_turns_a_delivered_run_into_a_failure(engine, monkeypatch):
     seen: list[dict] = []
     _fake_crew(monkeypatch, None, seen)
-    real = main._persist_success
+    real = execution_outcomes.persist_success
     calls = []
 
     async def flaky(session, db_entry, conversation, raw_result, state):
@@ -240,7 +241,7 @@ def test_success_persistence_error_never_turns_a_delivered_run_into_a_failure(en
             raise RuntimeError("connexion coupée par le pooler")
         await real(session, db_entry, conversation, raw_result, state)
 
-    monkeypatch.setattr(main, "_persist_success", flaky)
+    monkeypatch.setattr(execution_outcomes, "persist_success", flaky)
     execution_id, conversation_id = _new_execution(engine)
     asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
     with Session(engine) as db:
@@ -257,7 +258,7 @@ def test_when_success_persistence_fails_twice_the_row_is_not_declared_failed(eng
     async def broken(*args, **kwargs):
         raise RuntimeError("base injoignable")
 
-    monkeypatch.setattr(main, "_persist_success", broken)
+    monkeypatch.setattr(execution_outcomes, "persist_success", broken)
     execution_id, conversation_id = _new_execution(engine)
     asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
     with Session(engine) as db:
@@ -275,7 +276,7 @@ def test_persist_success_records_result_metrics_and_clears_the_step(engine, monk
         entry.current_step = "qa"
         state = execution_context.RunState(metrics=SimpleNamespace(api_calls_count=7, rate_limit_hits=1, total_wait_time=3.5))
         monkeypatch.setattr(execution_persistence, "persist_agent_runs", lambda *a: None)
-        asyncio.run(main._persist_success(db, entry, conversation, "texte final", state))
+        asyncio.run(execution_outcomes.persist_success(db, entry, conversation, "texte final", state))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, execution_id)
         assert (saved.status, saved.result, saved.current_step) == ("success", "texte final", None)
@@ -333,13 +334,13 @@ def test_retry_decision(monkeypatch, scenario, expected):
         error = _step_error(4)
     monkeypatch.setattr(execution_persistence, "load_checkpoints_for", lambda execution_id: saved)
     data = _data(target_workflow="DESIGN_AND_DEV")
-    result = asyncio.run(main._retry_outputs_if_transient(error, classify_exception(error), 1, data, allowed))
+    result = asyncio.run(execution_outcomes.retry_outputs_if_transient(error, classify_exception(error), 1, data, allowed))
     assert result == expected
 
 
 def test_mark_startup_failure_only_touches_a_running_row(engine):
     execution_id, _ = _new_execution(engine)
-    main._mark_startup_failure(execution_id, RuntimeError("pool épuisé"))
+    execution_outcomes.mark_startup_failure(execution_id, RuntimeError("pool épuisé"))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, execution_id)
         assert (saved.status, saved.error_code, saved.error_retryable) == ("failed", "INTERNAL_ERROR", False)
@@ -347,7 +348,7 @@ def test_mark_startup_failure_only_touches_a_running_row(engine):
         saved.status, saved.result = "success", "déjà livré"
         db.add(saved)
         db.commit()
-    main._mark_startup_failure(execution_id, RuntimeError("autre"))
+    execution_outcomes.mark_startup_failure(execution_id, RuntimeError("autre"))
     with Session(engine) as db:
         assert db.get(ExecutionHistory, execution_id).result == "déjà livré"  # jamais écrasée
 
