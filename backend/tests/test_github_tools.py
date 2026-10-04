@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 gt = pytest.importorskip("github_tools")
+import github_read  # noqa: E402
 import github_guards  # noqa: E402
 import github_client  # noqa: E402
 from github import GithubException  # noqa: E402
@@ -44,13 +45,13 @@ class FakeRepo:
 
 
 def test_decode_content_file_uses_direct_content_when_available():
-    content, error = gt._decode_content_file(FakeRepo(), FakeContentFile(decoded=b"hello\n"), "a.txt")
+    content, error = github_read._decode_content_file(FakeRepo(), FakeContentFile(decoded=b"hello\n"), "a.txt")
     assert content == "hello\n" and error is None
 
 
 def test_decode_content_file_falls_back_to_blob_above_1mb():
     repo = FakeRepo(blob_content="grand fichier\n".encode("utf-8"))
-    content, error = gt._decode_content_file(repo, FakeContentFile(decoded=None), "big.txt")
+    content, error = github_read._decode_content_file(repo, FakeContentFile(decoded=None), "big.txt")
     assert content == "grand fichier\n" and error is None
 
 
@@ -58,7 +59,7 @@ def test_decode_content_file_reports_non_utf8_as_present_unreadable():
     from analyst_output import PRESENT_UNREADABLE
 
     bad = FakeContentFile(decoded=b"\xff\xfe\x00\x01")
-    content, error = gt._decode_content_file(FakeRepo(), bad, "bin.dat")
+    content, error = github_read._decode_content_file(FakeRepo(), bad, "bin.dat")
     assert content is None and error.startswith(PRESENT_UNREADABLE)
 
 
@@ -66,7 +67,7 @@ def test_decode_content_file_blob_fetch_error_is_not_reported_as_unreadable():
     from analyst_output import PRESENT_UNREADABLE
 
     repo = FakeRepo(blob_error=RuntimeError("panne réseau"))
-    content, error = gt._decode_content_file(repo, FakeContentFile(decoded=None), "big.txt")
+    content, error = github_read._decode_content_file(repo, FakeContentFile(decoded=None), "big.txt")
     assert content is None and not error.startswith(PRESENT_UNREADABLE)
 
 
@@ -74,7 +75,7 @@ def test_github_read_file_uses_blob_fallback_for_large_files(monkeypatch):
     repo = FakeRepo(blob_content="grand fichier\n".encode("utf-8"))
     monkeypatch.setattr(github_client, "_get_repo", lambda owner, r: repo)
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
-    result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
+    result = github_read.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
     assert result == "grand fichier\n"
 
 
@@ -82,7 +83,7 @@ def test_github_read_file_does_not_double_prefix_blob_fallback_errors(monkeypatc
     repo = FakeRepo(blob_error=GithubException(403, {"message": "API rate limit exceeded"}, None))
     monkeypatch.setattr(github_client, "_get_repo", lambda owner, r: repo)
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
-    result = gt.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
+    result = github_read.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
     assert result.count("ERREUR") == 1 and "ERREUR : ERREUR" not in result
 
 
@@ -132,17 +133,17 @@ def counting(monkeypatch):
 
 
 def test_without_a_cache_every_read_goes_to_github(counting):
-    gt.github_read_file.func("o", "r", "package.json", "main")
-    gt.github_read_file.func("o", "r", "package.json", "main")
+    github_read.github_read_file.func("o", "r", "package.json", "main")
+    github_read.github_read_file.func("o", "r", "package.json", "main")
     assert counting.reads == 2 and len(counting.created) == 2
 
 
 def test_cache_serves_repeated_reads_and_builds_the_repo_once(counting):
     with github_client.track_read_cache():
-        first = gt.github_read_file.func("o", "r", "package.json", "main")
-        second = gt.github_read_file.func("o", "r", "package.json", "main")
-        gt.github_list_directory.func("o", "r", "", "main")
-        gt.github_list_directory.func("o", "r", "", "main")
+        first = github_read.github_read_file.func("o", "r", "package.json", "main")
+        second = github_read.github_read_file.func("o", "r", "package.json", "main")
+        github_read.github_list_directory.func("o", "r", "", "main")
+        github_read.github_list_directory.func("o", "r", "", "main")
     assert first == second == '{"name": "app"}'
     assert counting.reads == 2          # un fichier + un dossier, une fois chacun
     assert len(counting.created) == 1   # get_repo une seule fois pour toute l'exécution
@@ -150,32 +151,32 @@ def test_cache_serves_repeated_reads_and_builds_the_repo_once(counting):
 
 def test_cache_never_keeps_errors_and_is_isolated_per_execution(counting):
     with github_client.track_read_cache():
-        assert gt.github_read_file.func("o", "r", "absent.ts", "main").startswith("ERREUR_FICHIER_INEXISTANT")
-        gt.github_read_file.func("o", "r", "absent.ts", "main")
+        assert github_read.github_read_file.func("o", "r", "absent.ts", "main").startswith("ERREUR_FICHIER_INEXISTANT")
+        github_read.github_read_file.func("o", "r", "absent.ts", "main")
         assert counting.reads == 2      # l'erreur n'est pas mémorisée
-        gt.github_read_file.func("o", "r", "package.json", "main")
+        github_read.github_read_file.func("o", "r", "package.json", "main")
     with github_client.track_read_cache():
-        gt.github_read_file.func("o", "r", "package.json", "main")
+        github_read.github_read_file.func("o", "r", "package.json", "main")
     assert counting.reads == 4          # un nouveau contexte repart d'un cache vide
 
 
 def test_a_write_invalidates_only_the_written_branch(counting):
     counting.files[("work", "package.json")] = b'{"name": "work"}'
     with github_client.track_read_cache():
-        gt.github_read_file.func("o", "r", "package.json", "main")
-        gt.github_read_file.func("o", "r", "package.json", "work")
+        github_read.github_read_file.func("o", "r", "package.json", "main")
+        github_read.github_read_file.func("o", "r", "package.json", "work")
         reads = counting.reads
         github_client.invalidate_read_cache("o", "r", "work")
-        gt.github_read_file.func("o", "r", "package.json", "main")   # toujours en cache
+        github_read.github_read_file.func("o", "r", "package.json", "main")   # toujours en cache
         assert counting.reads == reads
-        gt.github_read_file.func("o", "r", "package.json", "work")   # relu après l'écriture
+        github_read.github_read_file.func("o", "r", "package.json", "work")   # relu après l'écriture
         assert counting.reads == reads + 1
 
 
 def test_delivery_checks_never_read_from_or_fill_the_file_cache(counting):
     with github_client.track_read_cache():
-        gt.make_file_fetcher("o", "r", "main")("package.json")
-        gt.make_dir_lister("o", "r", "main")
+        github_read.make_file_fetcher("o", "r", "main")("package.json")
+        github_read.make_dir_lister("o", "r", "main")
         cache = github_client._read_cache.get()
         assert cache["files"] == {} and cache["dirs"] == {}
 
@@ -214,8 +215,8 @@ def test_repo_snapshot_of_an_empty_repository_says_so(counting):
 def test_read_cache_counts_hits_and_reads_and_logs_them(counting, caplog):
     caplog.set_level("INFO", logger="myiacrew")
     with github_client.track_read_cache():
-        gt.github_read_file.func("o", "r", "package.json", "main")
-        gt.github_read_file.func("o", "r", "package.json", "main")
+        github_read.github_read_file.func("o", "r", "package.json", "main")
+        github_read.github_read_file.func("o", "r", "package.json", "main")
         stats = dict(github_client._read_cache.get()["stats"])
     assert stats == {"hits": 1, "reads": 1}
     assert "[CACHE LECTURE] hits=1 lectures=1" in caplog.text

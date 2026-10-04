@@ -2,6 +2,7 @@ import os
 import sys
 
 import pytest
+import github_read  # noqa: E402
 import github_client  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -435,7 +436,6 @@ def test_local_dir_listing_distinguishes_absent_directory_from_unknown(tmp_path)
 
 
 def test_github_dir_lister_maps_404_to_empty_and_other_errors_to_unknown(monkeypatch):
-    import github_tools as gt
     from github import GithubException
 
     class Item:
@@ -453,7 +453,7 @@ def test_github_dir_lister_maps_404_to_empty_and_other_errors_to_unknown(monkeyp
             raise GithubException(403, {}, {})
 
     monkeypatch.setattr(github_client, "_get_repo", lambda owner, repo: FakeRepo())
-    list_dir = gt.make_dir_lister("o", "r", "main")
+    list_dir = github_read.make_dir_lister("o", "r", "main")
     assert list_dir("src") == {"App.tsx"}
     assert list_dir("src/Header") == set() and list_dir("file.txt") == set()
     assert list_dir("quota") is None
