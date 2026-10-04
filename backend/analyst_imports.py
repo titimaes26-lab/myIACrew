@@ -91,7 +91,7 @@ def find_import_problems(
     scanned = {f["path"]: f["content"] for f in files}
     scanned.update({p: t for p, t in (import_scope or {}).items() if p in scanned})
     for path, content in scanned.items():
-        if analyst_blocks._extension(path) not in CODE_EXTENSIONS:
+        if analyst_blocks.extension(path) not in CODE_EXTENSIONS:
             continue
         imports = [(m.group(1), m.group(2), m.group(3)) for m in _IMPORT_FROM.finditer(content)]
         imports += [(None, None, m.group(1)) for m in _IMPORT_SIDE_EFFECT.finditer(content)]
@@ -114,7 +114,7 @@ def find_import_problems(
                         "(livre ce fichier, ou corrige le chemin)."
                     )
                 continue
-            if analyst_blocks._extension(resolved) not in CODE_EXTENSIONS:
+            if analyst_blocks.extension(resolved) not in CODE_EXTENSIONS:
                 continue
             exported, has_default, star = _exports_of(delivered[resolved])
             if star:

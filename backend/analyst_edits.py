@@ -39,7 +39,7 @@ def parse_edit_sections(text: str) -> tuple[dict[str, list[tuple[str, str]]], di
         broken[key] = reason
 
     for line in (text or "").splitlines():
-        stripped = analyst_blocks._undecorate(line.strip())
+        stripped = analyst_blocks.undecorate(line.strip())
         start = EDIT_START.match(stripped)
         if start and state == "out":
             if in_edit:

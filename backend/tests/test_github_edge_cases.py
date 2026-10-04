@@ -14,7 +14,7 @@ import github_guards  # noqa: E402
 import github_read  # noqa: E402
 import github_snapshot  # noqa: E402
 import github_write  # noqa: E402
-from analyst_output import PRESENT_UNREADABLE  # noqa: E402
+from analyst_blocks import PRESENT_UNREADABLE  # noqa: E402
 from github import GithubException  # noqa: E402
 
 BRANCH = "crewai/a"

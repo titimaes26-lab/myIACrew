@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 
-from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
+from analyst_blocks import FILE_ABSENT, PRESENT_UNREADABLE
 from analyst_blocks import normalize_path
 from github_guards import _reject_invalid_syntax
 

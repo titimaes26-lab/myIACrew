@@ -2,7 +2,7 @@
 import re
 from typing import List, Optional
 
-from analyst_output import NOT_DELIVERED_MARKER
+from analyst_blocks import NOT_DELIVERED_MARKER
 from analyst_blocks import FILE_BLOCKS, normalize_path
 from qa_report import QA_VERDICT
 

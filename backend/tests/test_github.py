@@ -62,7 +62,7 @@ def test_decode_content_file_falls_back_to_blob_above_1mb():
 
 
 def test_decode_content_file_reports_non_utf8_as_present_unreadable():
-    from analyst_output import PRESENT_UNREADABLE
+    from analyst_blocks import PRESENT_UNREADABLE
 
     bad = FakeContentFile(decoded=b"\xff\xfe\x00\x01")
     content, error = github_read._decode_content_file(FakeRepo(), bad, "bin.dat")
@@ -70,7 +70,7 @@ def test_decode_content_file_reports_non_utf8_as_present_unreadable():
 
 
 def test_decode_content_file_blob_fetch_error_is_not_reported_as_unreadable():
-    from analyst_output import PRESENT_UNREADABLE
+    from analyst_blocks import PRESENT_UNREADABLE
 
     repo = FakeRepo(blob_error=RuntimeError("panne réseau"))
     content, error = github_read._decode_content_file(repo, FakeContentFile(decoded=None), "big.txt")

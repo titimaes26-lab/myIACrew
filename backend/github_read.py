@@ -3,7 +3,7 @@ import base64
 from typing import Callable
 
 import github_client
-from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
+from analyst_blocks import FILE_ABSENT, PRESENT_UNREADABLE
 from crewai.tools import tool
 from github import GithubException
 from logs import get_logger

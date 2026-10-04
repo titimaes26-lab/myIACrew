@@ -19,7 +19,6 @@ balises, des modifications ciblées, des imports et des raccourcis vit dans anal
 analyst_imports et analyst_placeholders.
 """
 import difflib
-import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
@@ -29,28 +28,6 @@ import analyst_imports
 import analyst_placeholders
 from tools import check_syntax_content
 
-
-# Marqueur que diagnostic_task utilise pour signaler un fichier volontairement NON fourni (voir
-# tasksquestion.yaml) : une sortie sans aucun bloc de fichier mais qui l'emploie est un choix
-# assumé et documenté, pas un oubli de format.
-# "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") marque un fichier non
-# livré ; suivi de ": aucun" ("Fichiers NON réalisé(s) : aucune"), c'est l'inverse. Partagé avec
-# le repérage des fichiers retirés (crew_guardrails._withdrawn_paths) pour que les deux concordent.
-# "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
-NOT_DELIVERED_MARKER = re.compile(
-    r"non\s+r[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)"
-    r"(?!\s*(?:\(e?s\))?\s*:\s*(aucune?s?|n[ée]ant|none|rien)\b)",
-    re.IGNORECASE,
-)
-
-# Préfixe de l'erreur renvoyée par un fetch (voir build_delivery_report) pour un fichier qui
-# EXISTE mais dont le contenu n'a pas pu être lu (binaire, encodage) : à ne pas confondre avec
-# un fichier absent.
-PRESENT_UNREADABLE = "PRÉSENT_ILLISIBLE"
-# Préfixe réservé à une absence CONFIRMÉE (404, fichier introuvable) : toute autre erreur
-# (authentification, rate limit, panne réseau) rend le fichier NON VÉRIFIABLE, jamais ABSENT
-# — sinon une panne GitHub passerait pour une preuve outillée de livraison manquante.
-FILE_ABSENT = "ABSENT"
 
 MAX_DIFF_LINES_PER_FILE = 40
 MAX_PARALLEL_FETCHES = 8
@@ -111,7 +88,7 @@ def review_diagnostic_output(
         # "non réalisé" ne dispense du signalement que si la réponse ne contient AUCUN code :
         # des blocs de code hors balises sont un problème de format, pas un choix assumé.
         has_code = bool(analyst_blocks.ANY_FENCE.search(text or ""))
-        if has_code or not NOT_DELIVERED_MARKER.search(text or ""):
+        if has_code or not analyst_blocks.NOT_DELIVERED_MARKER.search(text or ""):
             problems.append(
                 "Aucun fichier exploitable trouvé : encadre CHAQUE fichier livré par une ligne "
                 "'<<<FICHIER: chemin/relatif/du/fichier>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
@@ -159,7 +136,7 @@ def build_delivery_report(
     """Rapport par fichier : présence réelle, identité avec la version de l'Analyste, syntaxe.
 
     fetch(path) -> (contenu, erreur) : contenu None en cas d'échec, avec l'erreur préfixée par
-    FILE_ABSENT (absence confirmée) ou PRESENT_UNREADABLE (présent mais illisible) ; toute autre
+    analyst_blocks.FILE_ABSENT (absence confirmée) ou analyst_blocks.PRESENT_UNREADABLE (présent mais illisible) ; toute autre
     erreur rend le fichier NON VÉRIFIABLE. write_rejections : {chemin: raison} des fichiers
     refusés au dernier commit — relus quand même (un autre outil a pu les écrire depuis), mais
     signalés NON LIVRÉS s'ils ne sont pas identiques à la version de l'Analyste. not_extracted :
@@ -193,13 +170,13 @@ def build_delivery_report(
                 f"{write_rejections[path]}"
             )
             continue
-        if actual is None and (error or "").startswith(PRESENT_UNREADABLE):
+        if actual is None and (error or "").startswith(analyst_blocks.PRESENT_UNREADABLE):
             rows.append(
                 f"### {path}\n- Présence : PRÉSENT [vérifié outil]\n"
                 f"- Contenu : NON VÉRIFIABLE, fichier illisible par l'outil — {error}"
             )
             continue
-        if actual is None and (error or "").startswith(FILE_ABSENT):
+        if actual is None and (error or "").startswith(analyst_blocks.FILE_ABSENT):
             rows.append(f"### {path}\n- Présence : ABSENT [vérifié outil] — {error}")
             continue
         if actual is None:

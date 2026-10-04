@@ -6,12 +6,12 @@ from pathlib import PurePosixPath
 # Un LLM entoure parfois la balise de mise en forme Markdown ("**<<<FICHIER: x>>>**",
 # "`<<<FIN_FICHIER>>>`", ou même de façon ASYMÉTRIQUE — "**<<<FICHIER: x>>>" sans clôture) :
 # seule l'OUVERTURE de la décoration est retirée avant de reconnaître la balise (voir
-# _undecorate) — jamais sa clôture, qu'il n'est pas nécessaire de chercher : FILE_START et
+# undecorate) — jamais sa clôture, qu'il n'est pas nécessaire de chercher : FILE_START et
 # FILE_END acceptent déjà n'importe quel texte après ">>>" (leur `.*$` final), qui absorbe donc
 # de lui-même une clôture "**"/"_"/backtick éventuelle, symétrique ou non, avec ou sans texte
 # après elle ("**<<<FICHIER: x>>>** (nouveau)"). Une ligne de contenu ordinaire qui commence par
 # hasard par ces caractères (ex: une clôture ``` de bloc de code) n'est jamais affectée : si le
-# retrait ne fait pas apparaître "<<<" en tête, _undecorate revient au texte d'origine.
+# retrait ne fait pas apparaître "<<<" en tête, undecorate revient au texte d'origine.
 _LEADING_DECORATION = re.compile(r"^(\*{1,3}|_{1,3}|`{1,3})")
 
 # Le texte éventuel après ">>>" ("(nouveau)") est ignoré plutôt que de faire rater la balise.
@@ -52,7 +52,7 @@ def normalize_path(raw: str) -> str | None:
         return None
     return path
 
-def _extension(path: str) -> str:
+def extension(path: str) -> str:
     """Extension du fichier, en minuscules, ou "" s'il n'en a pas. Un nom de fichier qui
     commence lui-même par un point ("`.env`", "`.gitignore`", "`.eslintrc`") n'a PAS
     d'extension pour autant : seul un point situé APRÈS ce préfixe compte ("`.eslintrc.json`"
@@ -61,7 +61,7 @@ def _extension(path: str) -> str:
     stem = basename.lstrip(".")
     return stem.rsplit(".", 1)[-1].lower() if "." in stem else ""
 
-def _undecorate(stripped: str) -> str:
+def undecorate(stripped: str) -> str:
     """Retire une mise en forme Markdown en tête de ligne SEULEMENT si le résultat révèle une
     balise ("**<<<FICHIER: x>>>**" ou même "**<<<FICHIER: x>>>" sans clôture deviennent
     "<<<FICHIER: x>>>[**]") : une clôture éventuelle, symétrique ou non, n'a jamais besoin d'être
@@ -152,7 +152,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
         broken[key] = reason
 
     for line in (text or "").splitlines():
-        stripped = _undecorate(line.strip())
+        stripped = undecorate(line.strip())
         start = FILE_START.match(stripped)
         if start:
             in_malformed = False
@@ -175,7 +175,7 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
             elif current_path:
                 if marker_indented:
                     body = textwrap.dedent("\n".join(body)).split("\n")
-                lines, problem = _strip_outer_fence(body, _extension(current_path) in PROSE_EXTENSIONS)
+                lines, problem = _strip_outer_fence(body, extension(current_path) in PROSE_EXTENSIONS)
                 if problem:
                     mark_broken(current_path, current_raw, problem)
                 else:
@@ -202,3 +202,26 @@ def parse_file_sections(text: str) -> tuple[list[dict], dict[str, str]]:
     if current_raw or current_path:
         mark_broken(current_path, current_raw, "balise <<<FIN_FICHIER>>> manquante : contenu probablement tronqué")
     return [{"path": p, "content": c} for p, c in files.items()], broken
+
+# Marqueur que diagnostic_task utilise pour signaler un fichier volontairement NON fourni (voir
+# tasksquestion.yaml) : une sortie sans aucun bloc de fichier mais qui l'emploie est un choix
+# assumé et documenté, pas un oubli de format.
+# "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") marque un fichier non
+# livré ; suivi de ": aucun" ("Fichiers NON réalisé(s) : aucune"), c'est l'inverse. Partagé avec
+# le repérage des fichiers retirés (crew_guardrails._withdrawn_paths) pour que les deux concordent.
+# "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
+NOT_DELIVERED_MARKER = re.compile(
+    r"non\s+r[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)"
+    r"(?!\s*(?:\(e?s\))?\s*:\s*(aucune?s?|n[ée]ant|none|rien)\b)",
+    re.IGNORECASE,
+)
+
+# Préfixe de l'erreur renvoyée par un fetch (voir build_delivery_report) pour un fichier qui
+# EXISTE mais dont le contenu n'a pas pu être lu (binaire, encodage) : à ne pas confondre avec
+# un fichier absent.
+PRESENT_UNREADABLE = "PRÉSENT_ILLISIBLE"
+
+# Préfixe réservé à une absence CONFIRMÉE (404, fichier introuvable) : toute autre erreur
+# (authentification, rate limit, panne réseau) rend le fichier NON VÉRIFIABLE, jamais ABSENT
+# — sinon une panne GitHub passerait pour une preuve outillée de livraison manquante.
+FILE_ABSENT = "ABSENT"

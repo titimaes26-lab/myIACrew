@@ -47,7 +47,7 @@ def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
     """(chemin, numéro de ligne, ligne) pour chaque commentaire trahissant un fichier incomplet."""
     issues = []
     for f in files:
-        ext = analyst_blocks._extension(f["path"])
+        ext = analyst_blocks.extension(f["path"])
         if ext in analyst_blocks.PROSE_EXTENSIONS:
             continue
         # Sans extension du tout (".env", ".gitignore", "Dockerfile", "Makefile"...) : ces

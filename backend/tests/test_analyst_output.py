@@ -3,7 +3,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, build_delivery_report, review_diagnostic_output
+from analyst_output import build_delivery_report, review_diagnostic_output
+from analyst_blocks import FILE_ABSENT, PRESENT_UNREADABLE
 from analyst_placeholders import find_placeholders
 from analyst_imports import find_import_problems
 from analyst_edits import apply_edits, parse_edit_sections
@@ -124,10 +125,10 @@ def test_legitimate_comments_are_not_placeholders():
 def test_dotfiles_without_real_extension_are_scanned_as_hash_comments():
     # ".env", ".gitignore" etc. commencent par un point qui n'est PAS un séparateur d'extension :
     # ce sont des fichiers sans extension, et ils utilisent quasi toujours "#" comme commentaire.
-    from analyst_blocks import _extension
+    from analyst_blocks import extension
 
-    assert _extension(".env") == ""
-    assert _extension(".eslintrc.json") == "json"
+    assert extension(".env") == ""
+    assert extension(".eslintrc.json") == "json"
     files = [{"path": ".env", "content": "API_KEY=1\n# ... reste inchangé\n"}]
     assert [p for p, _, _ in find_placeholders(files)] == [".env"]
 
@@ -302,7 +303,7 @@ def test_backtick_decorated_markers_are_recognized():
 
 
 def test_normal_bold_content_line_is_not_treated_as_a_marker():
-    # _undecorate ne s'applique qu'à la RECONNAISSANCE de balise : le contenu réel du fichier
+    # undecorate ne s'applique qu'à la RECONNAISSANCE de balise : le contenu réel du fichier
     # (une ligne en gras ordinaire) reste inchangé.
     text = "<<<FICHIER: a.py>>>\n**bold content**\n<<<FIN_FICHIER>>>\n"
     assert parse_file_sections(text) == ([{"path": "a.py", "content": "**bold content**\n"}], {})
