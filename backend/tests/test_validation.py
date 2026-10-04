@@ -223,6 +223,29 @@ def test_rate_limited_launch_creates_no_conversation_and_accepted_launch_is_jour
         assert len(db.exec(select(ExecutionLaunch)).all()) == 1
 
 
+def test_double_send_in_the_same_conversation_keeps_the_precise_409(engine, monkeypatch):
+    monkeypatch.setattr("limits.MAX_RUNNING_PER_USER", 1)
+
+    async def fake_run(*args, **kwargs):
+        return None
+    monkeypatch.setattr(main, "_execute_crew_and_persist", fake_run)
+
+    def launch(conversation_id=None):
+        data = main.WorkflowExecutionInput(user_request="x", target_workflow="BUGFIX", conversation_id=conversation_id)
+
+        async def scenario():
+            with Session(engine) as db:
+                return await main.execute_workflow(data=data, session=db, user={"id": "u1"})
+        return asyncio.run(scenario())
+
+    first = launch()
+    with pytest.raises(main.HTTPException) as err:
+        launch(first["conversation_id"])           # même conversation : conflit précis, pas le plafond par compte
+    assert err.value.status_code == 409 and "cette conversation" in err.value.detail
+    with Session(engine) as db:
+        assert len(db.exec(select(ExecutionLaunch)).all()) == 1
+
+
 def test_workflows_follow_the_qualification_literal():
     from typing import get_args
     from crewquestion import RequestType

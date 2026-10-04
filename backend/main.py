@@ -1429,6 +1429,28 @@ _CONVERSATION_BUSY_MESSAGE = (
 )
 
 
+def _ensure_conversation_idle(session: Session, conversation_id: int) -> str:
+    """Refuse (409) si une exécution est déjà en cours sur cette conversation ; renvoie sinon le rappel de ses tours.
+
+    Tours précédents : donnent aux agents un rappel de ce qui a déjà été demandé/livré, et permettent de continuer sur
+    la même branche de travail plutôt que d'en ouvrir une nouvelle déconnectée à chaque message. Trois requêtes ciblées
+    (tours en cours, derniers tours, branche) plutôt que de relire toute la conversation avec le résultat de chaque tour.
+
+    Empêche deux exécutions concurrentes sur la même conversation. Nécessaire depuis la réutilisation du work_branch
+    entre tours : sans ce garde-fou, deux requêtes parallèles écriraient toutes les deux sur la même branche via
+    github_write_file/github_edit_file, qui se basent sur le SHA du fichier pour détecter les conflits (optimistic
+    concurrency) — l'une des deux échouerait avec un SHA obsolète au lieu d'une erreur claire. Un tour resté bloqué à
+    "running" (crash serveur en cours d'exécution) est balayé (orphans.sweep_stale_executions) s'il n'a plus donné signe
+    de vie : il ne doit pas bloquer la conversation pour toujours."""
+    running_ids, conversation_context = _prior_turns(session, conversation_id)
+    if running_ids and sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation_id):
+        session.expire_all()
+        running_ids, conversation_context = _prior_turns(session, conversation_id)
+    if running_ids:
+        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
+    return conversation_context
+
+
 @app.post("/api/execute")
 async def execute_workflow(
     data: WorkflowExecutionInput,
@@ -1478,6 +1500,10 @@ async def execute_workflow(
             )
             raise AppError(status_code, code, problem.message, retryable)
 
+    # Conversation existante : son conflit (double clic, deux onglets) est testé AVANT les plafonds, pour garder le message
+    # précis « déjà en cours pour cette conversation ». Rien n'est écrit à ce stade.
+    conversation_context = _ensure_conversation_idle(session, conversation.id) if conversation is not None else ""
+
     # Plafonds par utilisateur (exécutions simultanées, exécutions par heure) : un compte ne sature pas les autres.
     # AVANT toute écriture : un refus ne laisse pas de conversation vide. Quelques lectures légères en base (balayage
     # compris), comme les autres accès à `session` de ce point d'accès.
@@ -1491,29 +1517,6 @@ async def execute_workflow(
         session.add(conversation)
         session.commit()
         session.refresh(conversation)
-
-    # Tours précédents de cette conversation : donnent aux agents un rappel de ce qui a
-    # déjà été demandé/livré, et permettent de continuer sur la même branche de travail
-    # plutôt que d'en ouvrir une nouvelle déconnectée à chaque message (voir plus bas).
-    # Trois requêtes ciblées (tours en cours, derniers tours, branche) plutôt que de relire toute la conversation
-    # avec le texte complet de chaque résultat à chaque envoi.
-    running_ids, conversation_context = _prior_turns(session, conversation.id)
-
-    # Empêche deux exécutions concurrentes sur la même conversation. Nécessaire depuis la
-    # réutilisation du work_branch entre tours (voir plus bas) : sans ce garde-fou, deux
-    # requêtes lancées en parallèle sur la même conversation (ex: double clic, deux onglets)
-    # écriraient toutes les deux sur la même branche via github_write_file/github_edit_file,
-    # qui se basent sur le SHA du fichier pour détecter les conflits (optimistic concurrency) —
-    # l'une des deux échouerait alors avec un SHA obsolète au lieu d'une erreur claire.
-    # Un tour resté bloqué à "running" (crash serveur en cours d'exécution, qui saute le bloc except)
-    # est balayé ci-dessous (orphans.sweep_stale_executions) s'il n'a plus donné signe de vie.
-    if running_ids:
-        # Une exécution morte (crash, redéploiement) ne doit pas bloquer la conversation pour toujours.
-        if sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation.id):
-            session.expire_all()
-            running_ids, conversation_context = _prior_turns(session, conversation.id)
-    if running_ids:
-        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
 
     # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
     resume_outputs = _resumable_outputs(session, data, user.get("id"), conversation.id)
