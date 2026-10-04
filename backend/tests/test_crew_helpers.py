@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
+import crew_guardrails  # noqa: E402
 import crew_workspace  # noqa: E402
 import crew_llms  # noqa: E402
 import qualification  # noqa: E402
@@ -49,7 +50,7 @@ def test_qa_verdict_variants(text, expected):
 
 
 def test_qa_guardrail_adds_missing_verdict():
-    ok, out = cq._qa_verdict_guardrail(output("rapport sans conclusion"))
+    ok, out = crew_guardrails._qa_verdict_guardrail(output("rapport sans conclusion"))
     assert ok and "NON FOURNI" in out
 
 
@@ -144,51 +145,51 @@ h
 
 
 def test_design_spec_issues_complete_spec_has_none():
-    assert cq._design_spec_issues(GOOD_SPEC) == []
+    assert crew_guardrails._design_spec_issues(GOOD_SPEC) == []
 
 
 def test_design_spec_issues_flags_must_without_criterion():
-    issues = cq._design_spec_issues(GOOD_SPEC.replace("- F2 [Should] Filtrer", "- F2 [Must] Filtrer"))
+    issues = crew_guardrails._design_spec_issues(GOOD_SPEC.replace("- F2 [Should] Filtrer", "- F2 [Must] Filtrer"))
     assert any("F2 [Must]" in i for i in issues) and not any("F1 [Must]" in i for i in issues)
 
 
 def test_design_spec_issues_flags_vague_criterion_but_not_measurable_one():
-    vague = cq._design_spec_issues(GOOD_SPEC + "- AC-F1-2 Alors l'écran s'affiche rapidement\n")
+    vague = crew_guardrails._design_spec_issues(GOOD_SPEC + "- AC-F1-2 Alors l'écran s'affiche rapidement\n")
     assert any("Critère vague" in i for i in vague)
-    assert cq._design_spec_issues(GOOD_SPEC + "- AC-F1-3 Alors l'écran s'affiche rapidement en moins de 2 s\n") == []
+    assert crew_guardrails._design_spec_issues(GOOD_SPEC + "- AC-F1-3 Alors l'écran s'affiche rapidement en moins de 2 s\n") == []
 
 
 def test_design_spec_issues_flags_missing_sections():
-    issues = cq._design_spec_issues("## Besoin\nseulement ça")
+    issues = crew_guardrails._design_spec_issues("## Besoin\nseulement ça")
     assert any("Utilisateurs" in i for i in issues) and any("Hypothèses retenues" in i for i in issues)
 
 
 def test_design_spec_issues_accepts_typographic_apostrophe():
-    assert cq._design_spec_issues(GOOD_SPEC.replace("d'acceptation", "d\u2019acceptation")) == []
+    assert crew_guardrails._design_spec_issues(GOOD_SPEC.replace("d'acceptation", "d\u2019acceptation")) == []
 
 
 def test_design_spec_issues_accepts_alternative_id_formats():
     spec = GOOD_SPEC.replace("- F1 [Must] Ajouter une tâche", "- [Must] **F1** Ajouter une tâche").replace("AC-F1-1", "AC-F1.1")
-    assert cq._design_spec_issues(spec) == []
-    missing = cq._design_spec_issues(spec.replace("AC-F1.1", "critère"))
+    assert crew_guardrails._design_spec_issues(spec) == []
+    missing = crew_guardrails._design_spec_issues(spec.replace("AC-F1.1", "critère"))
     assert any("F1 [Must]" in i for i in missing)
 
 
 def test_design_spec_issues_context_digit_does_not_excuse_vague_outcome():
     spec = GOOD_SPEC + "- AC-F1-2 Étant donné 3 tâches / Quand je filtre / Alors l'affichage est fluide\n"
-    assert any("Critère vague" in i for i in cq._design_spec_issues(spec))
+    assert any("Critère vague" in i for i in crew_guardrails._design_spec_issues(spec))
     ok = GOOD_SPEC + "- AC-F1-2 Étant donné 3 tâches / Quand je filtre / Alors l'affichage prend moins de 200 ms\n"
-    assert cq._design_spec_issues(ok) == []
+    assert crew_guardrails._design_spec_issues(ok) == []
 
 
 def test_design_spec_guardrail_never_fails_and_annotates_only_on_issues():
     class Out:
         raw = GOOD_SPEC
     out = Out()
-    ok, result = cq._design_spec_guardrail(out)
+    ok, result = crew_guardrails._design_spec_guardrail(out)
     assert ok is True and result is out
     Out.raw = "## Besoin\nx"
-    ok, result = cq._design_spec_guardrail(Out())
+    ok, result = crew_guardrails._design_spec_guardrail(Out())
     assert ok is True and "## Contrôle automatique des specs" in result
 
 
@@ -227,7 +228,7 @@ def test_architecture_prompt_stays_short_and_still_names_every_required_section(
     task = tasks["architecture_task"]
     assert len(task["description"].split()) <= 520
     text = task["description"] + task["expected_output"]
-    for heading in cq.ARCHITECTURE_REQUIRED_HEADINGS:
+    for heading in crew_guardrails.ARCHITECTURE_REQUIRED_HEADINGS:
         assert heading in text, heading
     assert "Ne propose jamais un paquet déjà couvert" in task["description"] and "200 lignes" in task["description"]
     assert "signatures seules" in task["description"] and "=== Données de cette demande ===" in task["description"]
@@ -276,19 +277,19 @@ def test_architect_output_cap_is_configurable_with_a_safe_default(monkeypatch, e
 
 def test_architecture_issues_flag_a_plan_cut_by_the_token_limit():
     empty_last = GOOD_ARCH.replace("- Taille : découper\n", "")
-    assert any("tronquée" in i for i in cq._architecture_issues(empty_last))
+    assert any("tronquée" in i for i in crew_guardrails._architecture_issues(empty_last))
     cut = GOOD_ARCH.rstrip() + "\n- Dépendance : paquet,"
-    assert any("tronquée" in i for i in cq._architecture_issues(cut))
+    assert any("tronquée" in i for i in crew_guardrails._architecture_issues(cut))
     unclosed = GOOD_ARCH + "```ts\nexport const x ="
-    assert any("tronquée" in i for i in cq._architecture_issues(unclosed))
+    assert any("tronquée" in i for i in crew_guardrails._architecture_issues(unclosed))
 
 
 def test_architecture_issues_complete_plan_has_none():
-    assert cq._architecture_issues(GOOD_ARCH) == []
+    assert crew_guardrails._architecture_issues(GOOD_ARCH) == []
 
 
 def test_architecture_issues_flags_missing_sections_and_empty_file_list():
-    issues = cq._architecture_issues("## Existant\nrien")
+    issues = crew_guardrails._architecture_issues("## Existant\nrien")
     assert any("Cible" in i for i in issues) and any("Aucune ligne" in i for i in issues)
 
 
@@ -298,7 +299,7 @@ def test_architecture_issues_flags_malformed_duplicate_and_outside_paths():
         "- MODIFIER src/hooks/useCart.ts : logique du panier\n- CRÉER src/App.tsx : doublon\n"
         "- CRÉER ../evil.ts : hors projet\n- CRÉER src/x.ts sans rôle",
     )
-    issues = cq._architecture_issues(plan)
+    issues = crew_guardrails._architecture_issues(plan)
     assert any("plusieurs fois" in i for i in issues)
     assert any("hors du projet" in i for i in issues)
     assert any("mal formée" in i for i in issues)
@@ -306,7 +307,7 @@ def test_architecture_issues_flags_malformed_duplicate_and_outside_paths():
 
 def test_architecture_issues_flags_code_file_without_contract():
     plan = GOOD_ARCH.replace("- MODIFIER src/hooks/useCart.ts : logique du panier", "- MODIFIER src/hooks/useCart.ts : logique du panier\n- CRÉER src/utils/format.ts : formats")
-    issues = cq._architecture_issues(plan)
+    issues = crew_guardrails._architecture_issues(plan)
     assert any("src/utils/format.ts n'a pas de contrat" in i for i in issues)
     assert not any("useCart" in i for i in issues)
 
@@ -315,31 +316,31 @@ def test_architecture_guardrail_never_fails_and_annotates_only_on_issues():
     class Out:
         raw = GOOD_ARCH
     out = Out()
-    ok, result = cq._architecture_guardrail(out)
+    ok, result = crew_guardrails._architecture_guardrail(out)
     assert ok is True and result is out
     Out.raw = "## Existant\nrien"
-    ok, result = cq._architecture_guardrail(Out())
+    ok, result = crew_guardrails._architecture_guardrail(Out())
     assert ok is True and "## Contrôle automatique de l'architecture" in result
 
 
 def test_architecture_issues_ignores_prose_bullets_outside_file_list():
     plan = GOOD_ARCH.replace("src/ avec composants.", "- Modifier App.tsx pour brancher le panier\n- Créer un hook useCart : état du panier")
-    assert cq._architecture_issues(plan) == []
+    assert crew_guardrails._architecture_issues(plan) == []
 
 
 def test_architecture_issues_contract_section_survives_later_mentions_of_contrat():
     plan = GOOD_ARCH + "- Un contrat d'API flou entre composants : figer les props\n"
-    assert cq._architecture_issues(plan) == []
+    assert crew_guardrails._architecture_issues(plan) == []
 
 
 def test_architecture_issues_contract_match_is_exact_path_not_substring():
     plan = GOOD_ARCH.replace("src/hooks/useCart.ts : export", "src/hooks/useCart.tsx : export")
-    assert any("src/hooks/useCart.ts n'a pas de contrat" in i for i in cq._architecture_issues(plan))
+    assert any("src/hooks/useCart.ts n'a pas de contrat" in i for i in crew_guardrails._architecture_issues(plan))
 
 
 def test_architecture_issues_accepts_bold_and_backticked_entries():
     plan = GOOD_ARCH.replace("- CRÉER src/App.tsx : composant racine", "- **CRÉER** `src/App.tsx` : composant racine")
-    assert cq._architecture_issues(plan) == []
+    assert crew_guardrails._architecture_issues(plan) == []
 
 
 def test_architecture_task_has_a_non_retrying_guardrail():
@@ -561,7 +562,7 @@ def test_retry_that_withdraws_a_file_removes_it():
     crew._diagnostic_guardrail(retry)
     assert sorted(f["path"] for f in crew._analyst_files) == ["src/b.ts", "src/new.ts"]
     assert "src/old.ts" in crew._not_extracted
-    assert not cq._withdrawn_paths("Fichiers src/b.ts — NON réalisés : aucun", ["src/b.ts"])
+    assert not crew_guardrails._withdrawn_paths("Fichiers src/b.ts — NON réalisés : aucun", ["src/b.ts"])
 
 
 def test_retry_message_repeats_the_architecture_context():
@@ -648,7 +649,7 @@ def test_local_workspace_is_per_conversation_even_without_branch(monkeypatch, tm
     ("src/a.ts réalisé src/b.ts NON réalisé", "src/b.ts", True),
 ])
 def test_is_withdrawn(text, path, expected):
-    assert (path in cq._withdrawn_paths(text, [path])) is expected
+    assert (path in crew_guardrails._withdrawn_paths(text, [path])) is expected
 
 
 def test_is_withdrawn_with_full_candidate_set():
@@ -656,24 +657,24 @@ def test_is_withdrawn_with_full_candidate_set():
     # (voir _diagnostic_guardrail : list(merged) + sorted(delivered_now)) — ces deux cas de
     # liste ne peuvent être jugés correctement qu'avec les DEUX chemins comme candidats : un
     # chemin absent des candidats ne peut pas être "traversé" pour continuer la liste.
-    withdrawn = cq._withdrawn_paths(
+    withdrawn = crew_guardrails._withdrawn_paths(
         "Réalisé : src/a.ts, src/c.ts. NON réalisé : src/b.ts (trop complexe).",
         ["src/a.ts", "src/b.ts", "src/c.ts"],
     )
     assert withdrawn == {"src/b.ts"}
-    withdrawn = cq._withdrawn_paths("NON réalisé : src/b.ts, src/d.ts (trop gros)", ["src/b.ts", "src/d.ts"])
+    withdrawn = crew_guardrails._withdrawn_paths("NON réalisé : src/b.ts, src/d.ts (trop gros)", ["src/b.ts", "src/d.ts"])
     assert withdrawn == {"src/b.ts", "src/d.ts"}
     # Liste à la virgule après un mot positif dont le DERNIER élément est en réalité la cible
     # de la mention négative qui le suit directement (avec ou sans virgule) : seul le test avec
     # les DEUX chemins candidats exerce vraiment le "regard en avant" de _consume_adjacent_paths
     # (un seul candidat laisserait la recherche brute sur `clause` donner la même réponse pour
     # une mauvaise raison, sans jamais passer par ce mécanisme).
-    assert cq._withdrawn_paths("Réalisé : src/a.ts, src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
-    assert cq._withdrawn_paths("Réalisé : src/a.ts src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
+    assert crew_guardrails._withdrawn_paths("Réalisé : src/a.ts, src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
+    assert crew_guardrails._withdrawn_paths("Réalisé : src/a.ts src/b.ts NON réalisé", ["src/a.ts", "src/b.ts"]) == {"src/b.ts"}
     # Un SEUL chemin (pas de liste à la virgule) suivi directement d'une mention négative : le
     # garde-fou du "regard en avant" doit s'appliquer dès le 1er chemin, pas seulement à partir
     # du 2e élément d'une liste.
-    assert cq._withdrawn_paths("Réalisé : src/a.ts NON réalisé", ["src/a.ts"]) == {"src/a.ts"}
+    assert crew_guardrails._withdrawn_paths("Réalisé : src/a.ts NON réalisé", ["src/a.ts"]) == {"src/a.ts"}
 
 
 @pytest.mark.parametrize("text", [

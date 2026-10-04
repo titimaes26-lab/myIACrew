@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
+import crew_guardrails  # noqa: E402
 from analyst_output import build_delivery_report  # noqa: E402
 from qa_report import (  # noqa: E402
     has_blocking_problems,
@@ -133,18 +134,18 @@ PLAN = """## Fichiers à créer ou modifier
 
 
 def test_planned_paths_reads_only_the_files_section():
-    assert cq._planned_paths(PLAN) == {"src/App.tsx", "src/hooks/useCart.ts"}
-    assert cq._planned_paths("") == set()
+    assert crew_guardrails._planned_paths(PLAN) == {"src/App.tsx", "src/hooks/useCart.ts"}
+    assert crew_guardrails._planned_paths("") == set()
 
 
 def test_scope_notes_flag_unplanned_and_missing_files_and_stay_silent_without_plan():
     planned = {"src/App.tsx", "src/hooks/useCart.ts"}
-    notes = cq._scope_notes(planned, {"src/App.tsx", "src/extra.ts"}, set())
+    notes = crew_guardrails._scope_notes(planned, {"src/App.tsx", "src/extra.ts"}, set())
     assert any("HORS du plan" in n and "src/extra.ts" in n for n in notes)
     assert any("PRÉVUS" in n and "src/hooks/useCart.ts" in n for n in notes)
-    assert cq._scope_notes(planned, {"src/App.tsx", "src/hooks/useCart.ts"}, set()) == []
-    assert cq._scope_notes(planned, {"src/App.tsx"}, {"src/hooks/useCart.ts"}) == []  # déjà signalé non livré
-    assert cq._scope_notes(set(), {"a.ts"}, set()) == []
+    assert crew_guardrails._scope_notes(planned, {"src/App.tsx", "src/hooks/useCart.ts"}, set()) == []
+    assert crew_guardrails._scope_notes(planned, {"src/App.tsx"}, {"src/hooks/useCart.ts"}) == []  # déjà signalé non livré
+    assert crew_guardrails._scope_notes(set(), {"a.ts"}, set()) == []
 
 
 # --- Guardrail et outil de vérification du crew -----------------------------------------------
@@ -283,5 +284,5 @@ def test_run_state_resets_the_architecture_reference():
 def test_dependency_files_are_never_out_of_plan():
     planned = {"src/App.tsx"}
     delivered = {"src/App.tsx", "package.json", "frontend/package-lock.json", "src/extra.ts"}
-    notes = cq._scope_notes(planned, delivered, set())
+    notes = crew_guardrails._scope_notes(planned, delivered, set())
     assert len(notes) == 1 and "src/extra.ts" in notes[0] and "package" not in notes[0]
