@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import main  # noqa: E402
+import database  # noqa: E402
 from auth import get_current_user  # noqa: E402
 from database import ExecutionHistory  # noqa: E402
 from errors import AppError, DeliveryError, ErrorCode, classify_exception, http_status_for  # noqa: E402
@@ -52,7 +53,7 @@ def client(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=__import__("sqlalchemy.pool", fromlist=["StaticPool"]).StaticPool)
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(database, "engine", engine)
     main.app.dependency_overrides[get_current_user] = lambda: {"id": "u1"}
     main.app.dependency_overrides[main.get_session] = lambda: Session(engine)
 
@@ -115,7 +116,7 @@ def test_failed_execution_with_quota_error_stores_a_retryable_code(monkeypatch):
     from crewquestion import CrewStepError
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(database, "engine", engine)
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         raise CrewStepError(2, 5, "Architecte ", RuntimeError("429 RESOURCE_EXHAUSTED"))
@@ -217,7 +218,7 @@ def test_endpoints_serve_requests_from_the_thread_pool(client):
 def test_deleting_someone_elses_execution_is_logged_without_user_ids_or_request_text(client, caplog):
     from database import ExecutionHistory
     caplog.set_level("DEBUG", logger="myiacrew")
-    with Session(main.engine) as db:
+    with Session(database.engine) as db:
         other = ExecutionHistory(user_request="DEMANDE-CONFIDENTIELLE", workflow="BUGFIX", status="success", user_id="u2")
         db.add(other)
         db.commit()
@@ -231,7 +232,7 @@ def test_deleting_someone_elses_execution_is_logged_without_user_ids_or_request_
 def test_a_successful_deletion_logs_the_id_only(client, caplog):
     from database import ExecutionHistory
     caplog.set_level("DEBUG", logger="myiacrew")
-    with Session(main.engine) as db:
+    with Session(database.engine) as db:
         mine = ExecutionHistory(user_request="MA-DEMANDE-PRIVÉE", workflow="BUGFIX", status="success", user_id="u1")
         db.add(mine)
         db.commit()
@@ -245,7 +246,7 @@ def test_a_successful_deletion_logs_the_id_only(client, caplog):
 
 def _add_execution(user="u1", result="RÉSULTAT-VOLUMINEUX " * 50, **fields):
     from database import ExecutionHistory
-    with Session(main.engine) as db:
+    with Session(database.engine) as db:
         entry = ExecutionHistory(
             user_request="demande", workflow="FEATURE", status="success", user_id=user, result=result,
             clarifications="PRÉCISIONS", conversation_id=7, **fields,
@@ -275,11 +276,11 @@ def test_history_list_does_not_even_read_the_result_column_from_the_database(cli
     def record(conn, cursor, statement, parameters, context, executemany):
         statements.append(statement)
 
-    event.listen(main.engine, "before_cursor_execute", record)
+    event.listen(database.engine, "before_cursor_execute", record)
     try:
         assert client.get("/api/history").status_code == 200
     finally:
-        event.remove(main.engine, "before_cursor_execute", record)
+        event.remove(database.engine, "before_cursor_execute", record)
     selects = [s for s in statements if "FROM executionhistory" in s]
     assert selects and not any("executionhistory.result" in s or "executionhistory.clarifications" in s for s in selects)
 
@@ -295,14 +296,14 @@ def test_one_execution_comes_with_its_full_result_and_only_for_its_owner(client)
 
 def test_conversation_messages_still_carry_full_results_to_reload_a_conversation(client):
     from database import Conversation
-    with Session(main.engine) as db:
+    with Session(database.engine) as db:
         conversation = Conversation(user_id="u1", title="t")
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
         conversation_id = conversation.id
     _add_execution(result="TEXTE-COMPLET")
-    with Session(main.engine) as db:
+    with Session(database.engine) as db:
         from database import ExecutionHistory
         entry = db.exec(select(ExecutionHistory)).first()
         entry.conversation_id = conversation_id

@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
 import main  # noqa: E402
+import database  # noqa: E402
 import routes_metrics  # noqa: E402
 from agent_metrics import (  # noqa: E402
     ExecutionMetrics,
@@ -365,7 +366,7 @@ def run_engine(monkeypatch):
     from sqlalchemy.pool import StaticPool
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(database, "engine", engine)
     return engine
 
 

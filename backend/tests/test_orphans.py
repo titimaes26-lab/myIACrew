@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import database  # noqa: E402
 from database import Conversation, ExecutionHistory  # noqa: E402
 from delivery import render_partial_delivery_block  # noqa: E402
 from github_tools import GitHubVerificationUnavailable, PartialDelivery, describe_partial_delivery  # noqa: E402
@@ -98,7 +99,7 @@ def test_stale_running_entry_becomes_deletable(session):
 def test_step_change_is_a_heartbeat(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(database, "engine", engine)
     with Session(engine) as db:
         entry = _running(db)
         before = entry.updated_at
@@ -152,7 +153,7 @@ def test_describe_partial_delivery_reads_branch_commits_and_pr(monkeypatch):
 def test_failed_execution_reports_what_github_already_has(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(database, "engine", engine)
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         raise RuntimeError("boom")
@@ -241,7 +242,7 @@ def test_tracked_task_registers_active_id_and_releases_everything_when_done():
 def test_heartbeat_touches_only_running_rows(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(database, "engine", engine)
     with Session(engine) as db:
         alive = _running(db)
         done = _running(db)

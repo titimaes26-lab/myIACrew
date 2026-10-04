@@ -21,8 +21,9 @@ from crewquestion import (
     FINALIZATION_ROLE,
     AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
 )
+import database
 from database import (
-    create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint, _env_int,
+    create_db_and_tables, get_session, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint, _env_int,
 )
 from agent_metrics import (
     ExecutionMetrics, build_agent_run_rows, flush_events, step_for_role,
@@ -112,7 +113,7 @@ def _backfill_qa_verdicts() -> None:
     la qualité dans le temps couvre l'historique. Une exécution sans verdict (aucun QA) reste à NULL et est
     relue à chaque démarrage : le coût est borné par lots. Best-effort."""
     try:
-        with Session(engine) as backfill:
+        with Session(database.engine) as backfill:
             last_id = 0
             while True:
                 rows = backfill.exec(
@@ -149,7 +150,7 @@ def on_startup():
     # Libère les conversations bloquées par une exécution morte avec l'ancien process (crash, OOM,
     # redéploiement). Best-effort : ne doit jamais empêcher le service de démarrer.
     try:
-        with Session(engine) as session:
+        with Session(database.engine) as session:
             swept = sweep_stale_executions(session, active_ids=_active_execution_ids)
         if swept:
             log.info(f"Démarrage : {len(swept)} exécution(s) orpheline(s) marquée(s) interrompue(s) : {swept}")
@@ -299,7 +300,7 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
         return
     memory_monitor.log_memory(f"execution_id={execution_id}, étape={step_key!r}")
     try:
-        with Session(engine) as step_session:
+        with Session(database.engine) as step_session:
             entry = step_session.get(ExecutionHistory, execution_id)
             if entry is not None:
                 entry.current_step = step_key
@@ -326,7 +327,7 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
 def _set_attempts(execution_id: int, attempts: int) -> None:
     """Nombre de tentatives d'une exécution (2 dès qu'une relance automatique est décidée). Best-effort."""
     try:
-        with Session(engine) as attempts_session:
+        with Session(database.engine) as attempts_session:
             attempts_session.exec(
                 sql_update(ExecutionHistory).where(ExecutionHistory.id == execution_id).values(attempts=attempts)
             )
@@ -339,7 +340,7 @@ def _touch_execution(execution_id: int) -> bool:
     Un seul UPDATE conditionnel (status='running') : un battement tardif ne peut pas écraser le
     updated_at final d'une exécution déjà terminée (la durée affichée s'en déduit)."""
     try:
-        with Session(engine) as heartbeat_session:
+        with Session(database.engine) as heartbeat_session:
             heartbeat_session.exec(
                 sql_update(ExecutionHistory)
                 .where(ExecutionHistory.id == execution_id, ExecutionHistory.status == "running")
@@ -421,7 +422,7 @@ def _persist_completed_agent(
         return
 
     try:
-        with Session(engine) as agent_session:
+        with Session(database.engine) as agent_session:
             entry = agent_session.get(ExecutionHistory, execution_id)
             if entry is not None:
                 # Format identique à _format_crew_result dans crewquestion.py : sections séparées par AGENT_SECTION_SEPARATOR
@@ -465,14 +466,14 @@ def _load_checkpoints(session: Session, execution_id: int) -> dict[str, str]:
 
 def _load_checkpoints_for(execution_id: int) -> dict[str, str]:
     """_load_checkpoints avec sa propre Session (appelable depuis un thread, hors boucle asyncio)."""
-    with Session(engine) as checkpoint_session:
+    with Session(database.engine) as checkpoint_session:
         return _load_checkpoints(checkpoint_session, execution_id)
 
 def _delete_checkpoints_for(execution_id: int) -> None:
     """Les points de reprise ne servent qu'à une exécution en échec : inutiles (et volumineux, le code
     complet de l'Analyste y figure) une fois celle-ci réussie. Best-effort."""
     try:
-        with Session(engine) as cleanup_session:
+        with Session(database.engine) as cleanup_session:
             for checkpoint in cleanup_session.exec(
                 select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id)
             ).all():
@@ -484,7 +485,7 @@ def _delete_checkpoints_for(execution_id: int) -> None:
 def _fail_execution(execution_id: int, message: str) -> None:
     """Marque une exécution « failed » (interne) quand plus aucun autre chemin ne peut le faire. Best-effort."""
     try:
-        with Session(engine) as fail_session:
+        with Session(database.engine) as fail_session:
             entry = fail_session.get(ExecutionHistory, execution_id)
             if entry is not None and entry.status == "running":
                 entry.status = "failed"
@@ -726,7 +727,7 @@ async def _load_previous_plan(
         return ""
 
     def read() -> str:
-        with Session(engine) as plan_session:
+        with Session(database.engine) as plan_session:
             return _previous_architecture_plan(plan_session, data, has_repo_target, user_id, conversation_id, current_id)
 
     try:
@@ -902,7 +903,7 @@ async def _persist_success_safely(
         log.warning(f"validation du succès impossible (execution_id={db_entry_id}), nouvel essai : "
               f"{type(first_error).__name__}: {first_error}")
     try:
-        with Session(engine) as fresh:
+        with Session(database.engine) as fresh:
             fresh_entry = fresh.get(ExecutionHistory, db_entry_id)
             fresh_conversation = fresh.get(Conversation, conversation_id)
             if fresh_entry is None or fresh_conversation is None:
@@ -984,7 +985,7 @@ def _mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
     mieux n'est possible depuis ce process."""
     log.warning(f"échec du démarrage de la tâche de fond pour db_entry={db_entry_id} : {exc}")
     try:
-        with Session(engine) as session:
+        with Session(database.engine) as session:
             db_entry = session.get(ExecutionHistory, db_entry_id)
             if db_entry is not None and db_entry.status == "running":
                 db_entry.status = "failed"
@@ -1024,7 +1025,7 @@ async def _run_crew_and_persist(
     """
     state = _RunState()
     try:
-        with Session(engine) as session:
+        with Session(database.engine) as session:
             db_entry = session.get(ExecutionHistory, db_entry_id)
             conversation = session.get(Conversation, conversation_id)
             if db_entry is None or conversation is None:
@@ -1138,7 +1139,7 @@ def _load_qualification_context(conversation_id: int, user_id) -> str | None:
     """Rappel des tours précédents pour /api/qualify, ou None si la conversation est introuvable
     ou n'appartient pas à cet utilisateur. Synchrone (accès DB bloquant) : à appeler via
     asyncio.to_thread, avec sa propre Session, pour ne pas bloquer la boucle asyncio."""
-    with Session(engine) as session:
+    with Session(database.engine) as session:
         conversation = session.get(Conversation, conversation_id)
         if not conversation or conversation.user_id != user_id:
             return None

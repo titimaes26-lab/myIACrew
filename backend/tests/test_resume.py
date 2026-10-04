@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import database  # noqa: E402
 from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
 
 
@@ -134,7 +135,7 @@ def test_reused_output_becomes_the_context_of_the_next_step(monkeypatch):
 def engine(monkeypatch):
     eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(eng)
-    monkeypatch.setattr(main, "engine", eng)
+    monkeypatch.setattr(database, "engine", eng)
     return eng
 
 

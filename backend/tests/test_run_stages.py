@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import main  # noqa: E402
+import database  # noqa: E402
 import memory_monitor  # noqa: E402
 from crewquestion import CrewStepError  # noqa: E402
 from errors import classify_exception  # noqa: E402
@@ -180,7 +181,7 @@ from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa
 def engine(monkeypatch):
     eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(eng)
-    monkeypatch.setattr(main, "engine", eng)
+    monkeypatch.setattr(database, "engine", eng)
     return eng
 
 

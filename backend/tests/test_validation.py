@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import github_tools  # noqa: E402
 import main  # noqa: E402
+import database  # noqa: E402
 import validation  # noqa: E402
 from auth import get_current_user  # noqa: E402
 from database import Conversation, ExecutionHistory, ExecutionLaunch  # noqa: E402
@@ -82,7 +83,7 @@ def test_models_normalize_empty_repo_fields_so_no_repo_target():
 def engine(monkeypatch):
     eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     SQLModel.metadata.create_all(eng)
-    monkeypatch.setattr(main, "engine", eng)
+    monkeypatch.setattr(database, "engine", eng)
     return eng
 
 
