@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.51 — Mise à jour le 2026-10-04
+> Version : 1.52 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -28,6 +28,7 @@
 > - 1.47 (10-04) : `useConversation.ts` (728 lignes) découpé en hooks dédiés (dossier `hooks/conversation/`), comportement inchangé.
 > - 1.48 (10-04) : `sendMessage` et l'effet de sondage découpés en fonctions nommées (`progressMerge`), `useSendOutcomes` stable, tests unitaires des pièces extraites.
 > - 1.49 (10-04) : `ChatInput.tsx` (303 lignes) découpé (`useRepoTarget`, `RepoTargetPanel`, `WorkflowTypeSelect`, `ChatComposer`) et testé.
+> - 1.52 (10-04) : `backend/crewquestion.py` (1990 → 245 lignes) découpé sans changement de comportement : `crew_retry`, `crew_workflow`, `qualification`, `crew_llms`, `crew_summary`, `conversation_context`, `crew_workspace`, `crew_guardrails`, `crew_cache`, `crew_tools` et `crew_checks` (mixins de `AppDevelopmentCrew`), `crew_run` (`CrewRun` : `run_dynamic_crew` en étapes). `execution_resume` extrait de `execution_context` ; mypy étendu aux nouveaux modules.
 > - 1.51 (10-04) : `backend/main.py` (2180 lignes) découpé en modules cohérents, sans changement de comportement (749 tests inchangés) : `schemas`, `memory_monitor`, `error_handlers`, `routes_metrics`, `routes_history`, `routes_conversations`, `routes_execute`, `execution` (+ `execution_state`, `execution_context`, `execution_outcomes`, `execution_persistence`) ; `main.py` ne garde que l'assemblage de l'app et le cycle de vie (130 lignes).
 > - 1.50 (10-04) : Entrée n'envoie plus pendant une saisie assistée (clavier virtuel, autocorrection, IME) ; API de `useRepoTarget` regroupée ; panneau désactivé testé.
 
@@ -65,7 +66,7 @@
 | `FEATURE` | `architecture_task` → `diagnostic_task` → `development_task` → `qa_task` |
 | `DESIGN_AND_DEV` (défaut) | `design_task` → `architecture_task` → `diagnostic_task` → `development_task` → `qa_task` |
 
-**Variante PETIT** : pour une `FEATURE` qualifiée `scope = PETIT` (changement local), `architecture_task` est sautée (`FEATURE` → `diagnostic_task` → `development_task` → `qa_task`). Les étapes réellement jouées viennent de `workflow_step_keys(request_type, scope)` (`crewquestion.py`), reprise par le front via `workflowSteps(workflow, scope)`. Une reprise traite `scope` absent comme `GRAND`.
+**Variante PETIT** : pour une `FEATURE` qualifiée `scope = PETIT` (changement local), `architecture_task` est sautée (`FEATURE` → `diagnostic_task` → `development_task` → `qa_task`). Les étapes réellement jouées viennent de `workflow_step_keys(request_type, scope)` (`crew_workflow.py`), reprise par le front via `workflowSteps(workflow, scope)`. Une reprise traite `scope` absent comme `GRAND`.
 
 Contexte explicite par tâche (pas toutes les sorties précédentes) : `architecture` reçoit `design` ; `diagnostic` reçoit `design` + `architecture` ; `development` reçoit `diagnostic` ; `qa` reçoit `design` + `diagnostic` + `development`.
 
@@ -142,7 +143,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 ### 2.9 Gestion des erreurs
 
 - **Format unique** : toute erreur de l'API est `{"detail": message, "code": CODE, "retryable": bool}` (`detail` reste la clé lue par le frontend). Les gestionnaires de `error_handlers.py` couvrent `AppError` (erreur volontaire d'un endpoint), `HTTPException` (y compris les 404/405 de routes et `auth.py`), les erreurs de validation (422, `detail` = phrase lisible, liste détaillée dans `errors`) et toute exception non prévue (500 générique, détail dans les logs seulement).
-- **Codes** (`backend/errors.py`) : `QUOTA_EXHAUSTED`, `LLM_UNAVAILABLE`, `LLM_TIMEOUT`, `GITHUB_UNAVAILABLE`, `GUARDRAIL_FAILED`, `DELIVERY_FAILED` (livraison GitHub non confirmée après l'exécution : ni branche à jour ni PR ; non relançable tel quel), `EXECUTION_TIMEOUT`, `INTERRUPTED`, `INTERNAL_ERROR`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`. `classify_exception` range un échec du crew dans un code ; les mots-clés de quota/indisponibilité sont partagés avec les retries de `crewquestion.py`.
+- **Codes** (`backend/errors.py`) : `QUOTA_EXHAUSTED`, `LLM_UNAVAILABLE`, `LLM_TIMEOUT`, `GITHUB_UNAVAILABLE`, `GUARDRAIL_FAILED`, `DELIVERY_FAILED` (livraison GitHub non confirmée après l'exécution : ni branche à jour ni PR ; non relançable tel quel), `EXECUTION_TIMEOUT`, `INTERRUPTED`, `INTERNAL_ERROR`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`. `classify_exception` range un échec du crew dans un code ; les mots-clés de quota/indisponibilité sont partagés avec les retries de `crew_retry.py`.
 - **Écriture GitHub confinée** : les outils d'écriture et de création de branche (`github_write_file`, `github_write_files`, `github_edit_file`, `github_create_branch`, commit de l'Analyste) refusent, sans appel réseau, toute branche qui ne commence pas par `crewai/` (donc `main`, `test`, une branche de production…) ; pendant une exécution, seule sa propre branche de travail est écrivable. Une consigne glissée dans le dépôt cible ne peut donc pas faire écrire l'agent ailleurs.
 - **Journalisation** : tout passe par `logging` (`backend/logs.py`, logger parent `myiacrew`, sortie standard vidée à chaque ligne, niveau `LOG_LEVEL`, INFO par défaut) ; les bibliothèques tierces ne sont pas touchées. Les messages écrits par l'application ne contiennent ni identifiant d'utilisateur ni texte de demande ni contenu de fichier (le texte d'une exception, lui, est repris tel quel : il peut contenir ce que renvoie GitHub ou le modèle). Un événement tient sur une ligne : les retours à la ligne d'un message sont écrits en clair (`\n`), pour qu'un texte multi-lignes ne fabrique pas de fausses lignes de log ; la trace d'une exception garde ses propres lignes (`exc_info`).
 - **Branches de travail validées** : un nom d'écriture doit correspondre à `crewai/` + caractères sûrs (lettres, chiffres, `. _ - /`), sans espace, retour à la ligne, `..`, `//` ni `/` final.
@@ -182,7 +183,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 | Client Supabase | Session, token d'accès | `frontend/src/supabaseClient.ts` |
 | API (Logique HTTP) | Endpoints, validation des entrées, auth, exécution en tâche de fond, persistance, vérification de livraison | `backend/main.py` (assemblage), `backend/routes_*.py` (endpoints), `backend/execution*.py` (exécution en tâche de fond), `backend/schemas.py`, `backend/auth.py` |
 | Socle backend | Journalisation, erreurs typées, validation, orphelines, résumé de projet | `backend/logs.py`, `backend/errors.py`, `backend/validation.py`, `backend/orphans.py`, `backend/project_summary.py` |
-| Orchestration agents | Définition et exécution des agents/tâches CrewAI, guardrails, retry | `backend/crewquestion.py`, `backend/agentsquestion.yaml`, `backend/tasksquestion.yaml` |
+| Orchestration agents | Définition et exécution des agents/tâches CrewAI, guardrails, retry | `backend/crewquestion.py` (agents et tâches), `backend/crew_*.py`, `backend/qualification.py`, `backend/agentsquestion.yaml`, `backend/tasksquestion.yaml` |
 | Contrôles de qualité (purs) | Lecture de la sortie de l'Analyste, livraison (commit/PR), rapport QA | `backend/analyst_output.py`, `backend/delivery.py`, `backend/qa_report.py` |
 | Mesure de performance | Collecte par agent (événements CrewAI), agrégats (percentiles, moyennes, tendance) | `backend/agent_metrics.py` |
 | Outils agents | Actions concrètes (lecture disque, lecture/écriture GitHub, vérification de syntaxe) | `backend/tools.py`, `backend/github_tools.py` |
@@ -196,7 +197,7 @@ Utilisateur (navigateur)
   → Studio.tsx / useConversation : POST /api/qualify (mode auto) puis POST /api/execute
        → main.py : Depends(get_current_user) valide le token auprès de Supabase
        → /api/execute valide, vérifie GitHub, lit le résumé du dépôt (`_prefetch_repo_snapshot`) puis répond tout de suite ; asyncio.create_task lance _execute_crew_and_persist
-            → crewquestion.py : run_dynamic_crew (tâches sélectionnées, contexte par tâche,
+            → crew_run.py : CrewRun.execute (via run_dynamic_crew) (tâches sélectionnées, contexte par tâche,
               guardrails, retry résumable) ; agents → tools.py / github_tools.py
             → chaque agent terminé est persisté (section + durée) dans ExecutionHistory.result
             → verify_github_delivery : branche et PR à jour confirmées via l'API GitHub
