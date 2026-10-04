@@ -225,13 +225,14 @@ def test_architecture_prompt_stays_short_and_still_names_every_required_section(
     text = task["description"] + task["expected_output"]
     for heading in cq.ARCHITECTURE_REQUIRED_HEADINGS:
         assert heading in text, heading
+    assert "Ne propose jamais un paquet déjà couvert" in task["description"] and "200 lignes" in task["description"]
     assert "signatures seules" in task["description"] and "=== Données de cette demande ===" in task["description"]
     # Le format lu par le garde-fou (« - CRÉER|MODIFIER <chemin> : <rôle> ») doit rester demandé.
     assert "- CRÉER|MODIFIER <chemin> : <rôle" in task["description"]
 
 
 def test_only_the_architect_output_is_capped_and_make_llm_omits_the_cap_by_default():
-    assert cq.architect_llm.max_tokens == 5000
+    assert cq.architect_llm.max_tokens == 8192
     for llm in (cq.qualification_llm, cq.designer_llm, cq.diagnostic_llm, cq.developer_llm, cq.qa_llm):
         assert llm.max_tokens is None
     assert cq._make_llm(0.1).max_tokens is None
@@ -258,6 +259,24 @@ aucune
 ## Risques
 - Taille : découper
 """
+
+
+@pytest.mark.parametrize("env, expected", [(None, 8192), ("6000", 6000), ("abc", 8192), ("100", 8192), ("", 8192)])
+def test_architect_output_cap_is_configurable_with_a_safe_default(monkeypatch, env, expected):
+    if env is None:
+        monkeypatch.delenv("ARCHITECT_MAX_OUTPUT_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("ARCHITECT_MAX_OUTPUT_TOKENS", env)
+    assert cq._architect_max_tokens() == expected
+
+
+def test_architecture_issues_flag_a_plan_cut_by_the_token_limit():
+    empty_last = GOOD_ARCH.replace("- Taille : découper\n", "")
+    assert any("tronquée" in i for i in cq._architecture_issues(empty_last))
+    cut = GOOD_ARCH.rstrip() + "\n- Dépendance : paquet,"
+    assert any("tronquée" in i for i in cq._architecture_issues(cut))
+    unclosed = GOOD_ARCH + "```ts\nexport const x ="
+    assert any("tronquée" in i for i in cq._architecture_issues(unclosed))
 
 
 def test_architecture_issues_complete_plan_has_none():

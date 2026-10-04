@@ -87,6 +87,7 @@ architecture_task:
     2. Cible : ce qui change (ajouts, modifications, suppressions), en évolution ciblée plutôt qu'en refonte.
     3. Décisions : par choix structurant, une ligne "Décision : ... | Alternative écartée : ... | Pourquoi : ...".
     4. Dépendances à ajouter : une ligne "paquet : raison" par paquet absent de `package.json`, sinon "aucune".
+       Ne propose jamais un paquet déjà couvert par une dépendance installée.
     5. Contrats d'interface : une ligne par fichier de code, "chemin : exports avec signatures TypeScript"
        (props, paramètres, retours), signatures seules : ni corps, ni commentaire, ni exemple d'usage.
     6. Fichiers à créer ou modifier : une ligne "- CRÉER|MODIFIER <chemin> : <rôle en une phrase>" par fichier.
@@ -94,7 +95,8 @@ architecture_task:
        sinon (FEATURE) 2 à 5 exigences E1, E2... tirées de la demande. Chaque exigence a au moins un fichier,
        aucun fichier n'est orphelin ; signale tout écart.
     8. Risques : 2 à 3 risques techniques, chacun avec sa parade en une ligne.
-    Environ 1000 mots HORS section "Contrats d'interface", titres de section en "##".
+    Environ 1000 mots HORS section "Contrats d'interface", titres de section en "##". Fichiers assez
+    petits pour être réécrits EN ENTIER : composant UI d'environ 200 lignes au plus, logique 300 au plus.
 
     Lecture seule : n'invente JAMAIS de commit, branche, Pull Request, numéro de PR, URL ou SHA (rien de tout
     cela n'a eu lieu). Un exemple de code illustratif est signalé comme non exécuté, sans donnée GitHub factice.

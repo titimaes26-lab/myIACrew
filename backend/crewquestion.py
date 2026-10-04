@@ -399,7 +399,17 @@ def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Option
 # rapide d'un appel réellement figé sur les agents les plus légers.
 qualification_llm = _make_llm(0.1, request_timeout=45)   # sortie JSON structurée, sans outil
 designer_llm = _make_llm(0.5, request_timeout=90)        # texte de specs + quelques lectures
-architect_llm = _make_llm(0.3, request_timeout=90, max_tokens=5000)  # texte d'architecture : ~1000 mots + une ligne de contrat par fichier
+def _architect_max_tokens() -> int:
+    """Plafond de sortie de l'Architecte (ARCHITECT_MAX_OUTPUT_TOKENS, 8192 par défaut). Sur les modèles Gemini
+    récents les tokens de réflexion comptent dans cette limite : un plafond trop juste coupe le plan."""
+    try:
+        value = int(os.getenv("ARCHITECT_MAX_OUTPUT_TOKENS", ""))
+    except ValueError:
+        return 8192
+    return value if value >= 1024 else 8192
+
+
+architect_llm = _make_llm(0.3, request_timeout=90, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
 diagnostic_llm = _make_llm(0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
 developer_llm = _make_llm(0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
                                                           # complet de diagnostic_task (potentiellement volumineux,
@@ -931,6 +941,19 @@ def _markdown_section(raw: str, keyword: str) -> Optional[str]:
             return "\n".join(body)
     return None
 
+def _truncation_issues(raw: str) -> List[str]:
+    """Signes qu'une sortie a été coupée par la limite de tokens : dernière section vide, dernière ligne qui
+    s'arrête sur une ponctuation ouvrante, ou bloc de code jamais refermé."""
+    lines = [line for line in raw.rstrip().splitlines()]
+    if not lines:
+        return []
+    last_heading = max((i for i, line in enumerate(lines) if re.match(r"^#+\s", line)), default=None)
+    if last_heading is not None and not any(line.strip() for line in lines[last_heading + 1:]):
+        return ["La dernière section est vide : la sortie a probablement été tronquée (limite de tokens)."]
+    if raw.count("```") % 2 == 1 or lines[-1].rstrip().endswith((",", ";", ":", "(", "[", "{", "—", "-", "/")):
+        return ["La sortie s'arrête en plein milieu : elle a probablement été tronquée (limite de tokens)."]
+    return []
+
 def _architecture_issues(raw: str) -> List[str]:
     """Anomalies vérifiables du plan de l'architecte : sections, format de la liste de fichiers,
     chemins dupliqués ou hors projet, fichier de code sans contrat d'interface."""
@@ -942,6 +965,7 @@ def _architecture_issues(raw: str) -> List[str]:
     entries = [m.group(1).strip() for m in _ARCH_FILE_LINE.finditer(files_section if files_section is not None else raw)]
     if not entries:
         issues.append("Aucune ligne « - CRÉER|MODIFIER <chemin> : <rôle> » dans la liste des fichiers.")
+    issues.extend(_truncation_issues(raw))
     contracts = _markdown_section(raw, "Contrat")
     contract_lines = [line.strip().lstrip("-* ").replace("`", "") for line in (contracts or "").splitlines()]
     seen = set()
