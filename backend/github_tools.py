@@ -113,6 +113,17 @@ def track_write_scope(branch: str):
         _write_scope.reset(token)
 
 
+def _log_refused_write(branch: object) -> None:
+    """Trace d'une écriture refusée : c'est le signe d'un agent qui sort de sa branche de travail (consigne glissée dans
+    le dépôt cible ?). Le nom de branche et la branche autorisée seulement, jamais de contenu de fichier ; repr() pour
+    qu'un nom piégé (retours à la ligne) ne fabrique pas de fausses lignes de log."""
+    print(
+        f"AVERTISSEMENT SÉCURITÉ : écriture GitHub refusée sur la branche {branch!r} "
+        f"(branche autorisée : {_write_scope.get() or WORK_BRANCH_PREFIX + '…'!r}).",
+        flush=True,
+    )
+
+
 def _reject_protected_branch(branch: str) -> str | None:
     """None si l'écriture sur `branch` peut continuer, sinon le message d'erreur à renvoyer tel quel (aucun appel réseau)."""
     if branch in ("main", "master"):
@@ -122,12 +133,14 @@ def _reject_protected_branch(branch: str) -> str | None:
         and ".." not in branch
     )
     if not valid:
+        _log_refused_write(branch)
         return (
             f"ERREUR : écriture refusée sur la branche '{branch}' : seules les branches de travail "
             f"'{WORK_BRANCH_PREFIX}…' sont modifiables. Utilise la branche de travail indiquée dans le contexte repository."
         )
     scope = _write_scope.get()
     if scope is not None and branch != scope:
+        _log_refused_write(branch)
         return (
             f"ERREUR : écriture refusée sur la branche '{branch}' : cette exécution ne peut écrire que sur sa branche "
             f"de travail '{scope}'."

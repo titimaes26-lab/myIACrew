@@ -275,3 +275,60 @@ def test_touch_reports_failure_instead_of_raising(monkeypatch):
         raise RuntimeError("database is locked")
     monkeypatch.setattr(main, "Session", broken)
     assert main._touch_execution(1) is False
+
+
+# --- Balayages concurrents (points d'accès exécutés dans des threads) ----------------------------------------------
+
+def test_two_concurrent_sweeps_free_the_row_once_and_write_the_message_once(session):
+    stale = _running(session, result="## Designer\nplan")
+    engine = session.get_bind()
+
+    class RacingSession(Session):
+        """Un autre balayage libère la ligne entre la lecture de celui-ci et sa propre écriture."""
+        raced = False
+
+        def exec(self, statement, *args, **kwargs):
+            if getattr(statement, "is_update", False) and not self.raced:
+                RacingSession.raced = True
+                with Session(engine) as other:
+                    other.exec(statement)
+                    other.commit()
+            return super().exec(statement, *args, **kwargs)
+
+    with RacingSession(engine) as racing:
+        assert sweep_stale_executions(racing) == []   # la perdante ne revendique rien
+    session.expire_all()
+    session.refresh(stale)
+    assert stale.status == "failed" and stale.result.count(INTERRUPTED_MESSAGE) == 1
+
+
+def test_sweeping_twice_never_duplicates_the_interruption_message(session):
+    stale = _running(session)
+    assert sweep_stale_executions(session) == [stale.id]
+    assert sweep_stale_executions(session) == []
+    session.refresh(stale)
+    assert stale.result.count(INTERRUPTED_MESSAGE) == 1
+
+
+def test_a_sweep_that_reads_the_row_after_another_sweep_freed_it_does_not_append_again(session):
+    # Scénario du doublon : la liste des orphelines est lue, un autre balayage libère la ligne (message ajouté), puis
+    # celui-ci recharge la ligne — qui contient déjà le message. Sans UPDATE conditionnel, il l'ajouterait une 2e fois.
+    stale = _running(session, result="## Designer\nplan")
+    engine = session.get_bind()
+
+    class LateReadSession(Session):
+        reads = 0
+
+        def exec(self, statement, *args, **kwargs):
+            if not getattr(statement, "is_update", False):
+                LateReadSession.reads += 1
+                if LateReadSession.reads == 2:   # le rechargement des lignes, après la liste des orphelines
+                    with Session(engine) as other:
+                        assert sweep_stale_executions(other) == [stale.id]
+            return super().exec(statement, *args, **kwargs)
+
+    with LateReadSession(engine) as late:
+        assert sweep_stale_executions(late) == []
+    session.expire_all()
+    session.refresh(stale)
+    assert stale.result.count(INTERRUPTED_MESSAGE) == 1

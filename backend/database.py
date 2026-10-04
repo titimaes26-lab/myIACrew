@@ -21,7 +21,30 @@ _SQL_ECHO = os.getenv("SQL_ECHO", "false").strip().lower() == "true"
 # pool_pre_ping : une connexion coupée par le pooler (Supabase, Render) pendant qu'elle dormait dans le pool est
 # détectée avant usage et remplacée, au lieu de faire échouer la requête suivante. pool_recycle : aucune connexion
 # n'est gardée plus de 30 minutes.
-engine = create_engine(DATABASE_URL, echo=_SQL_ECHO, pool_pre_ping=True, pool_recycle=1800)
+def _env_int(name: str, default: int, minimum: int) -> int:
+    """Entier lu dans l'environnement ; valeur absente, illisible ou sous le minimum : le défaut."""
+    try:
+        value = int(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
+def engine_options(url: str) -> dict:
+    """Options du moteur. Les points d'accès de base de données tournent en parallèle dans des threads, les exécutions en
+    tâche de fond ont leurs propres sessions : la réserve de connexions est réglable (DB_POOL_SIZE, DB_MAX_OVERFLOW,
+    DB_POOL_TIMEOUT) plutôt que les 5 + 10 par défaut. Hors SQLite (dont le pool mémoire n'accepte pas ces options)."""
+    options: dict = {"echo": _SQL_ECHO, "pool_pre_ping": True, "pool_recycle": 1800}
+    if not url.startswith("sqlite"):
+        options.update(
+            pool_size=_env_int("DB_POOL_SIZE", 10, 1),
+            max_overflow=_env_int("DB_MAX_OVERFLOW", 10, 0),
+            pool_timeout=_env_int("DB_POOL_TIMEOUT", 30, 1),
+        )
+    return options
+
+
+engine = create_engine(DATABASE_URL, **engine_options(DATABASE_URL))
 
 # Regroupe plusieurs exécutions en un fil de discussion persistant
 class Conversation(SQLModel, table=True):

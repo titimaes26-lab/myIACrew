@@ -8,6 +8,7 @@ chaque nouveau message, et suppression refusée (409 aussi). Elle est désormais
 from datetime import datetime, timedelta, timezone
 from typing import Collection, List, Optional
 
+from sqlalchemy import update as sql_update
 from sqlmodel import Session, col, select
 
 from database import ExecutionHistory
@@ -73,14 +74,20 @@ def sweep_stale_executions(
         # Garde le texte déjà produit (sections des agents terminés) : utile pour comprendre où ça
         # s'est arrêté ; le message d'interruption est ajouté à la suite.
         previous = (entry.result or "").strip()
-        entry.result = f"{previous}\n\n{INTERRUPTED_MESSAGE}" if previous else INTERRUPTED_MESSAGE
-        entry.status = "failed"
-        entry.current_step = None
-        entry.error_code = ErrorCode.INTERRUPTED
-        entry.error_retryable = True
-        entry.updated_at = now
-        session.add(entry)
-        if entry.id is not None:
+        result = f"{previous}\n\n{INTERRUPTED_MESSAGE}" if previous else INTERRUPTED_MESSAGE
+        # UPDATE conditionnel (status = 'running') plutôt que modifier l'objet lu : plusieurs requêtes (onglets,
+        # sondages) balaient en parallèle dans des threads, et la perdante d'une course ne doit rien écrire — sinon le
+        # message d'interruption serait ajouté deux fois. rowcount == 1 : CE balayage a réellement libéré la ligne.
+        outcome = session.exec(
+            sql_update(ExecutionHistory)
+            .where(col(ExecutionHistory.id) == entry.id)
+            .where(col(ExecutionHistory.status) == "running")
+            .values(
+                result=result, status="failed", current_step=None, error_code=ErrorCode.INTERRUPTED,
+                error_retryable=True, updated_at=now,
+            )
+        )
+        if outcome.rowcount == 1 and entry.id is not None:
             swept.append(entry.id)
     if swept:
         session.commit()

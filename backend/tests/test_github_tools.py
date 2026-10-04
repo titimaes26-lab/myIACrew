@@ -276,3 +276,14 @@ def test_write_scope_restricts_the_execution_to_its_own_work_branch():
 def test_the_commit_helper_used_by_the_crew_refuses_other_branches(counting):
     result = gt.write_files_to_branch("o", "r", "test", "msg", [{"path": "src/a.ts", "content": "export const a = 1;"}])
     assert result.startswith("ERREUR") and counting.created == []
+
+
+def test_a_refused_write_is_logged_without_file_content(counting, capsys):
+    gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "test", "msg")
+    with gt.track_write_scope("crewai/a"):
+        gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "crewai/b", "msg")
+    gt.github_write_file.func("o", "r", "src/x.ts", "x", "crewai/x\nFAUSSE LIGNE", "msg")
+    out = capsys.readouterr().out
+    assert "AVERTISSEMENT SÉCURITÉ" in out and "'test'" in out and "'crewai/b'" in out and "'crewai/a'" in out
+    assert "CONTENU-SECRET" not in out and "src/secret.ts" not in out
+    assert "\nFAUSSE LIGNE" not in out   # le nom piégé est échappé par repr()
