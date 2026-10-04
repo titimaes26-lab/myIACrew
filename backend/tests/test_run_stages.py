@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import main  # noqa: E402
+import memory_monitor  # noqa: E402
 from crewquestion import CrewStepError  # noqa: E402
 from errors import classify_exception  # noqa: E402
 from github_tools import GitHubVerificationUnavailable  # noqa: E402
@@ -292,7 +293,7 @@ def test_run_crew_keeps_the_metrics_and_stops_the_memory_ticker_when_the_crew_cr
     async def crash(inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         raise RuntimeError("le crew plante en route")
 
-    monkeypatch.setattr(main, "_periodic_memory_logger", endless_ticker)
+    monkeypatch.setattr(memory_monitor, "periodic_memory_logger", endless_ticker)
     crew = SimpleNamespace(run_dynamic_crew=crash)
     with pytest.raises(RuntimeError, match="plante en route"):
         asyncio.run(main._run_crew(crew, state, 1, "BUGFIX", {}, None))

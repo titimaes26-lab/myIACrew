@@ -10,14 +10,13 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator, model_validator
 from dataclasses import dataclass
 from contextlib import nullcontext
-from typing import Any, List, Literal, NamedTuple, Optional
+from typing import Any, List, Literal, Optional
 from sqlalchemy import case, update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import defer
-from sqlmodel import SQLModel, Session, col, func, select
+from sqlmodel import Session, col, func, select
 
 from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
@@ -32,7 +31,6 @@ from agent_metrics import (
     ExecutionMetrics, agent_run_view, list_executions, split_by_period, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
 )
 from auth import get_current_user, close_http_client
-import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from logs import get_logger
 from qa_report import final_verdict
@@ -47,6 +45,8 @@ from github_tools import (
     track_write_scope, WORK_BRANCH_PREFIX,
 )
 from delivery import render_partial_delivery_block
+import memory_monitor
+from schemas import BulkDeleteInput, ConversationCreateInput, HistoryListEntry, UserRequestInput, WorkflowExecutionInput
 
 log = get_logger("main")
 
@@ -144,9 +144,9 @@ def on_startup():
     _backfill_qa_verdicts()
     # Imprimé une seule fois, au démarrage : rend le plafond mémoire du conteneur visible dans les
     # logs Render dès le boot, sans attendre qu'une exécution déclenche la première ligne [MEM]
-    # (_log_memory) — utile pour juger d'emblée si le plan actuel a une marge suffisante pour ce
+    # (memory_monitor.log_memory) — utile pour juger d'emblée si le plan actuel a une marge suffisante pour ce
     # type de charge (CrewAI + plusieurs agents Gemini), avant même de lancer quoi que ce soit.
-    _log_memory("démarrage du service")
+    memory_monitor.log_memory("démarrage du service")
     # Libère les conversations bloquées par une exécution morte avec l'ancien process (crash, OOM,
     # redéploiement). Best-effort : ne doit jamais empêcher le service de démarrer.
     try:
@@ -263,7 +263,7 @@ async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResp
     # sans aucune réponse, exactement le symptôme opaque ("Failed to fetch") que ce handler existe
     # pour éliminer.
     try:
-        _log_memory(f"exception non gérée sur {request.url.path}")
+        memory_monitor.log_memory(f"exception non gérée sur {request.url.path}")
         # Le handler de logs (logs.py) vide la sortie à chaque ligne : la trace n'attend pas en mémoire tampon
         # si le process est tué juste après (OOM kill, SIGKILL), exactement le cas que ce handler veut couvrir.
         log.error(f"exception non gérée sur {request.method} {request.url.path}", exc_info=exc)
@@ -301,45 +301,6 @@ async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResp
 
 crew_instance = AppDevelopmentCrew()
 
-class UserRequestInput(BaseModel):
-    user_request: str
-    conversation_id: Optional[int] = None
-    has_repo_target: bool = False
-
-    _check_request = field_validator("user_request")(validation.validate_user_request)
-
-class WorkflowExecutionInput(BaseModel):
-    user_request: str
-    target_workflow: str
-    clarifications: Optional[str] = ""
-    repo_owner: Optional[str] = None
-    repo_name: Optional[str] = None
-    base_branch: Optional[str] = "main"
-    conversation_id: Optional[int] = None
-    # Reprise : id d'une exécution en échec de CETTE conversation dont les étapes déjà réussies
-    # (design, architecture, diagnostic) sont réutilisées au lieu d'être recalculées. Ignoré, sans
-    # erreur, si cette exécution n'est pas reprenable (voir _resumable_outputs).
-    resume_from_execution_id: Optional[int] = None
-    # Taille d'une FEATURE donnée par la qualification : PETIT saute l'étape d'architecture (voir
-    # crewquestion.workflow_step_keys). Ignoré, sans erreur, pour tout autre workflow ; absent = parcours complet.
-    scope: Optional[Literal["PETIT", "GRAND"]] = None
-
-    @model_validator(mode="after")
-    def _scope_only_for_feature(self):
-        if self.target_workflow != "FEATURE":
-            self.scope = None
-        return self
-
-    # Refus immédiat (422, un message par champ) plutôt qu'une erreur découverte en pleine exécution.
-    _check_request = field_validator("user_request")(validation.validate_user_request)
-    _check_workflow = field_validator("target_workflow")(validation.validate_workflow)
-    _check_clarifications = field_validator("clarifications")(validation.validate_clarifications)
-    _check_owner = field_validator("repo_owner")(validation.validate_repo_owner)
-    _check_repo = field_validator("repo_name")(validation.validate_repo_name)
-    _check_branch = field_validator("base_branch")(validation.validate_branch_name)
-
-class ConversationCreateInput(BaseModel):
-    title: Optional[str] = None
 
 # kind de GitHubAccessProblem -> (statut HTTP, code, réessayable)
 _GITHUB_ACCESS_ERRORS = {
@@ -357,143 +318,6 @@ AUTO_RETRY_DELAY_S = float(os.getenv("AUTO_RETRY_DELAY_S", "90"))
 BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
 
-class BulkDeleteInput(BaseModel):
-    ids: List[int]
-
-def _current_memory_mb() -> Optional[float]:
-    """RSS (mémoire physique réellement utilisée par ce process) en Mo, lue depuis
-    /proc/self/status (Linux uniquement — couvre tout environnement de déploiement réaliste ici :
-    Render, Docker...). Best-effort : None si indisponible (OS différent, fichier absent) plutôt
-    qu'une exception — un simple diagnostic ne doit jamais faire échouer une exécution par
-    ailleurs saine.
-
-    Ajouté pour diagnostiquer les cas où le process backend semble mourir sans laisser aucune
-    trace applicative (voir _log_memory, appelé à chaque changement d'étape d'exécution) : sur le
-    plan gratuit de Render, ni l'onglet "Events" (qui indiquerait un OOM kill explicitement) ni le
-    graphique mémoire des "Metrics" ne sont accessibles, cette ligne dans les logs applicatifs est
-    donc le seul moyen de voir la tendance mémoire avant une éventuelle coupure brutale — un OOM
-    kill (SIGKILL) tue le process instantanément, sans qu'aucune exception Python ne soit jamais
-    levée ni journalisée : seules ces lectures PÉRIODIQUES avant le crash peuvent le suggérer
-    (une dernière valeur déjà élevée juste avant l'arrêt net des logs), jamais une preuve directe.
-    """
-    try:
-        with open("/proc/self/status") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1]) / 1024  # kB -> Mo
-    except Exception:
-        pass
-    return None
-
-class _MemoryLimit(NamedTuple):
-    """`mb` : la valeur en Mo. `is_container_limit` : True si lue depuis un cgroup (le plafond
-    RÉEL de ce conteneur), False si repli sur /proc/meminfo (MemTotal de la machine HÔTE,
-    potentiellement partagée entre plusieurs services — une valeur sans rapport avec ce qui est
-    réellement alloué ici, à ne jamais confondre avec un vrai plafond dans les logs)."""
-    mb: float
-    is_container_limit: bool
-
-def _container_memory_limit_mb() -> Optional[_MemoryLimit]:
-    """Plafond mémoire réellement appliqué à CE conteneur — lu depuis les cgroups Linux, le
-    mécanisme que Docker/Render utilisent pour appliquer cette limite. Essaie cgroup v2
-    (memory.max) puis v1 (memory.limit_in_bytes) ; ne retombe sur /proc/meminfo (MemTotal, la RAM
-    de la machine hôte) que si aucun des deux n'est accessible ou n'indique de limite explicite —
-    voir _MemoryLimit.is_container_limit, qui distingue ce cas pour que son appelant ne l'affiche
-    jamais comme un vrai plafond de service.
-
-    Ne renvoie que des valeurs STRICTEMENT positives (jamais 0 ni négatif) : un cgroup mal
-    configuré ou lu en pleine transition d'arrêt du conteneur pourrait théoriquement exposer une
-    limite de 0, qui diviserait par zéro chez l'appelant plutôt que de simplement dégrader vers
-    "indisponible" comme n'importe quelle autre lecture ratée.
-
-    Calculé une seule fois au démarrage (_CONTAINER_MEMORY_LIMIT_MB ci-dessous), jamais à chaque
-    appel de _log_memory : ce plafond ne peut pas changer pendant la vie du process, inutile de
-    rouvrir ces fichiers à chaque changement d'étape d'une exécution.
-    """
-    try:
-        with open("/sys/fs/cgroup/memory.max") as f:
-            raw = f.read().strip()
-            if raw != "max":
-                mb = int(raw) / (1024 * 1024)
-                if mb > 0:
-                    return _MemoryLimit(mb, True)
-    except Exception:
-        pass
-    try:
-        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
-            raw_v1 = int(f.read().strip())
-            # cgroup v1 représente "illimité" par une très grande valeur (pas un mot-clé explicite
-            # comme "max" en v2) : un seuil large mais arbitraire écarte ce cas plutôt que
-            # d'afficher une "limite" de plusieurs exaoctets, dénuée de sens pratique.
-            if 0 < raw_v1 < (1 << 62):
-                return _MemoryLimit(raw_v1 / (1024 * 1024), True)
-    except Exception:
-        pass
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    mb = int(line.split()[1]) / 1024
-                    if mb > 0:
-                        return _MemoryLimit(mb, False)
-    except Exception:
-        pass
-    return None
-
-# Calculé une seule fois à l'import (voir la docstring de _container_memory_limit_mb) : imprimé
-# explicitement au démarrage (on_startup plus bas) pour que ce plafond soit visible même sans
-# faire défiler les logs jusqu'à une exécution, et réutilisé par chaque ligne [MEM] (_log_memory)
-# pour situer la RSS courante par rapport à ce plafond sans avoir à les rapprocher manuellement.
-_CONTAINER_MEMORY_LIMIT_MB = _container_memory_limit_mb()
-
-def _log_memory(context: str) -> None:
-    # Best-effort, y compris l'écriture du log elle-même : appelée depuis des points qui doivent absolument
-    # ne jamais lever (le except d'execute_workflow avant que db_entry ne soit marqué "failed", et
-    # _persist_current_step avant la classification CrewStepError — voir leurs docstrings). Écrire dans les logs
-    # peut échouer (pipe saturé/coupé, disque plein) précisément dans les conditions de pression mémoire que ce
-    # diagnostic vise à observer ; sans cette garde, l'échec d'un simple log de diagnostic ferait dérailler
-    # l'exécution qu'il essaie seulement d'observer.
-    try:
-        mem_mb = _current_memory_mb()
-        if mem_mb is not None:
-            if _CONTAINER_MEMORY_LIMIT_MB is not None:
-                limit = _CONTAINER_MEMORY_LIMIT_MB
-                pct = 100 * mem_mb / limit.mb
-                # "plafond conteneur" seulement si RÉELLEMENT lu depuis un cgroup — sinon
-                # "RAM machine hôte, PAS le plafond réel de ce service" : les deux ont des
-                # implications opposées (3% d'un plafond conteneur de 512 Mo est alarmant tout
-                # près de la limite, 3% d'une RAM hôte de 16 Go ne veut rien dire du tout).
-                label = "plafond conteneur" if limit.is_container_limit else "RAM machine hôte, PAS le plafond réel de ce service"
-                # flush=True : sys.stdout est bufferisé par bloc (pas par ligne) une fois
-                # redirigé vers les logs Render (pas un terminal) — sans vidage explicite, cette
-                # ligne pourrait rester en mémoire tampon et disparaître si le process se termine
-                # brutalement juste après (OOM kill notamment, qui ne laisse aucune chance de
-                # vider ce tampon), précisément la dernière lecture la plus utile à voir.
-                log.info(f"[MEM] {context} : {mem_mb:.0f} Mo / {limit.mb:.0f} Mo ({pct:.0f}%) (RSS / {label})")
-            else:
-                log.info(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS) — plafond du conteneur indisponible")
-    except Exception:
-        pass
-
-_MEMORY_TICK_SECONDS = 2.0
-
-async def _periodic_memory_logger(context: str) -> None:
-    """Répète _log_memory(context) toutes les _MEMORY_TICK_SECONDS secondes, indéfiniment, jusqu'à
-    ce que cette tâche asyncio soit annulée (task.cancel()) — voir son appelant, qui la lance en
-    tâche de fond juste avant un kickoff_async potentiellement long, puis l'annule dès qu'il se
-    termine (succès ou échec).
-
-    Une granularité plus fine que les points [MEM] existants (uniquement au démarrage de la
-    requête et à chaque CHANGEMENT DE TÂCHE du crew, voir _persist_current_step) est nécessaire
-    pour repérer la tendance mémoire PENDANT une tâche unique, pas seulement entre deux tâches :
-    le crash observé en pratique (voir PR #36) est survenu en plein streaming de la toute première
-    tâche (design_task), avant qu'aucun changement d'étape n'ait eu l'occasion de déclencher la
-    moindre ligne [MEM] existante — la dernière lecture disponible (au tout début de la requête)
-    était alors déjà bien trop ancienne pour être utile.
-    """
-    while True:
-        _log_memory(context)
-        await asyncio.sleep(_MEMORY_TICK_SECONDS)
 
 def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) -> None:
     """Recharge db_entry depuis la base avant d'y réassigner des champs — voir ses appelants.
@@ -581,7 +405,7 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     # FEATURE, qui peut enchaîner 4 tâches sur plusieurs minutes. Voir _current_memory_mb.
     if execution_id in _abandoned_execution_ids:
         return
-    _log_memory(f"execution_id={execution_id}, étape={step_key!r}")
+    memory_monitor.log_memory(f"execution_id={execution_id}, étape={step_key!r}")
     try:
         with Session(engine) as step_session:
             entry = step_session.get(ExecutionHistory, execution_id)
@@ -1040,7 +864,7 @@ async def _run_crew(
     cancel_event: Optional[threading.Event] = None,
 ) -> Any:
     """Lance le crew avec ses métriques et son sondage mémoire périodique (toujours annulé, succès ou non)."""
-    memory_ticker = asyncio.create_task(_periodic_memory_logger(f"execution_id={execution_id}, sondage périodique"))
+    memory_ticker = asyncio.create_task(memory_monitor.periodic_memory_logger(f"execution_id={execution_id}, sondage périodique"))
     try:
         with track_execution_metrics() as run_metrics:
             state.metrics = run_metrics
@@ -1328,7 +1152,7 @@ async def _run_crew_and_persist(
                     asyncio.to_thread(AppDevelopmentCrew),
                     _capture_branch_sha(data, work_branch, has_repo_target),
                 )
-                _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
+                memory_monitor.log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
                 # Cache de lecture GitHub partagé par l'aperçu et les agents de CETTE exécution (voir track_read_cache) ;
                 # écritures GitHub limitées à la branche de travail de cette exécution (voir track_write_scope).
                 cancel_event = threading.Event()
@@ -1354,7 +1178,7 @@ async def _run_crew_and_persist(
                         data, work_branch, normalized_base_branch, state.sha_before, raw_result)
                 raw_result = _with_pull_request_line(raw_result, delivered_pr)
             except Exception as e:
-                _log_memory(f"execution_id={db_entry.id}, exception attrapée")
+                memory_monitor.log_memory(f"execution_id={db_entry.id}, exception attrapée")
                 log.error("erreur CrewAI pendant l'exécution", exc_info=True)
                 info = classify_exception(e)
                 retry_outputs = await _retry_outputs_if_transient(e, info, db_entry.id, data, auto_retry_allowed)
@@ -1500,7 +1324,7 @@ async def execute_workflow(
     user: dict = Depends(get_current_user),
 ):
     """Étape 2 : Lancement dynamique des agents & enregistrement BDD"""
-    _log_memory("début /api/execute")
+    memory_monitor.log_memory("début /api/execute")
     final_prompt = (
         f"Demande initiale : {data.user_request}\n"
         f"Type d'exécution : {data.target_workflow}\n"
@@ -2026,30 +1850,6 @@ def execution_agent_runs(
         for row in session.exec(select(AgentRun).where(AgentRun.execution_id == execution_id)).all()
     ]
     return [agent_run_view(row) for row in sort_pipeline(rows)]
-
-class HistoryListEntry(SQLModel):
-    """Une ligne de la liste de l'historique : de quoi l'afficher et la reprendre, SANS le résultat de l'exécution
-    (texte souvent volumineux : une liste de 100 lignes en pèserait des centaines de Ko). Le résultat d'une exécution
-    s'obtient à la demande (GET /api/executions/{id}) ou avec sa conversation (/api/conversations/{id}/messages)."""
-    id: int
-    user_request: str
-    workflow: str
-    status: str
-    conversation_id: Optional[int] = None
-    repo_owner: Optional[str] = None
-    repo_name: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-    current_step: Optional[str] = None
-    error_code: Optional[str] = None
-    error_retryable: Optional[bool] = None
-    api_calls_count: Optional[int] = None
-    rate_limit_hits: Optional[int] = None
-    total_wait_time_seconds: Optional[float] = None
-    scope: Optional[str] = None
-    attempts: Optional[int] = None
-    reused_steps: Optional[int] = None
-    qa_verdict: Optional[str] = None
 
 
 @app.get("/api/executions/{execution_id}", response_model=ExecutionHistory)
