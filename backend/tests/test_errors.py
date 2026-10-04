@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
+from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import main  # noqa: E402
 from auth import get_current_user  # noqa: E402
@@ -228,3 +228,74 @@ def test_a_successful_deletion_logs_the_id_only(client, caplog):
         mine_id = mine.id
     assert client.delete(f"/api/history/{mine_id}").status_code == 200
     assert f"exécution {mine_id} supprimée" in caplog.text and "MA-DEMANDE-PRIVÉE" not in caplog.text
+
+
+# --- Liste d'historique allégée et lecture d'une exécution -----------------------------------------------------------
+
+def _add_execution(user="u1", result="RÉSULTAT-VOLUMINEUX " * 50, **fields):
+    from database import ExecutionHistory
+    with Session(main.engine) as db:
+        entry = ExecutionHistory(
+            user_request="demande", workflow="FEATURE", status="success", user_id=user, result=result,
+            clarifications="PRÉCISIONS", conversation_id=7, **fields,
+        )
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        return entry.id
+
+
+def test_history_list_never_carries_the_result_nor_internal_fields(client):
+    entry_id = _add_execution(scope="PETIT", qa_verdict="GO")
+    body = client.get("/api/history").json()
+    assert [row["id"] for row in body] == [entry_id]
+    row = body[0]
+    assert {"result", "clarifications", "user_id", "work_branch", "base_branch"}.isdisjoint(row)
+    assert (row["user_request"], row["workflow"], row["status"], row["conversation_id"]) == ("demande", "FEATURE", "success", 7)
+    assert (row["scope"], row["qa_verdict"]) == ("PETIT", "GO")
+    assert "RÉSULTAT-VOLUMINEUX" not in client.get("/api/history").text
+
+
+def test_history_list_does_not_even_read_the_result_column_from_the_database(client):
+    from sqlalchemy import event
+    _add_execution()
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(main.engine, "before_cursor_execute", record)
+    try:
+        assert client.get("/api/history").status_code == 200
+    finally:
+        event.remove(main.engine, "before_cursor_execute", record)
+    selects = [s for s in statements if "FROM executionhistory" in s]
+    assert selects and not any("executionhistory.result" in s or "executionhistory.clarifications" in s for s in selects)
+
+
+def test_one_execution_comes_with_its_full_result_and_only_for_its_owner(client):
+    mine = _add_execution()
+    theirs = _add_execution(user="u2")
+    full = client.get(f"/api/executions/{mine}")
+    assert full.status_code == 200 and full.json()["result"].startswith("RÉSULTAT-VOLUMINEUX")
+    assert client.get(f"/api/executions/{theirs}").status_code == 404
+    assert client.get("/api/executions/99999").status_code == 404
+
+
+def test_conversation_messages_still_carry_full_results_to_reload_a_conversation(client):
+    from database import Conversation
+    with Session(main.engine) as db:
+        conversation = Conversation(user_id="u1", title="t")
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        conversation_id = conversation.id
+    _add_execution(result="TEXTE-COMPLET")
+    with Session(main.engine) as db:
+        from database import ExecutionHistory
+        entry = db.exec(select(ExecutionHistory)).first()
+        entry.conversation_id = conversation_id
+        db.add(entry)
+        db.commit()
+    messages = client.get(f"/api/conversations/{conversation_id}/messages").json()
+    assert messages[0]["result"] == "TEXTE-COMPLET"

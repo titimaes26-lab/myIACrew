@@ -67,6 +67,10 @@ export interface ExecutionHistoryEntry {
   scope?: string | null;
 }
 
+// Une ligne de la liste de l'historique : l'exécution SANS son résultat ni ses précisions (texte volumineux, jamais
+// envoyé par GET /api/history). Le résultat s'obtient avec la conversation ou par GET /api/executions/{id}.
+export type HistoryListEntry = Omit<ExecutionHistoryEntry, 'result' | 'clarifications'>;
+
 export interface RepoTarget {
   owner: string;
   name: string;

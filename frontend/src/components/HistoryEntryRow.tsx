@@ -1,16 +1,16 @@
 import type { MouseEvent } from 'react';
 import Button from './ui/Button';
-import type { ExecutionHistoryEntry } from '../types';
+import type { HistoryListEntry } from '../types';
 import { toServerDate } from '../utils/serverDate';
 
-const STATUS_LABEL: Record<ExecutionHistoryEntry['status'], string> = {
+const STATUS_LABEL: Record<HistoryListEntry['status'], string> = {
   running: '🔄 En cours',
   success: '✅ Succès',
   failed: '❌ Échec',
 };
 
 interface HistoryEntryRowProps {
-  entry: ExecutionHistoryEntry;
+  entry: HistoryListEntry;
   checked: boolean;
   busy: boolean;
   deleting: boolean;

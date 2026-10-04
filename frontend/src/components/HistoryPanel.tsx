@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Card from './ui/Card';
 import Alert from './ui/Alert';
 import { apiClient } from '../api';
-import type { ExecutionHistoryEntry } from '../types';
+import type { HistoryListEntry } from '../types';
 import { useHistorySelection } from '../hooks/useHistorySelection';
 import HistoryEntryRow from './HistoryEntryRow';
 import HistorySelectionBar from './HistorySelectionBar';
@@ -22,7 +22,7 @@ function plural(count: number, singular: string, pluralForm: string): string {
 }
 
 export default function HistoryPanel({ apiUrl, accessToken, onResumeConversation }: HistoryPanelProps) {
-  const [entries, setEntries] = useState<ExecutionHistoryEntry[]>([]);
+  const [entries, setEntries] = useState<HistoryListEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<(DisplayedError & { kind: 'load' | 'action' }) | null>(null);
   const [reloadKey, setReloadKey] = useState(0);

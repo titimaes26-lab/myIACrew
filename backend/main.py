@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from contextlib import nullcontext
 from typing import Any, List, Literal, NamedTuple, Optional
 from sqlalchemy import case, update as sql_update
-from sqlmodel import Session, col, func, select
+from sqlalchemy.orm import defer
+from sqlmodel import SQLModel, Session, col, func, select
 
 from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
@@ -1938,7 +1939,46 @@ def execution_agent_runs(
     ]
     return [agent_run_view(row) for row in sort_pipeline(rows)]
 
-@app.get("/api/history", response_model=List[ExecutionHistory])
+class HistoryListEntry(SQLModel):
+    """Une ligne de la liste de l'historique : de quoi l'afficher et la reprendre, SANS le résultat de l'exécution
+    (texte souvent volumineux : une liste de 100 lignes en pèserait des centaines de Ko). Le résultat d'une exécution
+    s'obtient à la demande (GET /api/executions/{id}) ou avec sa conversation (/api/conversations/{id}/messages)."""
+    id: int
+    user_request: str
+    workflow: str
+    status: str
+    conversation_id: Optional[int] = None
+    repo_owner: Optional[str] = None
+    repo_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    current_step: Optional[str] = None
+    error_code: Optional[str] = None
+    error_retryable: Optional[bool] = None
+    api_calls_count: Optional[int] = None
+    rate_limit_hits: Optional[int] = None
+    total_wait_time_seconds: Optional[float] = None
+    scope: Optional[str] = None
+    attempts: Optional[int] = None
+    reused_steps: Optional[int] = None
+    qa_verdict: Optional[str] = None
+
+
+@app.get("/api/executions/{execution_id}", response_model=ExecutionHistory)
+def get_execution(
+    execution_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """UNE exécution de l'utilisateur, résultat complet compris (404 si elle n'est pas à lui) : permet de resynchroniser
+    un tour sans relire toute la conversation."""
+    entry = session.get(ExecutionHistory, execution_id)
+    if not entry or entry.user_id != user.get("id"):
+        raise HTTPException(status_code=404, detail="Exécution introuvable.")
+    return entry
+
+
+@app.get("/api/history", response_model=List[HistoryListEntry])
 def get_history(
     limit: int = 20,
     offset: int = 0,
@@ -1950,6 +1990,8 @@ def get_history(
     offset = max(offset, 0)
     statement = (
         select(ExecutionHistory)
+        # defer : le résultat et les précisions ne sont même pas lus en base (jamais renvoyés par cette liste).
+        .options(defer(col(ExecutionHistory.result)), defer(col(ExecutionHistory.clarifications)))
         .where(ExecutionHistory.user_id == user.get("id"))
         .order_by(col(ExecutionHistory.created_at).desc())
         .offset(offset)

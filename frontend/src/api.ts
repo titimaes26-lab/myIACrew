@@ -1,4 +1,4 @@
-import type { AgentRunView, BulkDeleteResult, ExecutionSortKey, ExecutionsPage, ExecutionHistoryEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
+import type { AgentRunView, BulkDeleteResult, ExecutionSortKey, ExecutionsPage, ExecutionHistoryEntry, HistoryListEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
 
 // /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
 // fond côté backend, voir _execute_crew_and_persist dans main.py) : ce corps de réponse ne
@@ -91,7 +91,12 @@ export function apiClient(apiUrl: string, accessToken: string) {
 
     listHistory: () =>
       request(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
-        .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
+        .then((res) => parseJsonOrThrow<HistoryListEntry[]>(res)),
+
+    // Une exécution avec son résultat complet ; null si elle n'existe plus (ou n'est pas à cet utilisateur).
+    getExecution: (executionId: number) =>
+      request(`${apiUrl}/api/executions/${executionId}`, { headers: authHeaders(accessToken) })
+        .then((res) => (res.status === 404 ? null : parseJsonOrThrow<ExecutionHistoryEntry>(res))),
 
     getConversationMessages: (conversationId: number) =>
       request(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })

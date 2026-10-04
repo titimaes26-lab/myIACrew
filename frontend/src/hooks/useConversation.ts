@@ -137,6 +137,12 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // éviter un fetch de resynchronisation qui ne pourrait de toute façon jamais rien trouver pour
   // ce second cas : messages.find(m => m.id === turn.id) ne peut matcher qu'un id numérique.
   const runningTurnHasNumericId = turns.some((t) => t.status === 'running' && typeof t.id === 'number');
+  // Identifiants serveur des tours « running », relus par le sondage (qui ne voit pas `turns` : son effet ne dépend
+  // que de booléens) pour ne resynchroniser QUE ces exécutions, pas toute la conversation.
+  const runningIdsRef = useRef<number[]>([]);
+  useEffect(() => {
+    runningIdsRef.current = turns.flatMap((t) => (t.status === 'running' && typeof t.id === 'number' ? [t.id] : []));
+  });
 
   useEffect(() => {
     // Sans conversationId, aucun moyen d'interroger /api/conversations/{id}/messages : c'est
@@ -167,7 +173,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // Sans ce garde-fou, deux tours de sondage consécutifs (toutes les PROGRESS_POLL_MS) qui
     // constatent chacun "plus rien de running" avant que le premier fetch complet de
     // resynchronisation ci-dessous n'ait eu le temps de répondre déclencheraient chacun leur
-    // propre getConversationMessages (potentiellement volumineux) en parallèle pour rien : le
+    // propre resynchronisation (une requête par exécution suivie) en parallèle pour rien : le
     // second ne fait qu'attendre le même résultat que le premier finira de toute façon par
     // apporter.
     let resyncInFlight = false;
@@ -227,9 +233,14 @@ export function useConversation(accessToken: string, apiUrl: string) {
           // messages.find(m => m.id === turn.id) plus bas (id numérique serveur vs "temp-...") :
           // inutile de payer le coût d'un fetch complet de l'historique à chaque tick pour lui,
           // sendMessage résoudra de toute façon très bientôt sa propre requête /api/execute.
-          if (!runningTurnHasNumericId || resyncInFlight) return;
+          const idsAtFetch = new Set(runningIdsRef.current);
+          if (!runningTurnHasNumericId || idsAtFetch.size === 0 || resyncInFlight) return;
           resyncInFlight = true;
-          client.getConversationMessages(conversationId)
+          // Seules les exécutions suivies sont relues (une requête chacune, résultat complet compris), au lieu de
+          // toute la conversation avec le résultat de chacun de ses tours ; une exécution disparue (404) est
+          // simplement absente de `messages`, ce que le repli plus bas traite comme avant.
+          Promise.all([...idsAtFetch].map((id) => client.getExecution(id)))
+            .then((found) => found.filter((entry): entry is ExecutionHistoryEntry => entry !== null))
             .then((messages) => {
               if (myGeneration !== conversationGenerationRef.current) return;
               // Un nouveau cycle (nouveau tour "running" démarré pendant que CE fetch, lent,
@@ -251,7 +262,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
               // d'erreur globale, seulement le badge "❌ Échec" sur la bulle de ce tour.
               let failedMessage: string | null = null;
               setTurns((t) => t.map((turn) => {
-                if (turn.status !== 'running') return turn;
+                // Seuls les tours relus ici : un tour devenu « running » entre-temps n'a pas été interrogé.
+                if (turn.status !== 'running' || typeof turn.id !== 'number' || !idsAtFetch.has(turn.id)) return turn;
                 const matching = messages.find((m) => m.id === turn.id);
                 if (matching) {
                   if (matching.status === 'failed') failedMessage = matching.result ?? 'Une erreur est survenue.';
