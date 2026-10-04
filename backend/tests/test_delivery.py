@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
+import crew_tools  # noqa: E402
 import github_tools as gt  # noqa: E402
 from delivery import (  # noqa: E402
     GENERATED_END,
@@ -189,7 +190,7 @@ def test_commit_tool_normalizes_the_message_and_tracks_committed_paths(monkeypat
         rejections["src/b.ts"] = "syntaxe invalide"
         return "OK : 1 fichier(s) committé(s)"
 
-    monkeypatch.setattr(cq, "write_files_to_branch", fake_write)
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", fake_write)
     crew._build_commit_analyst_files_tool().run(commit_message="Corrige la remise")
     assert seen["message"] == "fix: corrige la remise"
     assert crew._committed_paths == {"src/a.ts"}
@@ -200,7 +201,7 @@ def test_commit_tool_failure_leaves_no_committed_path(monkeypatch):
     crew = repo_crew()
     crew._analyst_files = [{"path": "src/a.ts", "content": "x"}]
     crew._committed_paths = {"src/a.ts"}
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *args: "ERREUR : branche protégée")
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", lambda *args: "ERREUR : branche protégée")
     crew._build_commit_analyst_files_tool().run(commit_message="m")
     assert crew._committed_paths == set()
 
@@ -216,7 +217,7 @@ def test_pull_request_tool_builds_the_body_from_facts_and_drafts_partial_deliver
         calls.update(branch=branch, base=base, title=title, body=body, draft=draft)
         return "https://github.com/o/r/pull/5", "OK : Pull Request (brouillon) créée"
 
-    monkeypatch.setattr(cq, "open_or_update_pull_request", fake_open)
+    monkeypatch.setattr(crew_tools, "open_or_update_pull_request", fake_open)
     message = crew._build_open_pull_request_tool().run(title="Corrige la remise", summary="Résumé court")
     assert message.startswith("OK") and crew._pull_request_urls == ["https://github.com/o/r/pull/5"]
     assert calls["draft"] is True and calls["title"] == "fix: corrige la remise"
@@ -257,7 +258,7 @@ def test_crew_state_extracts_the_request_and_tracks_commit_tool_usage(monkeypatc
     })
     assert crew._user_request == "Le total est faux" and crew._commit_tool_used is False
     crew._analyst_files = [{"path": "src/a.ts", "content": "x"}]
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *args: "OK : 1")
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", lambda *args: "OK : 1")
     crew._build_commit_analyst_files_tool().run(commit_message="m")
     assert crew._commit_tool_used is True
 

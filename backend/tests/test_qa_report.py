@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
+import crew_tools  # noqa: E402
 import crew_guardrails  # noqa: E402
 from analyst_output import build_delivery_report  # noqa: E402
 from qa_report import (  # noqa: E402
@@ -209,8 +210,8 @@ def test_qa_verify_tool_reports_scope_and_import_problems(monkeypatch):
     ]
     crew._architecture_task_ref = type("T", (), {"output": type("Out", (), {"raw": "## Fichiers à créer ou modifier\n- MODIFIER src/App.tsx : racine\n- CRÉER src/cart.ts : panier\n- CRÉER src/other.ts : prévu\n"})()})()
     contents = {f["path"]: f["content"] for f in crew._analyst_files}
-    monkeypatch.setattr(cq, "make_file_fetcher", lambda owner, repo, branch: (lambda path: (contents.get(path), None)))
-    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"App.tsx", "cart.ts", "extra.ts"}))
+    monkeypatch.setattr(crew_tools, "make_file_fetcher", lambda owner, repo, branch: (lambda path: (contents.get(path), None)))
+    monkeypatch.setattr(crew_tools, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"App.tsx", "cart.ts", "extra.ts"}))
     report = crew._build_qa_verify_tool().run()
     assert "HORS du plan" in report and "src/extra.ts" in report
     assert "PRÉVUS" in report and "src/other.ts" in report
@@ -221,8 +222,8 @@ def test_qa_verify_tool_checks_only_added_imports_of_edited_files(monkeypatch):
     crew = qa_crew()
     crew._analyst_files = [{"path": "src/x.ts", "content": "import Legacy from './legacy/Missing';\nconst a = 2;\n"}]
     crew._edit_scope = {"src/x.ts": "const a = 2;"}
-    monkeypatch.setattr(cq, "make_file_fetcher", lambda owner, repo, branch: (lambda path: (crew._analyst_files[0]["content"], None)))
-    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"x.ts"} if directory == "src" else set()))
+    monkeypatch.setattr(crew_tools, "make_file_fetcher", lambda owner, repo, branch: (lambda path: (crew._analyst_files[0]["content"], None)))
+    monkeypatch.setattr(crew_tools, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"x.ts"} if directory == "src" else set()))
     report = crew._build_qa_verify_tool().run()
     assert "Aucune incohérence détectée" in report and "legacy" not in report
 
@@ -266,8 +267,8 @@ def test_reconcile_leaves_prose_mentions_alone_but_rewrites_line_openers_and_the
 def test_verify_tool_reads_the_plan_from_the_task_reference_without_building_a_task(monkeypatch):
     crew = qa_crew()
     crew._analyst_files = [{"path": "src/a.ts", "content": "export const a = 1;\n"}]
-    monkeypatch.setattr(cq, "make_file_fetcher", lambda owner, repo, branch: (lambda path: ("export const a = 1;\n", None)))
-    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"a.ts"}))
+    monkeypatch.setattr(crew_tools, "make_file_fetcher", lambda owner, repo, branch: (lambda path: ("export const a = 1;\n", None)))
+    monkeypatch.setattr(crew_tools, "make_dir_lister", lambda owner, repo, branch: (lambda directory: {"a.ts"}))
 
     def boom():
         raise AssertionError("architecture_task() ne doit plus être appelée par l'outil de la QA")

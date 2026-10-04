@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test")
 
 cq = pytest.importorskip("crewquestion")
+import crew_tools  # noqa: E402
 import crew_guardrails  # noqa: E402
 import crew_workspace  # noqa: E402
 import crew_llms  # noqa: E402
@@ -391,8 +392,8 @@ def test_base_source_uses_the_work_branch_when_it_exists(monkeypatch):
         made[branch] = True
         return _fake_fetcher(content=f"version de {branch}")
 
-    monkeypatch.setattr(cq, "make_file_fetcher", fake_fetcher)
-    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda d: {branch}))
+    monkeypatch.setattr(crew_tools, "make_file_fetcher", fake_fetcher)
+    monkeypatch.setattr(crew_tools, "make_dir_lister", lambda owner, repo, branch: (lambda d: {branch}))
     assert crew._read_base_file("src/x.ts") == ("version de crewai/x", None)
     assert crew._list_base_dir("src") == {"crewai/x"} and "main" not in made
 
@@ -400,11 +401,11 @@ def test_base_source_uses_the_work_branch_when_it_exists(monkeypatch):
 def test_base_source_falls_back_to_main_only_when_the_work_branch_does_not_exist(monkeypatch):
     crew = _repo_crew()
     monkeypatch.setattr(
-        cq, "make_file_fetcher",
+        crew_tools, "make_file_fetcher",
         lambda owner, repo, branch: _fake_fetcher(error="ERREUR : branche introuvable", branch_missing=True)
         if branch == "crewai/x" else _fake_fetcher(content="version de main"),
     )
-    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda d: {branch}))
+    monkeypatch.setattr(crew_tools, "make_dir_lister", lambda owner, repo, branch: (lambda d: {branch}))
     assert crew._read_base_file("src/x.ts") == ("version de main", None)
     assert crew._list_base_dir("src") == {"main"}
 
@@ -412,11 +413,11 @@ def test_base_source_falls_back_to_main_only_when_the_work_branch_does_not_exist
 def test_transient_error_on_the_work_branch_never_falls_back_to_main(monkeypatch):
     crew = _repo_crew()
     monkeypatch.setattr(
-        cq, "make_file_fetcher",
+        crew_tools, "make_file_fetcher",
         lambda owner, repo, branch: _fake_fetcher(error="ERREUR_GITHUB : rate limit exceeded")
         if branch == "crewai/x" else _fake_fetcher(content="ANCIENNE version de main"),
     )
-    monkeypatch.setattr(cq, "make_dir_lister", lambda owner, repo, branch: (lambda d: None))
+    monkeypatch.setattr(crew_tools, "make_dir_lister", lambda owner, repo, branch: (lambda d: None))
     assert crew._read_base_file("src/x.ts") == (None, "ERREUR_GITHUB : rate limit exceeded")
     ok, message = crew._diagnostic_guardrail(output(_edit_block("src/x.ts", "a", "b")))
     assert not ok and "modification impossible" in message
@@ -514,7 +515,7 @@ def test_empty_owner_from_llm_cannot_divert_a_github_run(monkeypatch):
     crew = new_crew(owner="o", repo="r", branch="feature/x")
     crew._analyst_files = [{"path": "src/a.ts", "content": "export {};\n"}]
     calls = []
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: calls.append(a[:3]) or "OK : 1")
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", lambda *a, **k: calls.append(a[:3]) or "OK : 1")
     monkeypatch.setattr(crew_workspace, "_write_files_locally", lambda *a, **k: pytest.fail("écriture locale en mode GitHub"))
     crew._build_commit_analyst_files_tool().run(commit_message="m")
     assert calls == [("o", "r", "feature/x")]
@@ -589,7 +590,7 @@ def test_github_rejections_are_tracked_per_latest_commit(monkeypatch):
     ]
     tool = crew._build_commit_analyst_files_tool()
 
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "ERREUR : non fast-forward")
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", lambda *a, **k: "ERREUR : non fast-forward")
     tool.run(commit_message="m")
     assert "commit refusé" in crew._write_rejections["src/a.ts"]
 
@@ -597,7 +598,7 @@ def test_github_rejections_are_tracked_per_latest_commit(monkeypatch):
         sink["package.json"] = "ERREUR_SYNTAXE : JSON invalide"
         return "OK : 1 fichier(s) écrit(s)"
 
-    monkeypatch.setattr(cq, "write_files_to_branch", partial_success)
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", partial_success)
     tool.run(commit_message="m")
     assert crew._write_rejections == {"package.json": "ERREUR_SYNTAXE : JSON invalide"}
 
@@ -702,9 +703,9 @@ def test_only_successful_commits_are_cached_and_errors_explain_how_to_retry(monk
     assert commit.cache_function(None, "OK : 1 fichier") is True
     assert commit.cache_function(None, "ERREUR : non fast-forward") is False
     assert qa.cache_function() is False
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "ERREUR : non fast-forward")
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", lambda *a, **k: "ERREUR : non fast-forward")
     assert "commit_message légèrement différent" in commit.run(commit_message="m")
-    monkeypatch.setattr(cq, "write_files_to_branch", lambda *a, **k: "OK : 1 fichier(s)")
+    monkeypatch.setattr(crew_tools, "write_files_to_branch", lambda *a, **k: "OK : 1 fichier(s)")
     assert "légèrement différent" not in commit.run(commit_message="m (2e essai)")
 
 
