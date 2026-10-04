@@ -33,7 +33,10 @@ from crewai.project import CrewBase, agent, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tasks.task_output import TaskOutput
 from crewai.tools import tool
+from logs import get_logger
 from tools import check_syntax
+
+log = get_logger("crew")
 from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
 from github_tools import (
     github_read_file,
@@ -555,7 +558,7 @@ async def _generate_summary(user_request: str, result) -> str | None:
         )
         return text.strip() or None
     except Exception as e:
-        print(f"Génération du résumé ignorée : {type(e).__name__}: {e}")
+        log.warning(f"Génération du résumé ignorée : {type(e).__name__}: {e}")
         return None
 
 MAX_PRIOR_TURN_SUMMARY_CHARS = 800
@@ -659,7 +662,7 @@ def _evict_memoized_cache_entries(crew_instance: Any) -> None:
         # flush=True : sys.stdout est bufferisé par bloc une fois redirigé vers les logs Render
         # (pas un terminal) — voir main.py, _log_memory, qui applique la même garde partout pour
         # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
-        print(f"AVERTISSEMENT : échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}")
 
 # Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
 # de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
@@ -1672,7 +1675,7 @@ class AppDevelopmentCrew():
                         if not accepted:
                             self._diagnostic_guardrail(reused)
                     except Exception as e:
-                        print(f"AVERTISSEMENT : reprise du diagnostic impossible, étape rejouée : {type(e).__name__}: {e}", flush=True)
+                        log.warning(f"reprise du diagnostic impossible, étape rejouée : {type(e).__name__}: {e}")
                         task_obj.output = None
                         self._reset_execution_state(inputs)
                         self._request_type = request_type
@@ -1684,7 +1687,7 @@ class AppDevelopmentCrew():
                     try:
                         on_task_output_complete(role, raw, None)
                     except Exception as e:
-                        print(f"AVERTISSEMENT : échec du callback de reprise pour '{role}' : {type(e).__name__}: {e}", flush=True)
+                        log.warning(f"échec du callback de reprise pour '{role}' : {type(e).__name__}: {e}")
 
         try:
             # Hors boucle asyncio : le rejeu du contrôle de l'Analyste lit le dépôt (appels GitHub bloquants) et
@@ -1758,7 +1761,7 @@ class AppDevelopmentCrew():
                             on_task_output_complete(agent_name, raw_output, duration)
                         except Exception as e:
                             # Best-effort: ne pas laisser une erreur de persistance casser le workflow
-                            print(f"AVERTISSEMENT : échec du callback on_task_output_complete pour '{agent_name}' : {type(e).__name__}: {e}", flush=True)
+                            log.warning(f"échec du callback on_task_output_complete pour '{agent_name}' : {type(e).__name__}: {e}")
 
                     # Annonce la tâche SUIVANTE qui démarre (pas celle qui vient de finir), en
                     # indice GLOBAL sur l'ensemble des étapes (pas relatif à cette seule

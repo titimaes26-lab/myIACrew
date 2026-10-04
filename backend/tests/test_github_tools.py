@@ -209,19 +209,21 @@ def test_repo_snapshot_of_an_empty_repository_says_so(counting):
     assert "dépôt vide" in snapshot and "branche lue : main" in snapshot
 
 
-def test_read_cache_counts_hits_and_reads_and_logs_them(counting, capsys):
+def test_read_cache_counts_hits_and_reads_and_logs_them(counting, caplog):
+    caplog.set_level("INFO", logger="myiacrew")
     with gt.track_read_cache():
         gt.github_read_file.func("o", "r", "package.json", "main")
         gt.github_read_file.func("o", "r", "package.json", "main")
         stats = dict(gt._read_cache.get()["stats"])
     assert stats == {"hits": 1, "reads": 1}
-    assert "[CACHE LECTURE] hits=1 lectures=1" in capsys.readouterr().out
+    assert "[CACHE LECTURE] hits=1 lectures=1" in caplog.text
 
 
-def test_read_cache_logs_nothing_when_no_read_happened(capsys):
+def test_read_cache_logs_nothing_when_no_read_happened(caplog):
+    caplog.set_level("INFO", logger="myiacrew")
     with gt.track_read_cache():
         pass
-    assert "CACHE LECTURE" not in capsys.readouterr().out
+    assert "CACHE LECTURE" not in caplog.text
 
 
 def test_repo_snapshot_falls_back_to_the_raw_files_when_package_json_is_not_json(counting):
@@ -233,7 +235,10 @@ def test_repo_snapshot_falls_back_to_the_raw_files_when_package_json_is_not_json
 
 # --- Écriture limitée aux branches de travail `crewai/…` ----------------------------------------------------------
 
-BLOCKED = ["main", "master", "test", "develop", "production", "feature/x", "crewai/", "crewai/../main", "", "crewai"]
+BLOCKED = [
+    "main", "master", "test", "develop", "production", "feature/x", "crewai/", "crewai/../main", "", "crewai",
+    "crewai/a b", "crewai/x\nautre", "crewai/x;rm", "crewai//x", "crewai/x/", "crewai/x.", "crewai/-x", "CREWAI/x", " crewai/x",
+]
 
 
 def _write_calls(branch):
@@ -258,7 +263,10 @@ def test_refusal_names_the_rule_so_the_agent_can_correct_itself(counting):
     assert "principale" in gt.github_write_file.func("o", "r", "a.ts", "x", "main", "msg")
 
 
-@pytest.mark.parametrize("branch", ["crewai/feature-ab12cd34", "crewai/bugfix-00000000", "crewai/x"])
+@pytest.mark.parametrize("branch", [
+    "crewai/feature-ab12cd34", "crewai/bugfix-00000000", "crewai/x", "crewai/design_and_dev-ab12cd34", "crewai/analyse_only-5e3940d9",
+    "crewai/sous/dossier-1", "crewai/v1.2-x",
+])
 def test_work_branches_are_accepted(branch):
     assert gt._reject_protected_branch(branch) is None
 
@@ -278,12 +286,15 @@ def test_the_commit_helper_used_by_the_crew_refuses_other_branches(counting):
     assert result.startswith("ERREUR") and counting.created == []
 
 
-def test_a_refused_write_is_logged_without_file_content(counting, capsys):
+def test_a_refused_write_is_logged_without_file_content(counting, caplog):
+    caplog.set_level("INFO", logger="myiacrew")
     gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "test", "msg")
     with gt.track_write_scope("crewai/a"):
         gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "crewai/b", "msg")
     gt.github_write_file.func("o", "r", "src/x.ts", "x", "crewai/x\nFAUSSE LIGNE", "msg")
-    out = capsys.readouterr().out
-    assert "AVERTISSEMENT SÉCURITÉ" in out and "'test'" in out and "'crewai/b'" in out and "'crewai/a'" in out
+    refusals = [record for record in caplog.records if "écriture GitHub refusée" in record.getMessage()]
+    assert len(refusals) == 3 and {record.levelname for record in refusals} == {"WARNING"}
+    out = caplog.text
+    assert "'test'" in out and "'crewai/b'" in out and "'crewai/a'" in out
     assert "CONTENU-SECRET" not in out and "src/secret.ts" not in out
     assert "\nFAUSSE LIGNE" not in out   # le nom piégé est échappé par repr()

@@ -201,3 +201,30 @@ def test_endpoints_serve_requests_from_the_thread_pool(client):
     created = client.post("/api/conversations", json={"title": "t"})
     assert created.status_code == 200 and created.json()["title"] == "t"
     assert client.get(f"/api/conversations/{created.json()['id']}/messages").json() == []
+
+
+def test_deleting_someone_elses_execution_is_logged_without_user_ids_or_request_text(client, caplog):
+    from database import ExecutionHistory
+    caplog.set_level("DEBUG", logger="myiacrew")
+    with Session(main.engine) as db:
+        other = ExecutionHistory(user_request="DEMANDE-CONFIDENTIELLE", workflow="BUGFIX", status="success", user_id="u2")
+        db.add(other)
+        db.commit()
+        db.refresh(other)
+        other_id = other.id
+    assert client.delete(f"/api/history/{other_id}").status_code == 404
+    assert "n'appartient pas" in caplog.text
+    assert "u1" not in caplog.text and "u2" not in caplog.text and "DEMANDE-CONFIDENTIELLE" not in caplog.text
+
+
+def test_a_successful_deletion_logs_the_id_only(client, caplog):
+    from database import ExecutionHistory
+    caplog.set_level("DEBUG", logger="myiacrew")
+    with Session(main.engine) as db:
+        mine = ExecutionHistory(user_request="MA-DEMANDE-PRIVÉE", workflow="BUGFIX", status="success", user_id="u1")
+        db.add(mine)
+        db.commit()
+        db.refresh(mine)
+        mine_id = mine.id
+    assert client.delete(f"/api/history/{mine_id}").status_code == 200
+    assert f"exécution {mine_id} supprimée" in caplog.text and "MA-DEMANDE-PRIVÉE" not in caplog.text

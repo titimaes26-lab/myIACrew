@@ -1,6 +1,5 @@
 import asyncio
 import os
-import traceback
 import uuid
 import re
 from datetime import datetime, timedelta, timezone
@@ -32,6 +31,7 @@ from agent_metrics import (
 from auth import get_current_user, close_http_client
 import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
+from logs import get_logger
 from qa_report import final_verdict
 from errors import (
     AppError, DeliveryError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
@@ -42,6 +42,8 @@ from github_tools import (
     track_write_scope, WORK_BRANCH_PREFIX,
 )
 from delivery import render_partial_delivery_block
+
+log = get_logger("main")
 
 # 1. INSTANCIATION DE FASTAPI (Obligatoire au tout début !)
 app = FastAPI(title="CrewAI App Development API")
@@ -111,7 +113,7 @@ def _backfill_qa_verdicts() -> None:
                         )
                 backfill.commit()
     except Exception as e:
-        print(f"AVERTISSEMENT : rattrapage des verdicts QA ignoré : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"rattrapage des verdicts QA ignoré : {type(e).__name__}: {e}")
 
 # 2. ÉVÉNEMENT DE DÉMARRAGE (Création des tables BDD)
 @app.on_event("startup")
@@ -129,9 +131,9 @@ def on_startup():
         with Session(engine) as session:
             swept = sweep_stale_executions(session, active_ids=_active_execution_ids)
         if swept:
-            print(f"Démarrage : {len(swept)} exécution(s) orpheline(s) marquée(s) interrompue(s) : {swept}", flush=True)
+            log.info(f"Démarrage : {len(swept)} exécution(s) orpheline(s) marquée(s) interrompue(s) : {swept}")
     except Exception as e:
-        print(f"AVERTISSEMENT : balayage des exécutions orphelines impossible : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"balayage des exécutions orphelines impossible : {type(e).__name__}: {e}")
 
 # Ferme proprement le client HTTP partagé de auth.py (voir sa docstring) plutôt que de
 # laisser ses connexions ouvertes à l'arrêt du process.
@@ -150,11 +152,8 @@ async def on_shutdown():
     # une exécution sur le point de se terminer a ainsi une vraie chance de persister son résultat
     # avant l'arrêt, plutôt qu'aucune.
     if _background_tasks:
-        print(
-            f"Arrêt du service : attente (best-effort, jusqu'à {_SHUTDOWN_DRAIN_TIMEOUT_S}s) de "
-            f"{len(_background_tasks)} exécution(s) de crew encore en tâche de fond...",
-            flush=True,
-        )
+        log.info(f"Arrêt du service : attente (best-effort, jusqu'à {_SHUTDOWN_DRAIN_TIMEOUT_S}s) de "
+            f"{len(_background_tasks)} exécution(s) de crew encore en tâche de fond...")
         await asyncio.wait(list(_background_tasks), timeout=_SHUTDOWN_DRAIN_TIMEOUT_S)
     await close_http_client()
 
@@ -249,8 +248,7 @@ async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResp
         # process se termine brutalement juste après (ex: OOM kill, SIGKILL — qui ne laisse
         # aucune chance de vider ce tampon en sortie normale) : exactement le genre de trace
         # perdue que ce handler existe pour éviter.
-        print(f"--- EXCEPTION NON GEREE SUR {request.method} {request.url.path} ---", flush=True)
-        print(traceback.format_exc(), flush=True)
+        log.error(f"exception non gérée sur {request.method} {request.url.path}", exc_info=exc)
     except Exception:
         pass
 
@@ -453,9 +451,9 @@ def _log_memory(context: str) -> None:
                 # ligne pourrait rester en mémoire tampon et disparaître si le process se termine
                 # brutalement juste après (OOM kill notamment, qui ne laisse aucune chance de
                 # vider ce tampon), précisément la dernière lecture la plus utile à voir.
-                print(f"[MEM] {context} : {mem_mb:.0f} Mo / {limit.mb:.0f} Mo ({pct:.0f}%) (RSS / {label})", flush=True)
+                log.info(f"[MEM] {context} : {mem_mb:.0f} Mo / {limit.mb:.0f} Mo ({pct:.0f}%) (RSS / {label})")
             else:
-                print(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS) — plafond du conteneur indisponible", flush=True)
+                log.info(f"[MEM] {context} : {mem_mb:.0f} Mo (RSS) — plafond du conteneur indisponible")
     except Exception:
         pass
 
@@ -499,7 +497,7 @@ def _safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) ->
         session.refresh(db_entry)
     except Exception as e:
         session.rollback()
-        print(f"AVERTISSEMENT : échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}")
 
 # --- TRACKER D'AGENTS PERSISTÉS POUR IDEMPOTENCE ---
 # Structure: {execution_id: set(agent_names_persisted)}
@@ -575,7 +573,7 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
                 step_session.add(entry)
                 step_session.commit()
     except Exception as e:
-        print(f"AVERTISSEMENT : échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"échec de la mise à jour de la progression (execution_id={execution_id}, step={step_key!r}) : {type(e).__name__}: {e}")
 
 async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branch: str, sha_before) -> str:
     """Bloc « Travail déjà présent sur GitHub » d'un échec. Ne lève jamais et reste borné dans le
@@ -598,7 +596,7 @@ def _set_attempts(execution_id: int, attempts: int) -> None:
             )
             attempts_session.commit()
     except Exception as e:
-        print(f"AVERTISSEMENT : nombre de tentatives non enregistré (execution_id={execution_id}) : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"nombre de tentatives non enregistré (execution_id={execution_id}) : {type(e).__name__}: {e}")
 
 def _touch_execution(execution_id: int) -> bool:
     """Signe de vie (updated_at) d'une exécution en cours. Best-effort ; True si écrit sans erreur.
@@ -614,7 +612,7 @@ def _touch_execution(execution_id: int) -> bool:
             heartbeat_session.commit()
         return True
     except Exception as e:
-        print(f"AVERTISSEMENT : battement de l'exécution {execution_id} impossible : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"battement de l'exécution {execution_id} impossible : {type(e).__name__}: {e}")
         return False
 
 async def _heartbeat(execution_id: int) -> None:
@@ -652,7 +650,7 @@ def _persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metric
         )
         session.add_all([AgentRun(**row) for row in rows])
     except Exception as e:
-        print(f"AVERTISSEMENT : métriques par agent non enregistrées pour execution_id={db_entry.id} : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"métriques par agent non enregistrées pour execution_id={db_entry.id} : {type(e).__name__}: {e}")
 
 
 def _persist_completed_agent(
@@ -679,7 +677,7 @@ def _persist_completed_agent(
         _persisted_agents[execution_id] = set()
 
     if agent_name in _persisted_agents[execution_id]:
-        print(f"execution_id={execution_id}: agent '{agent_name}' déjà persisté, skip (idempotence).", flush=True)
+        log.info(f"execution_id={execution_id}: agent '{agent_name}' déjà persisté, skip (idempotence).")
         return
 
     try:
@@ -714,9 +712,9 @@ def _persist_completed_agent(
                 # Marquer l'agent comme persisté pour l'idempotence
                 _persisted_agents[execution_id].add(agent_name)
 
-                print(f"execution_id={execution_id}: agent '{agent_name}' persisté ({output_size} bytes).", flush=True)
+                log.debug(f"execution_id={execution_id}: agent '{agent_name}' persisté ({output_size} bytes).")
     except Exception as e:
-        print(f"AVERTISSEMENT : échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}")
 
 def _load_checkpoints(session: Session, execution_id: int) -> dict[str, str]:
     """{étape: sortie} sauvegardées pour une exécution (la plus récente gagne en cas de doublon)."""
@@ -741,7 +739,7 @@ def _delete_checkpoints_for(execution_id: int) -> None:
                 cleanup_session.delete(checkpoint)
             cleanup_session.commit()
     except Exception as e:
-        print(f"AVERTISSEMENT : purge des points de reprise impossible (execution_id={execution_id}) : {type(e).__name__}: {e}", flush=True)
+        log.warning(f"purge des points de reprise impossible (execution_id={execution_id}) : {type(e).__name__}: {e}")
 
 def _fail_execution(execution_id: int, message: str) -> None:
     """Marque une exécution « failed » (interne) quand plus aucun autre chemin ne peut le faire. Best-effort."""
@@ -938,7 +936,7 @@ async def _prefetch_repo_snapshot(
     try:
         return await asyncio.to_thread(build_repo_snapshot, data.repo_owner, data.repo_name, branch)
     except Exception as e:
-        print(f"AVERTISSEMENT : aperçu du repository non lu ({type(e).__name__}: {e}) : l'agent lira lui-même.", flush=True)
+        log.warning(f"aperçu du repository non lu ({type(e).__name__}: {e}) : l'agent lira lui-même.")
         return ""
 
 
@@ -994,7 +992,7 @@ async def _load_previous_plan(
     try:
         return await asyncio.to_thread(read)
     except Exception as e:
-        print(f"AVERTISSEMENT : plan du tour précédent non lu ({type(e).__name__}: {e}) : l'Architecte part de zéro.", flush=True)
+        log.warning(f"plan du tour précédent non lu ({type(e).__name__}: {e}) : l'Architecte part de zéro.")
         return ""
 
 
@@ -1127,7 +1125,7 @@ async def _persist_success(
     db_entry.current_step = None
     _record_run_metrics(session, db_entry, state)
     _commit_outcome(session, db_entry, conversation)
-    print(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).", flush=True)
+    log.info(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).")
     # Après le commit du succès, dans sa propre Session et au mieux : purger une ressource optionnelle ne
     # doit jamais faire échouer (ni être validée par) le chemin d'une exécution réussie.
     await asyncio.to_thread(_delete_checkpoints_for, db_entry.id)
@@ -1145,8 +1143,8 @@ async def _persist_success_safely(
         await _persist_success(session, db_entry, conversation, raw_result, state)
         return
     except Exception as first_error:
-        print(f"AVERTISSEMENT : validation du succès impossible (execution_id={db_entry_id}), nouvel essai : "
-              f"{type(first_error).__name__}: {first_error}", flush=True)
+        log.warning(f"validation du succès impossible (execution_id={db_entry_id}), nouvel essai : "
+              f"{type(first_error).__name__}: {first_error}")
     try:
         with Session(engine) as fresh:
             fresh_entry = fresh.get(ExecutionHistory, db_entry_id)
@@ -1155,8 +1153,8 @@ async def _persist_success_safely(
                 return
             await _persist_success(fresh, fresh_entry, fresh_conversation, raw_result, state)
     except Exception as second_error:
-        print(f"ERREUR : succès non enregistré (execution_id={db_entry_id}) : {type(second_error).__name__}: "
-              f"{second_error}", flush=True)
+        log.error(f"succès non enregistré (execution_id={db_entry_id}) : {type(second_error).__name__}: "
+              f"{second_error}")
         _cleanup_persisted_agents(db_entry_id)
 
 
@@ -1213,10 +1211,8 @@ async def _retry_outputs_if_transient(
     prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
     if len(prefix) < exc.step_index - 1:
         return None
-    print(
-        f"execution_id={db_entry_id} : échec transitoire ({info.code}), nouvelle tentative "
-        f"automatique dans {AUTO_RETRY_DELAY_S}s.", flush=True,
-    )
+    log.info(f"execution_id={db_entry_id} : échec transitoire ({info.code}), nouvelle tentative "
+        f"automatique dans {AUTO_RETRY_DELAY_S}s.")
     return {key: saved[key] for key in prefix}
 
 
@@ -1224,7 +1220,7 @@ def _mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
     """Dernier filet : l'ouverture de la Session ou les `get` initiaux ont échoué (pool épuisé, coupure base).
     Sans lui la ligne resterait « running » pour toujours. Best-effort : si la base est injoignable, rien de
     mieux n'est possible depuis ce process."""
-    print(f"AVERTISSEMENT : échec du démarrage de la tâche de fond pour db_entry={db_entry_id} : {exc}", flush=True)
+    log.warning(f"échec du démarrage de la tâche de fond pour db_entry={db_entry_id} : {exc}")
     try:
         with Session(engine) as session:
             db_entry = session.get(ExecutionHistory, db_entry_id)
@@ -1272,11 +1268,8 @@ async def _run_crew_and_persist(
             if db_entry is None or conversation is None:
                 # Ne devrait jamais arriver (enregistrements tout juste commités par execute_workflow) : un
                 # print plutôt qu'une exception que personne ne retrouverait (rien n'attend cette tâche).
-                print(
-                    f"AVERTISSEMENT : db_entry={db_entry_id} ou conversation={conversation_id} "
-                    "introuvable au lancement de la tâche de fond, exécution abandonnée.",
-                    flush=True,
-                )
+                log.warning(f"db_entry={db_entry_id} ou conversation={conversation_id} "
+                    "introuvable au lancement de la tâche de fond, exécution abandonnée.")
                 return None
 
             try:
@@ -1314,8 +1307,7 @@ async def _run_crew_and_persist(
                 raw_result = _with_pull_request_line(raw_result, delivered_pr)
             except Exception as e:
                 _log_memory(f"execution_id={db_entry.id}, exception attrapée")
-                print("--- ERREUR CREWAI EXECUTION DETECTEE ---", flush=True)
-                print(traceback.format_exc(), flush=True)
+                log.error("erreur CrewAI pendant l'exécution", exc_info=True)
                 info = classify_exception(e)
                 retry_outputs = await _retry_outputs_if_transient(e, info, db_entry.id, data, auto_retry_allowed)
                 if retry_outputs is not None:
@@ -1339,6 +1331,44 @@ async def _run_crew_and_persist(
 @app.get("/")
 def read_root():
     return {"status": "API CrewAI opérationnelle"}
+
+def _prior_turns(session: Session, conversation_id: int) -> tuple[list[int], str]:
+    """(identifiants des tours encore « running », rappel des derniers tours) d'une conversation. Seuls les
+    MAX_PRIOR_TURNS_IN_CONTEXT derniers tours sont lus en entier (pour leur résumé) ; le nombre total sert à signaler
+    ceux qui sont omis. Même contenu que lire toute la conversation, sans charger les résultats des tours anciens."""
+    in_conversation = ExecutionHistory.conversation_id == conversation_id
+    running_ids = [
+        row_id for row_id in session.exec(
+            select(ExecutionHistory.id).where(in_conversation).where(ExecutionHistory.status == "running")
+        ).all() if row_id is not None
+    ]
+    total = session.exec(select(func.count()).select_from(ExecutionHistory).where(in_conversation)).one()
+    recent = session.exec(
+        select(ExecutionHistory).where(in_conversation)
+        .order_by(col(ExecutionHistory.created_at).desc(), col(ExecutionHistory.id).desc())
+        .limit(MAX_PRIOR_TURNS_IN_CONTEXT)
+    ).all()
+    return running_ids, build_conversation_context(list(reversed(recent)), total_count=total)
+
+
+def _previous_work_branch(
+    session: Session, conversation_id: int, owner: Optional[str], repo: Optional[str], base_branch: Optional[str],
+) -> str:
+    """Branche de travail du dernier tour de la conversation sur le même repository et la même branche de base,
+    quel que soit son statut (« failed » compris : « Relancer » continue sur la même branche et la même PR), ou ""."""
+    found = session.exec(
+        select(ExecutionHistory.work_branch)
+        .where(ExecutionHistory.conversation_id == conversation_id)
+        .where(col(ExecutionHistory.work_branch).is_not(None))
+        .where(col(ExecutionHistory.work_branch) != "")
+        .where(ExecutionHistory.repo_owner == owner)
+        .where(ExecutionHistory.repo_name == repo)
+        .where(ExecutionHistory.base_branch == base_branch)
+        .order_by(col(ExecutionHistory.created_at).desc(), col(ExecutionHistory.id).desc())
+        .limit(1)
+    ).first()
+    return found or ""
+
 
 def _load_qualification_context(conversation_id: int, user_id) -> str | None:
     """Rappel des tours précédents pour /api/qualify, ou None si la conversation est introuvable
@@ -1379,8 +1409,7 @@ async def qualify_request(data: UserRequestInput, user: dict = Depends(get_curre
         crew_instance.save_analysis_report(report, data.user_request)
         return report
     except Exception as e:
-        print("--- ERREUR CREWAI DETECTEE ---", flush=True)
-        print(traceback.format_exc(), flush=True)
+        log.error("erreur CrewAI pendant la qualification", exc_info=True)
         # Pas de str(e) dans la réponse : le détail réel reste dans les logs ci-dessus.
         info = classify_exception(e)
         raise AppError(
@@ -1449,12 +1478,9 @@ async def execute_workflow(
     # Tours précédents de cette conversation : donnent aux agents un rappel de ce qui a
     # déjà été demandé/livré, et permettent de continuer sur la même branche de travail
     # plutôt que d'en ouvrir une nouvelle déconnectée à chaque message (voir plus bas).
-    prior_entries = session.exec(
-        select(ExecutionHistory)
-        .where(ExecutionHistory.conversation_id == conversation.id)
-        .order_by(col(ExecutionHistory.created_at).asc())
-    ).all()
-    conversation_context = build_conversation_context(prior_entries)
+    # Trois requêtes ciblées (tours en cours, derniers tours, branche) plutôt que de relire toute la conversation
+    # avec le texte complet de chaque résultat à chaque envoi.
+    running_ids, conversation_context = _prior_turns(session, conversation.id)
 
     # Empêche deux exécutions concurrentes sur la même conversation. Nécessaire depuis la
     # réutilisation du work_branch entre tours (voir plus bas) : sans ce garde-fou, deux
@@ -1464,17 +1490,12 @@ async def execute_workflow(
     # l'une des deux échouerait alors avec un SHA obsolète au lieu d'une erreur claire.
     # Un tour resté bloqué à "running" (crash serveur en cours d'exécution, qui saute le bloc except)
     # est balayé ci-dessous (orphans.sweep_stale_executions) s'il n'a plus donné signe de vie.
-    if any(entry.status == "running" for entry in prior_entries):
+    if running_ids:
         # Une exécution morte (crash, redéploiement) ne doit pas bloquer la conversation pour toujours.
         if sweep_stale_executions(session, active_ids=_active_execution_ids, conversation_id=conversation.id):
             session.expire_all()
-            prior_entries = session.exec(
-                select(ExecutionHistory)
-                .where(ExecutionHistory.conversation_id == conversation.id)
-                .order_by(col(ExecutionHistory.created_at).asc())
-            ).all()
-            conversation_context = build_conversation_context(prior_entries)
-    if any(entry.status == "running" for entry in prior_entries):
+            running_ids, conversation_context = _prior_turns(session, conversation.id)
+    if running_ids:
         raise HTTPException(
             status_code=409,
             detail="Une exécution est déjà en cours pour cette conversation. Attends qu'elle se termine avant d'envoyer un nouveau message.",
@@ -1500,15 +1521,7 @@ async def execute_workflow(
         # l'ouverture de la PR a échoué — voir verify_github_delivery) : _run_crew_and_persist
         # interroge directement l'API GitHub (repo_branch_sha_before, live) pour ce signal, plus
         # fiable qu'une heuristique basée sur ce champ.
-        for entry in reversed(prior_entries):
-            if (
-                entry.work_branch
-                and entry.repo_owner == data.repo_owner
-                and entry.repo_name == data.repo_name
-                and entry.base_branch == normalized_base_branch
-            ):
-                work_branch = entry.work_branch
-                break
+        work_branch = _previous_work_branch(session, conversation.id, data.repo_owner, data.repo_name, normalized_base_branch)
         if not work_branch:
             work_branch = f"{WORK_BRANCH_PREFIX}{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
 
@@ -1965,16 +1978,17 @@ def delete_history_entry(
     user: dict = Depends(get_current_user),
 ):
     """Supprime une exécution de l'historique de l'utilisateur courant."""
-    print(f"DELETE /api/history/{execution_id} appelé par {user.get('id')}", flush=True)
+    log.debug("suppression de l'exécution %s demandée", execution_id)
     # Une exécution orpheline (plus de signe de vie) devient « failed » donc supprimable.
     sweep_stale_executions(session, active_ids=_active_execution_ids, user_id=user.get("id"), ids=[execution_id])
     session.expire_all()
     entry = session.get(ExecutionHistory, execution_id)
     if not entry:
-        print(f"  → Entrée {execution_id} introuvable en base", flush=True)
+        log.info("suppression : exécution %s introuvable", execution_id)
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
     if entry.user_id != user.get("id"):
-        print(f"  → Accès refusé : entry.user_id={entry.user_id}, user.id={user.get('id')}", flush=True)
+        # Ni identifiant d'utilisateur ni contenu dans le log : l'exécution d'un autre compte reste invisible (404).
+        log.warning("suppression refusée : l'exécution %s n'appartient pas à l'utilisateur de la requête", execution_id)
         raise HTTPException(status_code=404, detail="Exécution introuvable.")
 
     # Bloqué sur status="running" : une exécution orpheline (plus de signe de vie, voir orphans.py)
@@ -1987,13 +2001,12 @@ def delete_history_entry(
     # ne pourrait plus être persisté (sa ligne n'existe plus) — silencieusement perdu, PR GitHub
     # potentiellement déjà ouverte comprise.
     if entry.status == "running":
-        print("  → Suppression refusée : status=running", flush=True)
+        log.info("suppression refusée : l'exécution %s est encore en cours", execution_id)
         raise HTTPException(status_code=409, detail="Impossible de supprimer une exécution encore en cours.")
 
-    print(f"  → Suppression en cours : user_request={entry.user_request[:50]}", flush=True)
     _delete_executions(session, [entry])
     session.commit()
-    print("  → Suppression confirmée en base", flush=True)
+    log.info("exécution %s supprimée", execution_id)
     return {"status": "deleted", "id": execution_id}
 
 @app.post("/api/history/bulk-delete")

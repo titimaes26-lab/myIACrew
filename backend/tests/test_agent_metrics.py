@@ -240,9 +240,10 @@ def test_persist_agent_runs_stores_one_row_per_measured_agent(session):
     assert len(rows) == 1 and rows[0].agent == "design" and rows[0].total_tokens == 4 and rows[0].user_id == "u1"
 
 
-def test_persist_agent_runs_never_raises(session, capsys):
+def test_persist_agent_runs_never_raises(session, caplog):
+    caplog.set_level("INFO", logger="myiacrew")
     main._persist_agent_runs(session, ExecutionHistory(user_request="r", workflow="x"), object())
-    assert "non enregistrées" in capsys.readouterr().out
+    assert "non enregistrées" in caplog.text
 
 
 def test_metrics_summary_endpoint_is_scoped_to_the_user_period_and_workflow(session):

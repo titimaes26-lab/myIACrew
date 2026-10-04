@@ -1,5 +1,6 @@
 """Étapes extraites de _run_crew_and_persist : fonctions pures ou presque, testées une à une."""
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import sys
 from types import SimpleNamespace
@@ -202,7 +203,8 @@ def test_success_persistence_error_never_turns_a_delivered_run_into_a_failure(en
     assert saved.status == "success" and saved.error_code is None
 
 
-def test_when_success_persistence_fails_twice_the_row_is_not_declared_failed(engine, monkeypatch, capsys):
+def test_when_success_persistence_fails_twice_the_row_is_not_declared_failed(engine, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="myiacrew")
     seen: list[dict] = []
     _fake_crew(monkeypatch, None, seen)
 
@@ -214,7 +216,8 @@ def test_when_success_persistence_fails_twice_the_row_is_not_declared_failed(eng
     asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
     with Session(engine) as db:
         assert db.get(ExecutionHistory, execution_id).status == "running"  # libérée plus tard par le balayage
-    assert "succès non enregistré" in capsys.readouterr().out
+    assert "succès non enregistré" in caplog.text
+    assert any(record.levelname == "ERROR" for record in caplog.records)
 
 
 def test_persist_success_records_result_metrics_and_clears_the_step(engine, monkeypatch):
@@ -336,7 +339,8 @@ def test_no_snapshot_is_read_when_a_resume_reuses_every_step_that_reads(monkeypa
     assert bool(calls) is reads
 
 
-def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, capsys):
+def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="myiacrew")
     def boom(*args):
         raise RuntimeError("GitHub en panne")
 
@@ -347,7 +351,7 @@ def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, capsy
     execution_id, conversation_id = _new_execution(engine, "FEATURE")
     asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/b", "main", "p", "c"))
     assert seen[0]["repo_snapshot"] == ""
-    assert "aperçu du repository non lu" in capsys.readouterr().out
+    assert "aperçu du repository non lu" in caplog.text
     with Session(engine) as db:
         assert db.get(ExecutionHistory, execution_id).status == "success"
 
@@ -509,3 +513,76 @@ def test_the_crew_runs_with_its_write_scope_limited_to_the_work_branch(engine, m
 def test_work_branches_are_named_with_the_shared_prefix():
     import github_tools
     assert main.WORK_BRANCH_PREFIX == github_tools.WORK_BRANCH_PREFIX == "crewai/"
+
+
+# --- Lecture ciblée des tours précédents ---------------------------------------------------------------------------
+
+def _turns(engine, count, **overrides):
+    """`count` tours d'une même conversation, du plus ancien au plus récent ; renvoie (conversation_id, ids)."""
+    with Session(engine) as db:
+        conversation = Conversation(user_id="u1", title="t")
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        ids = []
+        for index in range(count):
+            fields = dict(
+                user_request=f"demande {index}", workflow="FEATURE", status="success", user_id="u1",
+                conversation_id=conversation.id, result=f"## QA\n\nrésumé {index}",
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=index),
+            )
+            fields.update(overrides)
+            entry = ExecutionHistory(**fields)
+            db.add(entry)
+            db.commit()
+            db.refresh(entry)
+            ids.append(entry.id)
+        return conversation.id, ids
+
+
+def test_prior_turns_reads_only_the_recent_turns_in_full_and_reports_the_omitted_ones(engine, monkeypatch):
+    conversation_id, _ = _turns(engine, 14)
+    seen = {}
+    real = main.build_conversation_context
+    monkeypatch.setattr(main, "build_conversation_context", lambda entries, total_count=None: (
+        seen.update(count=len(entries), total=total_count, first=entries[0].user_request, last=entries[-1].user_request)
+        or real(entries, total_count=total_count)))
+    with Session(engine) as db:
+        running, context = main._prior_turns(db, conversation_id)
+    assert running == []
+    assert seen == {"count": main.MAX_PRIOR_TURNS_IN_CONTEXT, "total": 14, "first": "demande 4", "last": "demande 13"}
+    assert "[4 tour(s) plus ancien(s) omis" in context and "demande 13" in context and "demande 3" not in context
+
+
+def test_prior_turns_context_is_identical_to_reading_the_whole_conversation(engine):
+    conversation_id, _ = _turns(engine, 14)
+    with Session(engine) as db:
+        _, context = main._prior_turns(db, conversation_id)
+        everything = db.exec(select(ExecutionHistory).where(ExecutionHistory.conversation_id == conversation_id)
+                             .order_by(ExecutionHistory.created_at)).all()
+        assert context == main.build_conversation_context(everything)
+
+
+def test_prior_turns_lists_the_running_ones_and_handles_an_empty_conversation(engine):
+    conversation_id, ids = _turns(engine, 3)
+    with Session(engine) as db:
+        entry = db.get(ExecutionHistory, ids[1])
+        entry.status = "running"
+        db.add(entry)
+        db.commit()
+        assert main._prior_turns(db, conversation_id)[0] == [ids[1]]
+        assert main._prior_turns(db, 99999) == ([], "Aucun échange précédent dans cette conversation.")
+
+
+def test_previous_work_branch_is_the_latest_one_for_the_same_repository_and_base(engine):
+    conversation_id, ids = _turns(engine, 4, repo_owner="o", repo_name="r", base_branch="main")
+    with Session(engine) as db:
+        for entry_id, branch in zip(ids, ["crewai/a", "crewai/b", None, ""]):
+            entry = db.get(ExecutionHistory, entry_id)
+            entry.work_branch = branch
+            db.add(entry)
+        db.commit()
+        assert main._previous_work_branch(db, conversation_id, "o", "r", "main") == "crewai/b"
+        assert main._previous_work_branch(db, conversation_id, "autre", "r", "main") == ""
+        assert main._previous_work_branch(db, conversation_id, "o", "r", "develop") == ""
+        assert main._previous_work_branch(db, conversation_id, None, None, None) == ""

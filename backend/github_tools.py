@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -13,7 +14,10 @@ from github import Auth, Github, GithubException, InputGitTreeElement
 from delivery import merge_pull_request_body
 from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE
 from project_summary import summarize_project
+from logs import get_logger
 from tools import check_syntax_content
+
+log = get_logger("github")
 
 
 # Cache de LECTURE d'une exécution de crew (voir track_read_cache) : les agents (Designer, Architecte, Diagnostic)
@@ -38,7 +42,7 @@ def track_read_cache():
         stats = cache["stats"]
         if stats["hits"] + stats["reads"]:
             # Rend le gain du cache lisible dans les logs (et prouve qu'il est actif dans les threads d'outils).
-            print(f"[CACHE LECTURE] hits={stats['hits']} lectures={stats['reads']}", flush=True)
+            log.info(f"[CACHE LECTURE] hits={stats['hits']} lectures={stats['reads']}")
 
 
 def invalidate_read_cache(owner: str, repo: str, branch: str) -> None:
@@ -97,6 +101,9 @@ def _github_error(e: GithubException) -> str:
 # la SEULE zone où les agents ont le droit d'écrire. Ni `main`, ni `test`, ni une branche de production : le nom de
 # branche d'un appel d'outil vient du modèle, qu'une consigne glissée dans le dépôt cible pourrait détourner.
 WORK_BRANCH_PREFIX = "crewai/"
+# Nom admissible : préfixe puis caractères sûrs seulement (lettres, chiffres, « . _ - / »), sans espace ni retour à la
+# ligne, sans « // », sans « / » ni « . » final. Les noms réels sont « crewai/<workflow>-<hex8> ».
+_WORK_BRANCH_NAME = re.compile(r"crewai/[A-Za-z0-9_](?:(?:[A-Za-z0-9._-]|/(?!/))*[A-Za-z0-9_-])?")
 
 # Branche de travail de l'exécution en cours, quand elle est connue : seule celle-ci est alors écrivable (plus strict
 # que le préfixe). Absente d'un thread qui n'a pas hérité du contexte, la règle du préfixe reste en vigueur.
@@ -117,21 +124,15 @@ def _log_refused_write(branch: object) -> None:
     """Trace d'une écriture refusée : c'est le signe d'un agent qui sort de sa branche de travail (consigne glissée dans
     le dépôt cible ?). Le nom de branche et la branche autorisée seulement, jamais de contenu de fichier ; repr() pour
     qu'un nom piégé (retours à la ligne) ne fabrique pas de fausses lignes de log."""
-    print(
-        f"AVERTISSEMENT SÉCURITÉ : écriture GitHub refusée sur la branche {branch!r} "
-        f"(branche autorisée : {_write_scope.get() or WORK_BRANCH_PREFIX + '…'!r}).",
-        flush=True,
-    )
+    log.warning(f"écriture GitHub refusée sur la branche {branch!r} "
+        f"(branche autorisée : {_write_scope.get() or WORK_BRANCH_PREFIX + '…'!r}).")
 
 
 def _reject_protected_branch(branch: str) -> str | None:
     """None si l'écriture sur `branch` peut continuer, sinon le message d'erreur à renvoyer tel quel (aucun appel réseau)."""
     if branch in ("main", "master"):
         return "ERREUR : écriture directe sur la branche principale interdite. Utilise d'abord github_create_branch."
-    valid = (
-        isinstance(branch, str) and branch.startswith(WORK_BRANCH_PREFIX) and len(branch) > len(WORK_BRANCH_PREFIX)
-        and ".." not in branch
-    )
+    valid = isinstance(branch, str) and _WORK_BRANCH_NAME.fullmatch(branch) is not None and ".." not in branch
     if not valid:
         _log_refused_write(branch)
         return (
@@ -181,12 +182,9 @@ def _reject_invalid_syntax(path: str, content: str) -> str | None:
         # print visible (pas juste avalé) : cette hypothèse pourrait un jour être invalidée par
         # un futur changement de tools.py, et ce cas mérite d'être investigué même s'il ne
         # bloque pas le commit.
-        print(
-            f"AVERTISSEMENT : check_syntax_content a levé une exception inattendue pour '{path}' "
+        log.warning(f"check_syntax_content a levé une exception inattendue pour '{path}' "
             f"({type(e).__name__}: {e}) — commit non bloqué (garde-fou best-effort), mais ce cas "
-            "devrait être investigué : voir _reject_invalid_syntax.",
-            flush=True,
-        )
+            "devrait être investigué : voir _reject_invalid_syntax.")
         return None
     if result.startswith("ERREUR_SYNTAXE"):
         return result
