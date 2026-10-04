@@ -41,7 +41,8 @@ export function useNotifyPreference() {
     let result: NotificationPermission = Notification.permission;
     if (result === 'default') {
       try {
-        result = await Notification.requestPermission();
+        // Anciens Safari : requestPermission fonctionne par rappel et ne renvoie rien ; on relit alors l'état réel.
+        result = (await Notification.requestPermission()) ?? Notification.permission;
       } catch {
         result = Notification.permission;
       }

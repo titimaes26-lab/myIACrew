@@ -93,6 +93,11 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
   // première étape non reprise commence avec le tour ; une étape suivante est vue changer (au plus 3 s de retard,
   // le sondage) ; une frise montée en cours de route (rechargement) n'a aucun moyen de le savoir : pas d'estimation.
   const [stepStart, setStepStart] = useState<{ key: string | null; startElapsed: number | null; seen: boolean }>({ key: null, startElapsed: null, seen: false });
+  // Le suivi réel disparaît (pause de quota, relance automatique, file d'attente) : la même étape qui revient ensuite
+  // est une NOUVELLE exécution de cette étape, son début est à remesurer (clé oubliée, `seen` conservé).
+  if (!hasRealProgress && stepStart.key !== null) {
+    setStepStart({ ...stepStart, key: null });
+  }
   if (hasRealProgress && stepStart.key !== currentStepKey) {
     setStepStart({
       key: currentStepKey ?? null,

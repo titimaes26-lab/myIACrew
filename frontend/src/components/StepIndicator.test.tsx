@@ -111,4 +111,24 @@ describe('StepIndicator — temps restant estimé', () => {
     expect(await screen.findByText(/Étape « Architecture technique » depuis/)).toBeInTheDocument();
     expect(screen.queryByText(/temps restant estimé/)).toBeNull();
   });
+
+  it('remesure l’étape quand le suivi réel disparaît (pause, relance) puis revient sur la même étape', async () => {
+    clearStepStatsCache();
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ agents }), { status: 200 }))));
+    const since = new Date(Date.now() - 240_000).toISOString();   // 4 min depuis le début du tour
+    const ui = (key: string | null) => (
+      <MetricsApiContext.Provider value={{ apiUrl: '', accessToken: 't' }}>
+        <StepIndicator workflow="FEATURE" since={since} currentStepKey={key} />
+      </MetricsApiContext.Provider>
+    );
+    const { rerender } = render(ui('architecture'));
+    expect(await screen.findByText(/Étape « Architecture technique » depuis 4m/)).toBeInTheDocument();
+    // Pause avant une nouvelle tentative : plus d'étape réelle.
+    rerender(ui(null));
+    expect(screen.queryByText(/Étape « /)).toBeNull();
+    // La même étape repart : son chrono repart de zéro au lieu de continuer à 4 min.
+    rerender(ui('architecture'));
+    expect(await screen.findByText(/Étape « Architecture technique » depuis 0s/)).toBeInTheDocument();
+    expect(screen.queryByText(/plus long que d'habitude/)).toBeNull();
+  });
 });

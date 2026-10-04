@@ -6,6 +6,10 @@ import { MetricsApiContext, type MetricsApiConfig } from './metricsApi';
 
 const WORKFLOWS = new Set<string>(['ANALYSE_ONLY', 'BUGFIX', 'FEATURE', 'DESIGN_AND_DEV']);
 const PERIOD_DAYS = 30;
+// Fin du jeton d'accès dans la clé du cache : les mesures sont propres à chaque utilisateur, un autre compte connecté
+// dans le même onglet ne doit pas lire celles du précédent (le jeton change aussi à chaque renouvellement : une relecture).
+const TOKEN_TAIL_CHARS = 16;
+const cacheKey = (config: MetricsApiConfig, workflow: string) => `${config.apiUrl}|${config.accessToken.slice(-TOKEN_TAIL_CHARS)}|${workflow}`;
 const SUCCESS_TTL_MS = 10 * 60 * 1000;
 // Un échec (serveur injoignable, aucune donnée) n'est pas retenté à chaque rendu : on réessaie plus tard.
 const FAILURE_TTL_MS = 60 * 1000;
@@ -27,7 +31,7 @@ export function clearStepStatsCache(): void {
 
 export async function loadStepStats(config: MetricsApiConfig, workflow: string): Promise<StepStats | null> {
   if (!WORKFLOWS.has(workflow)) return null;
-  const key = `${config.apiUrl}|${workflow}`;
+  const key = cacheKey(config, workflow);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < (hit.stats ? SUCCESS_TTL_MS : FAILURE_TTL_MS)) return hit.stats;
   const pending = inflight.get(key);
@@ -64,10 +68,11 @@ export function useStepStats(workflow: string | undefined, enabled: boolean): St
     if (!enabled || !workflow || apiUrl === undefined || accessToken === undefined) return;
     let active = true;
     loadStepStats({ apiUrl, accessToken }, workflow).then((stats) => {
-      if (active) setLoaded({ key: `${apiUrl}|${workflow}`, stats });
+      if (active) setLoaded({ key: cacheKey({ apiUrl, accessToken }, workflow), stats });
     });
     return () => { active = false; };
   }, [enabled, workflow, apiUrl, accessToken]);
 
-  return loaded && workflow && loaded.key === `${apiUrl}|${workflow}` ? loaded.stats : null;
+  const wanted = workflow && apiUrl !== undefined && accessToken !== undefined ? cacheKey({ apiUrl, accessToken }, workflow) : null;
+  return loaded && wanted && loaded.key === wanted ? loaded.stats : null;
 }

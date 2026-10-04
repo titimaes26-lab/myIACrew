@@ -5,7 +5,8 @@ import { useCompletionNotice } from './useCompletionNotice';
 type Props = { running: boolean; outcome: 'success' | 'failed' | 'other'; message: string; notify: boolean };
 const idle: Props = { running: false, outcome: 'other', message: '', notify: false };
 let hidden = false;
-let notifications: { title: string; options?: NotificationOptions }[];
+let focused = true;
+let notifications: { title: string; options?: NotificationOptions; instance?: { onclick: (() => void) | null; close: () => void } }[];
 
 function setHidden(value: boolean) {
   hidden = value;
@@ -15,11 +16,15 @@ function setHidden(value: boolean) {
 beforeEach(() => {
   document.title = 'Studio';
   hidden = false;
+  focused = true;
   Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+  document.hasFocus = () => focused;
   notifications = [];
   class FakeNotification {
     static permission: NotificationPermission = 'granted';
-    constructor(title: string, options?: NotificationOptions) { notifications.push({ title, options }); }
+    onclick: (() => void) | null = null;
+    close = vi.fn();
+    constructor(title: string, options?: NotificationOptions) { notifications.push({ title, options, instance: this }); }
   }
   vi.stubGlobal('Notification', FakeNotification);
 });
@@ -51,6 +56,29 @@ describe('useCompletionNotice', () => {
     expect(document.title).toBe('✗ Échec — Studio');
     setHidden(false);
     expect(document.title).toBe('Studio');
+  });
+
+  it('prévient aussi quand la fenêtre est visible mais n’a plus le focus, et se tait au retour', () => {
+    const { rerender } = setup();
+    rerender({ ...idle, running: true });
+    focused = false;
+    rerender({ ...idle, outcome: 'success' });
+    expect(document.title).toBe('✓ Terminé — Studio');
+    focused = true;
+    window.dispatchEvent(new Event('focus'));
+    expect(document.title).toBe('Studio');
+  });
+
+  it('un clic sur la notification ramène la fenêtre', () => {
+    const focus = vi.spyOn(window, 'focus').mockImplementation(() => {});
+    const { rerender } = setup();
+    rerender({ ...idle, running: true, notify: true });
+    hidden = true;
+    rerender({ ...idle, outcome: 'success', notify: true });
+    const instance = notifications[0].instance;
+    instance?.onclick?.();
+    expect(focus).toHaveBeenCalled();
+    expect(instance?.close).toHaveBeenCalled();
   });
 
   it('envoie une notification du navigateur si elle est activée et autorisée', () => {

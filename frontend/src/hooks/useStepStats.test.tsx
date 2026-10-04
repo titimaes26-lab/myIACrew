@@ -39,6 +39,14 @@ describe('loadStepStats', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('ne partage pas les médianes entre deux comptes', async () => {
+    await loadStepStats({ apiUrl: '', accessToken: 'jeton-du-premier-utilisateur-AAAAAAAAAAAAAAAA' }, 'FEATURE');
+    await loadStepStats({ apiUrl: '', accessToken: 'jeton-du-second-utilisateur-BBBBBBBBBBBBBBBB' }, 'FEATURE');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await loadStepStats({ apiUrl: '', accessToken: 'jeton-du-second-utilisateur-BBBBBBBBBBBBBBBB' }, 'FEATURE');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('relit après 10 minutes', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     await loadStepStats(config, 'FEATURE');

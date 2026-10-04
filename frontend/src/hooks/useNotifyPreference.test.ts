@@ -35,6 +35,20 @@ describe('useNotifyPreference', () => {
     expect(renderHook(() => useNotifyPreference()).result.current.enabled).toBe(true);
   });
 
+  it('relit la permission quand requestPermission ne renvoie rien (anciens Safari)', async () => {
+    class OldSafariNotification {
+      static permission: NotificationPermission = 'default';
+      static requestPermission = vi.fn(async () => {
+        OldSafariNotification.permission = 'granted';
+        return undefined as unknown as NotificationPermission;
+      });
+    }
+    vi.stubGlobal('Notification', OldSafariNotification);
+    const { result } = renderHook(() => useNotifyPreference());
+    await act(async () => { await result.current.toggle(); });
+    expect(result.current).toMatchObject({ enabled: true, permission: 'granted' });
+  });
+
   it('reste désactivée si la permission est refusée, et le dit', async () => {
     stubNotification('default', 'denied');
     const { result } = renderHook(() => useNotifyPreference());

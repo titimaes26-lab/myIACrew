@@ -12,6 +12,9 @@ interface CompletionNoticeOptions {
   notify: boolean;
 }
 
+// L'utilisateur ne regarde pas l'application : onglet masqué, OU fenêtre sans focus (côte à côte avec une autre).
+const isAway = () => document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus());
+
 const RUNNING_PREFIX = '⏳ ';
 const OUTCOME_PREFIX: Record<Exclude<Outcome, 'other'>, string> = { success: '✓ Terminé — ', failed: '✗ Échec — ' };
 const NOTIFICATION_BODY_CHARS = 100;
@@ -38,14 +41,19 @@ export function useCompletionNotice({ running, outcome, message, notify }: Compl
       document.title = `${RUNNING_PREFIX}${base}`;
     } else if (wasRunning.current) {
       wasRunning.current = false;
-      if (outcome !== 'other' && document.hidden) {
+      if (outcome !== 'other' && isAway()) {
         pendingOutcome.current = outcome;
         document.title = `${OUTCOME_PREFIX[outcome]}${base}`;
         if (notify && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
           try {
-            new Notification(outcome === 'success' ? 'Exécution terminée' : 'Exécution en échec', {
+            const notification = new Notification(outcome === 'success' ? 'Exécution terminée' : 'Exécution en échec', {
               body: message.slice(0, NOTIFICATION_BODY_CHARS), tag: 'studio-run',
             });
+            // Un clic ramène l'onglet : sans cela, la notification ne ferait que signaler une fin sans y mener.
+            notification.onclick = () => {
+              window.focus();
+              notification.close();
+            };
           } catch {
             // Constructeur indisponible (certains navigateurs mobiles) : le titre de l'onglet suffit.
           }
@@ -57,7 +65,7 @@ export function useCompletionNotice({ running, outcome, message, notify }: Compl
 
     // Retour sur l'onglet : le résultat a été vu, le titre redevient normal (sauf pendant une exécution).
     const onVisible = () => {
-      if (!document.hidden && pendingOutcome.current) restore();
+      if (!isAway() && pendingOutcome.current) restore();
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
