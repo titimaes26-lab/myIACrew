@@ -1,11 +1,12 @@
 """Écriture GitHub : branche de travail, fichier unique, lot de fichiers, modification ciblée par blocs."""
 import json
 
+import github_batch
 import github_client
 import github_edit_failures
 import github_guards
 from crewai.tools import tool
-from github import GithubException, InputGitTreeElement
+from github import GithubException
 from logs import get_logger
 
 log = get_logger("github")
@@ -120,139 +121,6 @@ def github_write_files(owner: str, repo: str, branch: str, commit_message: str, 
             "Si cette erreur se reproduit (contenu difficile à échapper correctement en JSON), "
             "n'insiste pas : bascule sur des appels séparés à github_write_file, un par fichier."
         )
-    return write_files_to_branch(owner, repo, branch, commit_message, files)
+    return github_batch.write_files_to_branch(owner, repo, branch, commit_message, files)
 
-def write_files_to_branch(
-    owner: str, repo: str, branch: str, commit_message: str, files,
-    rejected_sink: dict[str, str] | None = None,
-) -> str:
-    """Implémentation de github_write_files, factorée en fonction Python pure pour être aussi
-    appelée par github_commit_analyst_files (crew_tools.py) avec les fichiers extraits en
-    Python de la sortie de diagnostic_task — mêmes garde-fous (branche protégée, syntaxe,
-    collision avec un dossier), sans passer par un JSON rédigé par le LLM.
-    rejected_sink reçoit {chemin: raison} des fichiers rejetés par la vérification syntaxique,
-    pour que l'appelant n'ait pas à refaire ce contrôle."""
-    rejection = github_guards._reject_protected_branch(branch)
-    if rejection:
-        return rejection
-    if not isinstance(files, list) or not files:
-        return 'ERREUR : la liste des fichiers doit être non vide, chaque élément {"path": ..., "content": ...}.'
-
-    # Validé intégralement AVANT le premier appel réseau : un chemin dupliqué ou un élément mal
-    # formé découvert à mi-parcours (ex: après avoir déjà créé des blobs pour les premiers
-    # fichiers) laisserait ce commit dans un état incomplet sans possibilité de revenir en arrière
-    # proprement — mieux vaut échouer d'un coup, avant toute écriture, avec un message qui permet
-    # à l'agent de corriger et de retenter l'appel en entier.
-    paths_seen = set()
-    for f in files:
-        if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not isinstance(f.get("content"), str):
-            return 'ERREUR : chaque fichier doit être un objet avec "path" (str) et "content" (str).'
-        if f["path"] in paths_seen:
-            return f"ERREUR : '{f['path']}' apparaît plusieurs fois dans la liste, chaque chemin doit être unique."
-        paths_seen.add(f["path"])
-
-    # Filtre les fichiers dont le contenu échoue check_syntax_content (garde-fou contre une
-    # troncature silencieuse du contenu produit par diagnostic_task, voir github_guards._reject_invalid_syntax
-    # plus haut) AVANT tout appel réseau — un lot entièrement invalide ne touche alors jamais
-    # l'API GitHub. Commit PARTIEL (pas tout-ou-rien) volontaire : le reste de ce pipeline traite
-    # déjà la livraison partielle avec rapport explicite comme mode dégradé normal (budget épuisé
-    # -> committer un sous-ensemble cohérent, lister le reste comme non réalisé, voir
-    # tasksquestion.yaml) — un mode tout-ou-rien pénaliserait N-1 fichiers valides à cause d'un
-    # seul fichier à risque.
-    valid_files, rejected = [], []
-    for f in files:
-        issue = github_guards._reject_sensitive_path(f["path"]) or github_guards._reject_invalid_syntax(f["path"], f["content"])
-        (rejected.append((f["path"], issue)) if issue else valid_files.append(f))
-    if rejected_sink is not None:
-        rejected_sink.update(dict(rejected))
-
-    if not valid_files:
-        lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)
-        return (
-            f"ERREUR : les {len(rejected)} fichier(s) de ce lot ont TOUS été refusés par les contrôles "
-            f"avant commit (chemin sensible ou syntaxe), rien n'a été écrit sur GitHub :\n{lines}\n"
-            "Ne retente pas cet appel avec le même contenu (tu n'as aucun moyen de le corriger) : "
-            "signale ces fichiers comme non livrés dans ton rapport final, avec leur raison."
-        )
-    # Réassigné (pas une nouvelle variable) : tout le reste de cette fonction (tree_elements,
-    # la boucle github_edit_failures._record_edit_success finale, et paths_seen recalculé juste en dessous) doit
-    # committer/couvrir EXCLUSIVEMENT ce sous-ensemble validé, jamais les fichiers rejetés.
-    files = valid_files
-    paths_seen = {f["path"] for f in files}
-
-    try:
-        gh_repo = github_client._get_repo(owner, repo)
-        ref = gh_repo.get_git_ref(f"heads/{branch}")
-        base_commit = gh_repo.get_git_commit(ref.object.sha)
-
-        # Un chemin qui correspond à un DOSSIER existant sur la branche (pas juste "déjà un
-        # fichier", que create_git_tree gère très bien en le remplaçant) doit être bloqué AVANT
-        # de construire l'arbre : create_git_tree accepterait sans broncher un blob au même
-        # chemin qu'un dossier entier, et le commit résultant effacerait silencieusement tout ce
-        # dossier (aucune ERREUR renvoyée, rien qui permette à la QA de comprendre pourquoi ces
-        # fichiers ont disparu). Un seul appel recursive=True pour tout le lot plutôt qu'un
-        # get_contents par chemin (qui coûterait un aller-retour réseau par fichier, à l'encontre
-        # du but même de cet outil).
-        existing_tree = gh_repo.get_git_tree(base_commit.tree.sha, recursive=True)
-        if existing_tree.truncated:
-            # Arbre trop volumineux pour être listé en entier en un seul appel (repo avec un très
-            # grand nombre de fichiers) : impossible de garantir l'absence de collision avec un
-            # dossier existant en dehors de la portion renvoyée. Mieux vaut refuser explicitement
-            # que de risquer un écrasement silencieux non détecté par la vérification ci-dessous.
-            return (
-                "ERREUR : ce repository a une arborescence trop volumineuse pour être vérifiée en "
-                "un seul appel (risque de collision avec un dossier existant non garanti). "
-                "Utilise github_write_file séparément pour chaque fichier de ce lot à la place."
-            )
-        existing_dir_paths = {item.path for item in existing_tree.tree if item.type == "tree"}
-        colliding = sorted(paths_seen & existing_dir_paths)
-        if colliding:
-            return (
-                f"ERREUR : {', '.join(colliding)} correspond(ent) à un DOSSIER existant sur la "
-                f"branche '{branch}', pas à un fichier — écrire dessus l'effacerait entièrement. "
-                "Choisis un chemin de fichier différent (ex: à l'intérieur de ce dossier)."
-            )
-
-        tree_elements = [
-            InputGitTreeElement(
-                path=f["path"], mode="100644", type="blob",
-                sha=gh_repo.create_git_blob(f["content"], "utf-8").sha,
-            )
-            for f in files
-        ]
-        new_tree = gh_repo.create_git_tree(tree_elements, base_commit.tree)
-        new_commit = gh_repo.create_git_commit(commit_message, new_tree, [base_commit])
-        ref.edit(new_commit.sha)
-        for f in files:
-            github_edit_failures._record_edit_success(owner, repo, f["path"], branch)
-        message = (
-            f"OK : {len(files)} fichier(s) écrit(s) en un seul commit ({new_commit.sha[:8]}) "
-            f"sur la branche '{branch}'."
-        )
-        if rejected:
-            lines = "\n".join(f"- '{p}' : {reason}" for p, reason in rejected)
-            message += (
-                f"\nREJETÉS ({len(rejected)}) — non committés, vérification syntaxique échouée "
-                f"avant tout envoi vers GitHub :\n{lines}\n"
-                "Ne retente PAS ces fichiers avec le même contenu (tu n'as aucun moyen de les "
-                "corriger) : signale-les comme non livrés dans ton rapport final, avec leur raison."
-            )
-        return message
-    except GithubException as e:
-        # "non fast-forward" (ref.edit rejeté) : CrewAI peut exécuter plusieurs appels d'outils de
-        # cette même tâche en parallèle (voir github_edit_failures._edit_failure_lock plus haut) — un autre appel
-        # d'écriture sur CETTE MÊME branche a pu avancer sa référence entretemps. Rien n'est perdu
-        # ni corrompu : ce commit n'a simplement jamais été appliqué. Retenter cet appel EN L'ÉTAT
-        # repart de la référence à jour (get_git_ref est refait à chaque appel), donc un simple
-        # nouvel essai suffit — pas besoin de reconstruire files_json.
-        message = github_client._github_error(e)
-        if "fast" in message.lower() and "forward" in message.lower():
-            return (
-                f"{message} La branche '{branch}' a été mise à jour par un autre appel entretemps : "
-                "aucun fichier de CET appel n'a été perdu, il n'a simplement pas encore été appliqué. "
-                "Retente ce même appel tel quel."
-            )
-        return message
-    except Exception as e:
-        return f"ERREUR : {str(e)}"
 
