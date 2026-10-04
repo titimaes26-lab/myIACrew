@@ -42,3 +42,30 @@ def test_sqlite_gets_no_pool_options_its_memory_pool_would_reject():
     assert not {"pool_size", "max_overflow", "pool_timeout"} & set(options)
     # Le moteur correspondant se construit bien (sans cela, DATABASE_URL=sqlite:// ferait échouer le démarrage).
     database.create_engine("sqlite://", **options)
+
+
+def test_a_failing_migration_is_logged_as_a_one_line_warning_and_the_next_ones_still_run(monkeypatch, caplog):
+    from sqlalchemy import create_engine
+    engine = create_engine("sqlite://")
+    monkeypatch.setattr(database, "engine", engine)
+    monkeypatch.setattr(database, "_MIGRATION_STATEMENTS", ["ALTER TABLE absente ADD COLUMN x INTEGER", "SELECT 1"])
+    caplog.set_level("INFO", logger="myiacrew")
+    database._run_lightweight_migrations()
+    warnings = [record for record in caplog.records if "migration ignorée" in record.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelname == "WARNING" and "absente" in warnings[0].getMessage()
+    assert warnings[0].name == "myiacrew.database"
+
+
+def test_the_application_modules_no_longer_use_print():
+    # Tout passe par logs.py (niveau, une ligne par événement, échappement des retours à la ligne).
+    import glob
+    import re
+    root = os.path.dirname(os.path.dirname(__file__))
+    offenders = []
+    for path in glob.glob(os.path.join(root, "*.py")):
+        if os.path.basename(path).startswith("test_") or os.path.basename(path) == "logs.py":
+            continue
+        for number, line in enumerate(open(path, encoding="utf-8"), 1):
+            if re.search(r"(?<![\w.'\"])print\(", line) and not line.strip().startswith(("#", '"', "'")):
+                offenders.append(f"{os.path.basename(path)}:{number}")
+    assert offenders == []

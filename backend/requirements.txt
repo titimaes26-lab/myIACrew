@@ -1,14 +1,18 @@
-fastapi
-uvicorn
-crewai
-litellm
-python-dotenv
+# Dépendances DIRECTES épinglées sur les versions avec lesquelles la suite de tests passe : CrewAI et ses voisins changent
+# vite (planification, observation des étapes, fournisseur Gemini natif...) et un redéploiement ne doit pas changer le
+# comportement sans changement de code. Les dépendances indirectes restent résolues par pip. Pour mettre à jour : changer
+# une version, lancer `python -m pytest -q`, relire le journal des modifications de CrewAI, puis committer.
+fastapi==0.142.2
+uvicorn==0.54.0
+crewai==1.15.23
+litellm==1.103.2
+python-dotenv==1.2.4
 pydantic
-tiktoken>=0.7.0
-crewai-tools[google-genai]
-google-genai
-sqlmodel
-psycopg2-binary
-PyGithub
-httpx
-PyYAML
+tiktoken==0.12.0
+crewai-tools[google-genai]==1.15.23
+google-genai==2.26.0
+sqlmodel==0.0.47
+psycopg2-binary==2.9.13
+PyGithub==2.10.0
+httpx==0.28.1
+PyYAML==6.0.3

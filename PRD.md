@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.43 — Mise à jour le 2026-10-04
+> Version : 1.44 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -22,6 +22,7 @@
 > - 1.41 (10-04) : une seule exécution de crew à la fois (`MAX_CONCURRENT_EXECUTIONS`, 1 par défaut) : les suivantes attendent leur tour (« queued »).
 > - 1.42 (10-04) : durée maximale d'une exécution (`EXECUTION_TIMEOUT_S`, 20 min : le créneau est rendu), position dans la file affichée, « en cours depuis » sans le temps de file.
 > - 1.43 (10-04) : le crew arrêté pour durée maximale n'écrit plus (base, GitHub, Pull Request) ; arrêt attribué au quota quand l'attente a dominé.
+> - 1.44 (10-04) : cache de validation des jetons (60 s), dépendances directes épinglées, plus de `print` (tout par `logging`).
 
 ---
 
@@ -140,6 +141,7 @@ Tous les contrôles sont des fonctions Python pures et testées. Ils **signalent
 - **Branches de travail validées** : un nom d'écriture doit correspondre à `crewai/` + caractères sûrs (lettres, chiffres, `. _ - /`), sans espace, retour à la ligne, `..`, `//` ni `/` final.
 - **Lecture ciblée à l'envoi** : `/api/execute` lit les tours en cours, les 10 derniers tours (pour le rappel de conversation) et la branche de travail précédente par trois requêtes ciblées, au lieu de toute la conversation avec le résultat de chaque tour.
 - **Limiteur global Gemini** (`backend/llm_limiter.py`) : le quota de l'offre gratuite (15 requêtes par minute et par modèle) est partagé par tout le projet, alors que `max_rpm` ne vaut que pour un crew et que le planificateur/observateur de CrewAI (agents avec `reasoning=True`) fait des appels hors de ce compte. Le limiteur enveloppe les méthodes de requête du client `google-genai` (sync, flux, async) : au plus `GEMINI_MAX_REQUESTS_PER_MINUTE` requêtes (12) sur une minute glissante, chaque appelant réservant son créneau, et, sur un 429, le délai demandé par Google (« retry in Xs », `retryDelay`) devient une pause commune à tous les appels suivants (plafonnée à 120 s : au-delà, par exemple un quota journalier épuisé, aucune pause n'est posée et l'erreur remonte aussitôt comme « Quota épuisé » au lieu de laisser l'exécution dormir). Un 429 est reconnu par son code HTTP, sinon par un texte précis (`RESOURCE_EXHAUSTED`, « exceeded your current quota », « 429 » accompagné de quota/rate limit), jamais par un nombre cité dans un autre message. Les attentes de plus de 2 s sont tracées et comptées dans le temps d'attente de l'exécution. Plafond par process : plusieurs instances du backend le multiplient.
+- **Cache de validation des jetons** (`backend/auth.py`) : chaque appel de l'API validait le jeton auprès de Supabase, sondage de progression toutes les 3 s compris (latence, limites de débit de Supabase, une panne d'authentification bloquait tout). Une validation RÉUSSIE est gardée `AUTH_CACHE_TTL_S` secondes (60 par défaut, 0 la désactive), bornée par l'expiration lue dans le jeton ; jamais un 401 ni une panne ; clé = hachage SHA-256 (jamais le jeton), 1000 entrées au plus, utilisateur rendu en copie. Contrepartie : un jeton révoqué (déconnexion depuis un autre appareil) reste accepté jusqu'à ce délai.
 - **Fichiers sensibles protégés** : les outils d'écriture (`github_write_file`, `github_write_files`, `github_edit_file`, commit de l'Analyste) refusent, sans appel réseau, tout fichier de CI (`.github/`, `.circleci/`, `.gitlab-ci.yml`…), d'environnement (`.env*` sauf les modèles `.env.example`/`.sample`/`.template`, `.npmrc`) ou de déploiement (`Dockerfile*`, `docker-compose.*`, `vercel.json`, `render.yaml`, `.pre-commit-config.yaml`, `.gitmodules`…) et tout chemin contenant `..` : un workflow committé sur la branche de travail pourrait s'exécuter avec les secrets du dépôt avant toute relecture. Le refus est tracé (chemin seulement) et le fichier est signalé comme non livré.
 - **Une exécution par conversation, garantie par la base** : un index unique partiel (`status = 'running'`) sur `executionhistory.conversation_id` ferme la course du contrôle applicatif (double clic, deux onglets) ; l'insert perdant répond 409 comme le contrôle. Créé aussi sur une base existante par la migration (journalisée si des doublons empêchent sa création).
 - **Une exécution de crew à la fois** : le sémaphore global est à 1 par défaut (`MAX_CONCURRENT_EXECUTIONS`, par process) — deux crews en parallèle saturent le quota Gemini de l'offre gratuite (15 requêtes par minute) même étalés par le limiteur. Les exécutions suivantes, de tous les utilisateurs, attendent leur tour avec l'étape « queued » ; leur durée totale s'allonge d'autant. À relever avec une offre Gemini payante. Le sondage de progression renvoie `queue_ahead` (exécutions qui tournent ou en attente créées avant : un simple décompte, tous comptes confondus) et le Studio affiche « N exécutions passent avant elle ». Le temps affiché « en cours depuis » ne compte pas l'attente en file observée par ce navigateur (un tour retrouvé au rechargement, sans cette observation, affiche le temps total depuis sa création).
@@ -331,7 +333,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (726 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (203 tests, 27 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (741 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (203 tests, 27 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : l'aperçu avant lancement et le fil restent utilisables à 390 px ; pas de layout mobile dédié pour le tableau de bord.
 - **Accessibilité** : attributs ARIA sur les contrôles récents (copie annoncée, aperçu en attente de confirmation, focus sur « Lancer ») ; pas d'audit WCAG complet.
@@ -340,6 +342,8 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 ---
 
 ### 6.1 Qualité du code et intégration continue
+
+- **Dépendances** : les dépendances directes de `backend/requirements.txt` sont épinglées (`==`) sur les versions testées, sauf `pydantic`, que CrewAI contraint lui-même ; les indirectes sont résolues par pip. Mise à jour : changer une version, lancer `pytest`, relire le journal des modifications de CrewAI.
 
 - **CI** (`.github/workflows/ci.yml`, sur `main`, `test` et chaque pull request) : backend (`ruff check`, `mypy`, `pytest`) et frontend (`eslint`, `tsc -b`, `vitest`, build). Dépendances de développement : `backend/requirements-dev.txt`. En local, `pre-commit` (`.pre-commit-config.yaml`) lance ruff et eslint + tsc avant chaque commit.
 - **Lint backend** (`backend/ruff.toml`) : erreurs réelles seulement (imports et variables inutilisés, noms indéfinis, erreurs de syntaxe, arguments mutables par défaut) ; pas de règles de style, qui réécriraient l'historique sans corriger de bug.
@@ -365,6 +369,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 | `AUTO_RETRY_DELAY_S` | 90 | Attente avant la seconde tentative automatique |
 | `MAX_CONCURRENT_EXECUTIONS` | 1 | Exécutions de crew simultanées (par process) ; les suivantes attendent |
 | `EXECUTION_TIMEOUT_S` | 1200 | Durée maximale d'un crew (minimum 60) ; au-delà : échec `EXECUTION_TIMEOUT`, créneau rendu |
+| `AUTH_CACHE_TTL_S` | 60 | Durée du cache de validation des jetons (0 : désactivé) |
 | `GEMINI_MAX_REQUESTS_PER_MINUTE` | 12 | Plafond commun de requêtes Gemini par minute (par process) |
 | `DIAGNOSTIC_REASONING_EFFORT` / `DIAGNOSTIC_STEP_MAX_ITERATIONS` | low / 8 | Effort de planification du diagnostic (low, medium, high) et itérations du modèle par étape |
 | `COST_CURRENCY` / `TOKEN_PRICE_INPUT_PER_MILLION` / `TOKEN_PRICE_OUTPUT_PER_MILLION` | `$` / 0 / 0 | Coût estimé du tableau de bord |

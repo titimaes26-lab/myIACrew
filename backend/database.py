@@ -5,6 +5,10 @@ from typing import Optional
 from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel, create_engine, Session
 
+from logs import get_logger
+
+log = get_logger("database")
+
 # Récupération de l'URL depuis les variables d'environnement
 _RAW_DATABASE_URL = os.getenv("DATABASE_URL")
 DATABASE_URL = _RAW_DATABASE_URL or "sqlite:///./dev.db"
@@ -193,18 +197,18 @@ def _run_lightweight_migrations():
             # Attendu si la colonne existe déjà ou si le SGBD ne supporte pas la syntaxe
             # (ex: ALTER COLUMN ... DROP NOT NULL sous SQLite). Toute autre cause (droits,
             # erreur de connexion, etc.) doit rester visible dans les logs de démarrage.
-            print(f"MIGRATION IGNORÉE : {statement!r} -> {type(e).__name__}: {e}")
+            log.warning(f"migration ignorée : {statement!r} -> {type(e).__name__}: {e}")
 
 def create_db_and_tables():
     if _RAW_DATABASE_URL is None:
-        print(
-            "ATTENTION : DATABASE_URL n'est pas définie — le backend utilise une base "
+        log.warning(
+            "DATABASE_URL n'est pas définie — le backend utilise une base "
             "SQLite locale et éphémère (sqlite:///./dev.db), PAS Supabase. Toutes les "
             "données seront perdues au prochain redémarrage/redéploiement. Configure "
             "DATABASE_URL avec la chaîne de connexion Postgres de Supabase."
         )
     else:
-        print(f"Connexion à la base de données : {engine.url.render_as_string(hide_password=True)}")
+        log.info(f"connexion à la base de données : {engine.url.render_as_string(hide_password=True)}")
     SQLModel.metadata.create_all(engine)
     _run_lightweight_migrations()
 

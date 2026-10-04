@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from errors import ErrorCode
+from logs import get_logger
 
 import yaml
+
+log = get_logger("metrics")
 
 SYSTEM_BUCKET = "system"  # appels LLM hors agent (ex : synthèse finale du résultat)
 OTHER_BUCKET = "other"
@@ -221,7 +224,7 @@ def register_event_listeners() -> bool:
             from crewai.events.types.llm_events import LLMCallCompletedEvent, LLMCallFailedEvent
             from crewai.events.types.tool_usage_events import ToolUsageErrorEvent, ToolUsageFinishedEvent
         except Exception as e:  # pragma: no cover - dépend de la version de CrewAI
-            print(f"AVERTISSEMENT : métriques par agent indisponibles ({type(e).__name__}: {e})", flush=True)
+            log.warning(f"métriques par agent indisponibles ({type(e).__name__}: {e})")
             return False
 
         def safely(record):
@@ -232,7 +235,7 @@ def register_event_listeners() -> bool:
                 try:
                     record(metrics, event)
                 except Exception as err:  # une mesure ne doit JAMAIS faire échouer une exécution
-                    print(f"AVERTISSEMENT : mesure ignorée ({type(err).__name__}: {err})", flush=True)
+                    log.warning(f"mesure ignorée ({type(err).__name__}: {err})")
             return handler
 
         crewai_event_bus.on(LLMCallCompletedEvent)(

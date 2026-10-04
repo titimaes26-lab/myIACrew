@@ -1,5 +1,10 @@
+import base64
+import hashlib
 import http.cookiejar
+import json
 import os
+import threading
+import time
 from typing import Optional
 
 import httpx
@@ -7,6 +12,78 @@ from fastapi import Header, HTTPException
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+
+def _env_ttl(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# Cache de validation des jetons (AUTH_CACHE_TTL_S, 60 s par défaut ; 0 le désactive). Sans lui, CHAQUE appel de l'API —
+# dont le sondage de progression toutes les 3 s — interroge Supabase : latence ajoutée, limites de débit de Supabase, et
+# une panne passagère de l'authentification bloque tout. Contrepartie : un jeton révoqué (déconnexion ailleurs) reste
+# accepté jusqu'à TTL secondes. Seules les validations RÉUSSIES sont gardées (jamais un 401 ni une panne), la durée est
+# bornée par l'expiration lue dans le jeton lui-même, et la clé est un hachage : le jeton n'est jamais conservé en clair.
+AUTH_CACHE_TTL_S = _env_ttl("AUTH_CACHE_TTL_S", 60.0)
+_AUTH_CACHE_MAX_ENTRIES = 1000
+_auth_cache: dict[str, tuple[float, dict]] = {}   # hachage du jeton -> (échéance monotonic, utilisateur)
+_auth_cache_lock = threading.Lock()
+
+
+def _cache_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _jwt_expiry(token: str) -> Optional[float]:
+    """Date d'expiration (epoch, secondes) lue dans la charge du JWT SANS vérifier sa signature : elle ne sert qu'à RACCOURCIR
+    la durée de cache, jamais à accepter un jeton (Supabase a déjà validé celui-ci)."""
+    try:
+        payload = token.split(".")[1]
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        exp = data.get("exp")
+        return float(exp) if isinstance(exp, (int, float)) else None
+    except Exception:
+        return None
+
+
+def cached_user(token: str, now: Optional[float] = None) -> Optional[dict]:
+    now = time.monotonic() if now is None else now
+    key = _cache_key(token)
+    with _auth_cache_lock:
+        entry = _auth_cache.get(key)
+        if entry is None:
+            return None
+        if entry[0] <= now:
+            del _auth_cache[key]
+            return None
+        return dict(entry[1])
+
+
+def cache_user(token: str, user: dict, now: Optional[float] = None, epoch_now: Optional[float] = None) -> None:
+    if AUTH_CACHE_TTL_S <= 0:
+        return
+    now = time.monotonic() if now is None else now
+    ttl = AUTH_CACHE_TTL_S
+    expiry = _jwt_expiry(token)
+    if expiry is not None:
+        ttl = min(ttl, expiry - (time.time() if epoch_now is None else epoch_now))
+    if ttl <= 0:
+        return
+    with _auth_cache_lock:
+        if len(_auth_cache) >= _AUTH_CACHE_MAX_ENTRIES:
+            for key in [key for key, (deadline, _) in _auth_cache.items() if deadline <= now]:
+                del _auth_cache[key]
+            if len(_auth_cache) >= _AUTH_CACHE_MAX_ENTRIES:
+                _auth_cache.pop(next(iter(_auth_cache)))   # plus ancien d'abord
+        _auth_cache[_cache_key(token)] = (now + ttl, dict(user))
+
+
+def clear_auth_cache() -> None:
+    with _auth_cache_lock:
+        _auth_cache.clear()
 
 
 class _RejectAllCookiePolicy(http.cookiejar.DefaultCookiePolicy):
@@ -82,6 +159,9 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         )
 
     token = authorization.split(" ", 1)[1].strip()
+    user = cached_user(token)
+    if user is not None:
+        return user
     client = _get_http_client()
 
     try:
@@ -110,4 +190,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     if response.status_code != 200:
         raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
 
-    return response.json()
+    user = response.json()
+    if isinstance(user, dict):
+        cache_user(token, user)
+    return user
