@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.58 — Mise à jour le 2026-10-04
+> Version : 1.59 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -28,6 +28,7 @@
 > - 1.47 (10-04) : `useConversation.ts` (728 lignes) découpé en hooks dédiés (dossier `hooks/conversation/`), comportement inchangé.
 > - 1.48 (10-04) : `sendMessage` et l'effet de sondage découpés en fonctions nommées (`progressMerge`), `useSendOutcomes` stable, tests unitaires des pièces extraites.
 > - 1.49 (10-04) : `ChatInput.tsx` (303 lignes) découpé (`useRepoTarget`, `RepoTargetPanel`, `WorkflowTypeSelect`, `ChatComposer`) et testé.
+> - 1.59 (10-04) : revue du découpage d'`agent_metrics` : `current_metrics` public, `execution.py` importe `track_execution_metrics` directement (plus de ré-export par `crewquestion`) ; `tests/test_agent_metrics.py` (814 lignes) réparti en `test_metrics_collect`, `test_metrics_report`, `test_metrics_endpoints`, `test_metrics_comparison`, `test_history_deletion`, `test_run_metrics` (+ `metrics_support` pour les fabriques communes), même nombre de tests ; 1 test ajouté (rôles : YAML illisible ou entrées incomplètes).
 > - 1.58 (10-04) : `backend/agent_metrics.py` (534 lignes) découpé sans changement de comportement : `metrics_roles` (rôle → étape, libellés), `metrics_collect` (événements CrewAI, compteurs par agent, lignes persistées), `metrics_report` (agrégats du tableau de bord) ; le module d'origine disparaît (son `__all__` aussi) ; 2 tests ajoutés (dates naïves/avec fuseau, durée inconnue), 25 mutations détectées sur 27 avant ces tests, 2 survivantes maintenant détectées.
 > - 1.57 (10-04) : revue du découpage d'`analyst_output.py` : `undecorate`/`extension` rendus publics ; `FILE_ABSENT`, `PRESENT_UNREADABLE`, `NOT_DELIVERED_MARKER` déplacés dans `analyst_blocks` (les consommateurs n'importent plus tout `analyst_output`) ; `parse_file_sections` (classe `_FileSectionParser`) et `find_import_problems` (trois aides) découpés sous la complexité 15 ; 3 tests ajoutés, toutes les mutations contrôlées détectées.
 > - 1.56 (10-04) : `backend/analyst_output.py` (703 → 237 lignes) découpé sans changement de comportement : `analyst_blocks` (balises de fichiers), `analyst_edits` (blocs de modification), `analyst_imports` (imports relatifs), `analyst_placeholders` (raccourcis laissés par le modèle) ; `analyst_output` garde le contrôle d'une sortie et le rapport de livraison. 7 tests ajoutés (bloc à chemin invalide, fin de ligne, import hors dépôt, diff tronqué, « NON réalisé » avec code) ; mypy couvre les 5 modules ; toutes les chaînes de texte de l'ancien code sont retrouvées à l'identique.
@@ -347,7 +348,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (799 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (237 tests, 31 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (800 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (237 tests, 31 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : l'aperçu avant lancement et le fil restent utilisables à 390 px ; pas de layout mobile dédié pour le tableau de bord.
 - **Accessibilité** : attributs ARIA sur les contrôles récents (copie annoncée, aperçu en attente de confirmation, focus sur « Lancer ») ; pas d'audit WCAG complet.
