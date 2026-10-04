@@ -33,7 +33,7 @@ class _Script:
 
         class _ScriptedCrew:
             def __init__(self, agents, tasks, task_callback=None, **kwargs):
-                self.tasks, self.task_callback = tasks, task_callback
+                self.tasks, self.task_callback, self.kwargs = tasks, task_callback, kwargs
                 for task in tasks:  # comme Crew.set_private_attrs : le callback du crew est posé sur chaque tâche
                     task.callback = task.callback or task_callback
                 script.crews.append(self)
@@ -183,3 +183,14 @@ def test_a_retry_that_replays_the_diagnostic_starts_with_a_fresh_guardrail_budge
         cq.AppDevelopmentCrew.__init__ = original
     assert error is None
     assert seen == [(0, [], {}), (0, [], {})]
+
+
+def test_the_crewai_log_file_is_off_by_default_and_opt_in_through_the_environment(harness, monkeypatch):
+    monkeypatch.delenv("CREW_LOG_FILE", raising=False)
+    script = _Script({})
+    harness(script)
+    assert script.crews[0].kwargs["output_log_file"] is None
+    monkeypatch.setenv("CREW_LOG_FILE", "/tmp/crew.log")
+    script = _Script({})
+    harness(script)
+    assert script.crews[0].kwargs["output_log_file"] == "/tmp/crew.log"

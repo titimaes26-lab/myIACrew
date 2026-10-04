@@ -1,6 +1,7 @@
 """Déroulement d'UNE exécution du crew : tâches choisies et reliées entre elles, reprise, retry résumable sur quota,
 échec attribué à une étape, résumé final."""
 import asyncio
+import os
 from typing import Any, Callable, NoReturn, Optional
 
 from crewai import Crew, Process
@@ -171,7 +172,9 @@ class CrewRun:
                 # élevé, hérite le plus de la latence cumulée d'un plafond trop bas. Le retry résumable absorbe
                 # les 429 si cette valeur est trop optimiste face au quota Gemini réel.
                 max_rpm=13,
-                output_log_file='crew_execution.log',
+                # Journal CrewAI (prompts et sorties complets de chaque agent) : désactivé par défaut, il grossissait sans
+                # limite sur le disque du service ; CREW_LOG_FILE=<chemin> l'active pour un diagnostic ponctuel.
+                output_log_file=os.getenv("CREW_LOG_FILE") or None,
                 verbose=True
             )
 
