@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import routes_conversations  # noqa: E402
 import routes_history  # noqa: E402
 import execution  # noqa: E402
 import execution_context  # noqa: E402
@@ -563,12 +564,12 @@ def test_queue_position_counts_running_executions_and_older_queued_ones(engine):
         second = add("u3", "queued", 2)                # seconde en attente
         later_running = add("u4", "development", 3)    # tourne (rare) : compte, créée après ou non
         add("u5", None, 4)                             # vient d'être lancée, pas encore « queued » : derrière
-        assert main._queue_ahead(db, first.id, "queued", first.created_at) == 2     # running + later_running
-        assert main._queue_ahead(db, second.id, "queued", second.created_at) == 3   # + first
+        assert routes_conversations._queue_ahead(db, first.id, "queued", first.created_at) == 2     # running + later_running
+        assert routes_conversations._queue_ahead(db, second.id, "queued", second.created_at) == 3   # + first
         assert running.id != later_running.id
-        progress = main.get_conversation_progress(conversation_id=second.conversation_id, session=db, user={"id": "u3"})
+        progress = routes_conversations.get_conversation_progress(conversation_id=second.conversation_id, session=db, user={"id": "u3"})
         assert progress["queue_ahead"] == 3 and progress["current_step"] == "queued"
-        done = main.get_conversation_progress(conversation_id=running.conversation_id, session=db, user={"id": "u1"})
+        done = routes_conversations.get_conversation_progress(conversation_id=running.conversation_id, session=db, user={"id": "u1"})
         assert done["queue_ahead"] is None                                          # seulement quand l'exécution attend
 
 

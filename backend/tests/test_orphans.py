@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from sqlmodel import Session, SQLModel, create_engine  # noqa: E402
 
 import main  # noqa: E402
+import routes_conversations  # noqa: E402
 import routes_history  # noqa: E402
 import execution  # noqa: E402
 import execution_outcomes  # noqa: E402
@@ -84,7 +85,7 @@ def test_progress_poll_releases_a_dead_execution(session):
     session.commit()
     session.refresh(conversation)
     stale = _running(session, conversation_id=conversation.id)
-    result = main.get_conversation_progress(conversation_id=conversation.id, session=session, user={"id": "u1"})
+    result = routes_conversations.get_conversation_progress(conversation_id=conversation.id, session=session, user={"id": "u1"})
     assert result["status"] is None  # plus rien en cours : le frontend resynchronise le tour
     session.refresh(stale)
     assert stale.status == "failed" and stale.error_code == "INTERRUPTED"

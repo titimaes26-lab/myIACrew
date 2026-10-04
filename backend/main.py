@@ -1,10 +1,8 @@
 import asyncio
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
@@ -31,10 +29,11 @@ import execution
 import execution_context
 import execution_state
 import memory_monitor
+import routes_conversations
 import routes_history
 from routes_metrics import router as metrics_router
 from error_handlers import CORS_ALLOW_CREDENTIALS, CORS_ALLOW_ORIGINS, register_error_handlers
-from schemas import ConversationCreateInput, UserRequestInput, WorkflowExecutionInput
+from schemas import UserRequestInput, WorkflowExecutionInput
 
 log = get_logger("main")
 
@@ -133,6 +132,7 @@ app.add_middleware(
 register_error_handlers(app)
 app.include_router(metrics_router)
 app.include_router(routes_history.router)
+app.include_router(routes_conversations.router)
 
 
 crew_instance = AppDevelopmentCrew()
@@ -353,148 +353,5 @@ async def execute_workflow(
         # Étapes réutilisées d'une exécution précédente (vide hors reprise) : l'interface l'indique.
         "resumed_steps": list(resume_outputs),
     }
-
-@app.post("/api/conversations", response_model=Conversation)
-def create_conversation(
-    data: ConversationCreateInput,
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Démarre une nouvelle conversation vide."""
-    conversation = Conversation(
-        user_id=user.get("id"),
-        title=(data.title or "Nouvelle conversation").strip()[:200] or "Nouvelle conversation",
-    )
-    session.add(conversation)
-    session.commit()
-    session.refresh(conversation)
-    return conversation
-
-@app.get("/api/conversations", response_model=List[Conversation])
-def list_conversations(
-    limit: int = 20,
-    offset: int = 0,
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Conversations de l'utilisateur courant, les plus récemment actives en premier."""
-    limit = min(max(limit, 1), 100)
-    offset = max(offset, 0)
-    statement = (
-        select(Conversation)
-        .where(Conversation.user_id == user.get("id"))
-        .order_by(col(Conversation.updated_at).desc())
-        .offset(offset)
-        .limit(limit)
-    )
-    return session.exec(statement).all()
-
-@app.get("/api/conversations/{conversation_id}/messages", response_model=List[ExecutionHistory])
-def get_conversation_messages(
-    conversation_id: int,
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Messages (échanges qualify+execute) d'une conversation, dans l'ordre chronologique."""
-    conversation = session.get(Conversation, conversation_id)
-    if not conversation or conversation.user_id != user.get("id"):
-        raise HTTPException(status_code=404, detail="Conversation introuvable.")
-
-    statement = (
-        select(ExecutionHistory)
-        .where(ExecutionHistory.conversation_id == conversation_id)
-        .order_by(col(ExecutionHistory.created_at).asc())
-    )
-    return session.exec(statement).all()
-
-
-def _queue_ahead(session: Session, execution_id: int, current_step: Optional[str], created_at: datetime) -> int:
-    """Nombre d'exécutions (tous utilisateurs) devant celle-ci : celles qui tournent réellement (étape réelle) et celles
-    en attente créées avant elle. Un décompte seulement, rien d'autre d'une exécution d'un autre compte."""
-    mine = _aware_utc(created_at)
-    rows = session.exec(
-        select(ExecutionHistory.id, ExecutionHistory.current_step, ExecutionHistory.created_at)
-        .where(ExecutionHistory.status == "running")
-    ).all()
-    return sum(
-        1 for row_id, step, created in rows
-        if row_id != execution_id and (step not in (None, execution_state.QUEUED_STEP) or _aware_utc(created) < mine)
-    )
-
-
-def _aware_utc(value: datetime) -> datetime:
-    # SQLite renvoie des datetimes naïfs (UTC) même pour une colonne écrite avec fuseau.
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-
-@app.get("/api/conversations/{conversation_id}/progress")
-def get_conversation_progress(
-    conversation_id: int,
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Sondage léger de la progression pendant qu'une exécution est en cours.
-
-    Retourne aussi les sections d'agents complétés jusqu'à présent, découpe du champ result,
-    pour affichage progressif des analyses d'agents au fur et à mesure de leur completion.
-    """
-    conversation = session.get(Conversation, conversation_id)
-    if not conversation or conversation.user_id != user.get("id"):
-        raise HTTPException(status_code=404, detail="Conversation introuvable.")
-
-    # Libère une exécution morte : le frontend voit alors « plus rien en cours » et resynchronise le tour
-    # (désormais « failed »/INTERRUPTED) au lieu de sonder indéfiniment.
-    sweep_stale_executions(session, active_ids=execution_state.active_execution_ids, conversation_id=conversation_id)
-
-    statement = (
-        select(
-            ExecutionHistory.id, ExecutionHistory.status, ExecutionHistory.current_step, ExecutionHistory.result,
-            ExecutionHistory.created_at,
-        )
-        .where(ExecutionHistory.conversation_id == conversation_id)
-        .where(ExecutionHistory.status == "running")
-    )
-    row = session.exec(statement).first()
-    if row is None:
-        return {"id": None, "status": None, "current_step": None, "completed_agents": {}, "queue_ahead": None}
-
-    completed_agents = {}
-    if row[3]:  # if result is not None
-        completed_agents = execution_context.parse_completed_agents(row[3])
-
-    return {
-        "id": row[0],
-        "status": row[1],
-        "current_step": row[2],
-        "completed_agents": completed_agents,
-        "queue_ahead": _queue_ahead(session, row[0], row[2], row[4]) if row[2] == execution_state.QUEUED_STEP else None,
-    }
-
-@app.get("/api/repo-targets")
-def list_repo_targets(
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Combinaisons owner/repo/branche déjà utilisées par l'utilisateur, les plus récentes en premier."""
-    statement = (
-        select(ExecutionHistory.repo_owner, ExecutionHistory.repo_name, ExecutionHistory.base_branch)
-        .where(ExecutionHistory.user_id == user.get("id"))
-        .where(col(ExecutionHistory.repo_owner).is_not(None))
-        .where(col(ExecutionHistory.repo_name).is_not(None))
-        .order_by(col(ExecutionHistory.created_at).desc())
-    )
-    rows = session.exec(statement).all()
-
-    seen = set()
-    targets = []
-    for repo_owner, repo_name, base_branch in rows:
-        key = (repo_owner, repo_name, base_branch)
-        if key in seen:
-            continue
-        seen.add(key)
-        targets.append({"repo_owner": repo_owner, "repo_name": repo_name, "base_branch": base_branch})
-        if len(targets) >= 20:
-            break
-    return targets
 
 
