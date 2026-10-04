@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 gt = pytest.importorskip("github_tools")
+import github_write  # noqa: E402
 import github_read  # noqa: E402
 import github_guards  # noqa: E402
 import github_client  # noqa: E402
@@ -246,10 +247,10 @@ BLOCKED = [
 
 def _write_calls(branch):
     return [
-        gt.github_write_file.func("o", "r", "src/a.ts", "export const a = 1;", branch, "msg"),
-        gt.github_write_files.func("o", "r", branch, "msg", '[{"path": "src/a.ts", "content": "export const a = 1;"}]'),
-        gt.github_edit_file.func("o", "r", "src/a.ts", branch, "a", "b", "msg"),
-        gt.github_create_branch.func("o", "r", branch, "main"),
+        github_write.github_write_file.func("o", "r", "src/a.ts", "export const a = 1;", branch, "msg"),
+        github_write.github_write_files.func("o", "r", branch, "msg", '[{"path": "src/a.ts", "content": "export const a = 1;"}]'),
+        github_write.github_edit_file.func("o", "r", "src/a.ts", branch, "a", "b", "msg"),
+        github_write.github_create_branch.func("o", "r", branch, "main"),
     ]
 
 
@@ -261,9 +262,9 @@ def test_agents_cannot_write_or_create_anything_outside_work_branches(counting, 
 
 
 def test_refusal_names_the_rule_so_the_agent_can_correct_itself(counting):
-    refused = gt.github_write_file.func("o", "r", "a.ts", "x", "test", "msg")
+    refused = github_write.github_write_file.func("o", "r", "a.ts", "x", "test", "msg")
     assert "'crewai/…'" in refused and "contexte repository" in refused
-    assert "principale" in gt.github_write_file.func("o", "r", "a.ts", "x", "main", "msg")
+    assert "principale" in github_write.github_write_file.func("o", "r", "a.ts", "x", "main", "msg")
 
 
 @pytest.mark.parametrize("branch", [
@@ -285,16 +286,16 @@ def test_write_scope_restricts_the_execution_to_its_own_work_branch():
 
 
 def test_the_commit_helper_used_by_the_crew_refuses_other_branches(counting):
-    result = gt.write_files_to_branch("o", "r", "test", "msg", [{"path": "src/a.ts", "content": "export const a = 1;"}])
+    result = github_write.write_files_to_branch("o", "r", "test", "msg", [{"path": "src/a.ts", "content": "export const a = 1;"}])
     assert result.startswith("ERREUR") and counting.created == []
 
 
 def test_a_refused_write_is_logged_without_file_content(counting, caplog):
     caplog.set_level("INFO", logger="myiacrew")
-    gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "test", "msg")
+    github_write.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "test", "msg")
     with github_guards.track_write_scope("crewai/a"):
-        gt.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "crewai/b", "msg")
-    gt.github_write_file.func("o", "r", "src/x.ts", "x", "crewai/x\nFAUSSE LIGNE", "msg")
+        github_write.github_write_file.func("o", "r", "src/secret.ts", "CONTENU-SECRET", "crewai/b", "msg")
+    github_write.github_write_file.func("o", "r", "src/x.ts", "x", "crewai/x\nFAUSSE LIGNE", "msg")
     refusals = [record for record in caplog.records if "écriture GitHub refusée" in record.getMessage()]
     assert len(refusals) == 3 and {record.levelname for record in refusals} == {"WARNING"}
     out = caplog.text
@@ -319,9 +320,9 @@ ALLOWED = [".env.example", ".env.sample", "app/.env.template", "src/docker-utils
 def test_sensitive_files_are_refused_without_any_network_call(counting, path):
     refused = github_guards._reject_sensitive_path(path)
     assert refused and refused.startswith("ERREUR") and "non livré" in refused
-    assert gt.github_write_file.func("o", "r", path, "x", "crewai/a", "msg").startswith("ERREUR")
-    assert gt.github_edit_file.func("o", "r", path, "crewai/a", "a", "b", "msg").startswith("ERREUR")
-    batch = gt.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": path, "content": "x"}])
+    assert github_write.github_write_file.func("o", "r", path, "x", "crewai/a", "msg").startswith("ERREUR")
+    assert github_write.github_edit_file.func("o", "r", path, "crewai/a", "a", "b", "msg").startswith("ERREUR")
+    batch = github_write.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": path, "content": "x"}])
     assert batch.startswith("ERREUR") and "refusés" in batch
     assert counting.created == []
 
@@ -333,7 +334,7 @@ def test_ordinary_files_are_not_mistaken_for_sensitive_ones(path):
 
 def test_the_commit_helper_reports_sensitive_files_in_the_rejection_sink(counting):
     sink = {}
-    gt.write_files_to_branch(
+    github_write.write_files_to_branch(
         "o", "r", "crewai/a", "msg",
         [{"path": ".github/workflows/ci.yml", "content": "on: push"}, {"path": "src/a.ts", "content": "export const a = 1;"}],
         rejected_sink=sink,
@@ -343,7 +344,7 @@ def test_the_commit_helper_reports_sensitive_files_in_the_rejection_sink(countin
 
 def test_a_refused_sensitive_write_is_logged_without_content(counting, caplog):
     caplog.set_level("INFO", logger="myiacrew")
-    gt.github_write_file.func("o", "r", ".env", "CLE-SECRETE", "crewai/a", "msg")
+    github_write.github_write_file.func("o", "r", ".env", "CLE-SECRETE", "crewai/a", "msg")
     assert "fichier sensible '.env'" in caplog.text and "CLE-SECRETE" not in caplog.text
 
 
@@ -357,9 +358,9 @@ def test_a_stopped_execution_can_no_longer_write_or_open_a_pull_request(counting
         event.set()                                                     # posé par un autre thread (délai dépassé)
         refused = github_guards._reject_protected_branch("crewai/a")
         assert refused == github_guards.STOPPED_EXECUTION_MESSAGE and "arrêtée" in refused
-        assert gt.github_write_file.func("o", "r", "src/a.ts", "x", "crewai/a", "msg").startswith("ERREUR")
-        assert gt.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": "src/a.ts", "content": "x"}]).startswith("ERREUR")
-        assert gt.github_create_branch.func("o", "r", "crewai/a", "main").startswith("ERREUR")
+        assert github_write.github_write_file.func("o", "r", "src/a.ts", "x", "crewai/a", "msg").startswith("ERREUR")
+        assert github_write.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": "src/a.ts", "content": "x"}]).startswith("ERREUR")
+        assert github_write.github_create_branch.func("o", "r", "crewai/a", "main").startswith("ERREUR")
         monkeypatch.setattr(github_client, "_get_repo", lambda *a: (_ for _ in ()).throw(AssertionError("aucun appel réseau attendu")))
         assert gt.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, github_guards.STOPPED_EXECUTION_MESSAGE)
     assert counting.created == []
