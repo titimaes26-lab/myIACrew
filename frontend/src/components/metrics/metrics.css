@@ -209,3 +209,17 @@
 .viz-card-head { flex-wrap: wrap; }
 .viz-seg { max-width: 100%; overflow-x: auto; }
 .viz-seg button:focus-visible { outline-offset: -3px; }
+
+/* Infobulle « ? » : bulle en position fixe pour ne pas être coupée par un tableau défilant. */
+.viz-info { display: inline-flex; margin-left: 4px; vertical-align: middle; }
+.viz-info-btn {
+  font: inherit; font-size: 10px; font-weight: 700; line-height: 1; width: 16px; height: 16px; padding: 0;
+  border-radius: 50%; border: 1px solid var(--viz-border); background: transparent; color: var(--viz-muted); cursor: help;
+}
+.viz-info-btn:hover, .viz-info-btn[aria-expanded="true"] { background: var(--viz-hover); color: inherit; }
+.viz-info-pop {
+  position: fixed; z-index: 30; width: 260px; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--viz-border); background: var(--viz-plane); color: var(--viz-ink-2);
+  font-size: 12px; font-weight: 400; line-height: 1.4; text-align: left; white-space: normal;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}

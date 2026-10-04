@@ -163,6 +163,25 @@ describe('MetricsPanel — coût, raisonnement et qualité', () => {
     expect(within(tile('Coût estimé')).getByText(/0,2460 € au total/)).toBeInTheDocument();
   });
 
+  it('explique p50 et p95 par une infobulle dans la légende et dans les en-têtes de tableau', async () => {
+    const agent = {
+      agent: 'development', label: 'Développement', runs: 5, incomplete: 0, duration_p50: 45, duration_p95: 120,
+      avg_llm_calls: 3, llm_errors: 0, token_runs: 0, avg_prompt_tokens: null, avg_completion_tokens: null,
+      avg_tool_calls: 1, tool_errors: 0,
+    };
+    respondWith(summary({ agents: [agent] }));
+    render(<MetricsPanel apiUrl="" accessToken="t" />);
+    await screen.findByText('Exécutions terminées');
+    const detail = screen.getByRole('table', { name: 'Détail par agent' });
+    await userEvent.click(within(detail).getByRole('button', { name: 'Explication : Durée p95' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('95 % des exécutions');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // Légende du graphique « Durée par agent » : p50 et p95.
+    expect(screen.getAllByRole('button', { name: 'Explication : p50' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Explication : p95' }).length).toBeGreaterThan(0);
+  });
+
   it('masque la tuile de coût sans tarif', async () => {
     respondWith(summary());
     render(<MetricsPanel apiUrl="" accessToken="t" />);

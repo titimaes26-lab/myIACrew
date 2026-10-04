@@ -1,3 +1,4 @@
+import { METRIC_HINTS } from '../../utils/metricHints';
 import { useState } from 'react';
 import { useMetricsSummary } from '../../hooks/useMetricsSummary';
 import type { MetricsSummary, MetricsWorkflowFilter } from '../../types';
@@ -54,6 +55,7 @@ function AgentTable({ summary }: { summary: MetricsSummary }) {
       title="Détail par agent"
       subtitle="Moyennes par exécution ; les durées sont des médianes."
       table={{
+        hints: { 'Durée p50': METRIC_HINTS.p50, 'Durée p95': METRIC_HINTS.p95 },
         columns: ['Agent', 'Exécutions', 'Durée p50', 'Durée p95', 'Appels LLM', 'Tokens', 'Outils', 'Incomplètes'],
         rows: summary.agents.map((a) => [
           a.label,

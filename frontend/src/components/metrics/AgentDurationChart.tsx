@@ -1,8 +1,10 @@
+import { METRIC_HINTS } from '../../utils/metricHints';
 import type { AgentMetricsRow } from '../../types';
 import { formatSeconds } from '../../utils/formatDuration';
 import { niceDurationTicks, percentOf } from '../../utils/metricsFormat';
 import { TipRow } from './ChartTooltip';
 import ChartCard from './ChartCard';
+import InfoTip from './InfoTip';
 import HorizontalChart, { type HorizontalRow } from './HorizontalChart';
 
 const SYSTEM_AGENTS = new Set(['system', 'other']);
@@ -46,12 +48,13 @@ export default function AgentDurationChart({ agents }: { agents: AgentMetricsRow
       subtitle="Temps d'exécution de la tâche de chaque agent."
       legend={(
         <>
-          <span><i className="viz-key-bar" style={{ background: 'var(--viz-s1)' }} />Médiane (p50)</span>
-          <span><i className="viz-key-dot" style={{ background: 'var(--viz-s2)' }} />p95</span>
+          <span><i className="viz-key-bar" style={{ background: 'var(--viz-s1)' }} />Médiane (p50)<InfoTip term="p50" text={METRIC_HINTS.p50} /></span>
+          <span><i className="viz-key-dot" style={{ background: 'var(--viz-s2)' }} />p95<InfoTip term="p95" text={METRIC_HINTS.p95} /></span>
         </>
       )}
       table={{
         columns: ['Agent', 'Exécutions', 'Médiane (p50)', 'p95'],
+        hints: { 'Médiane (p50)': METRIC_HINTS.p50, p95: METRIC_HINTS.p95 },
         rows: measured.map((a) => [a.label, String(a.runs), formatSeconds(a.duration_p50 ?? 0), a.duration_p95 == null ? '—' : formatSeconds(a.duration_p95)]),
       }}
       empty={rows.length === 0 ? 'Aucune durée mesurée sur cette période.' : null}
