@@ -258,20 +258,20 @@ def test_metrics_summary_endpoint_is_scoped_to_the_user_period_and_workflow(sess
     running = _execution(session, "u1", status="running")
     _agent_run(session, running, "design", 800.0)
 
-    everything = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"}))
+    everything = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
     assert everything["executions"]["total"] == 2  # ni l'ancienne, ni celle d'un autre, ni la « running »
     design = next(a for a in everything["agents"] if a["agent"] == "design")
     assert design["runs"] == 2 and design["duration_p95"] < 100
-    only_bugfix = asyncio.run(main.metrics_summary(days=30, workflow="BUGFIX", session=session, user={"id": "u1"}))
+    only_bugfix = main.metrics_summary(days=30, workflow="BUGFIX", session=session, user={"id": "u1"})
     assert only_bugfix["executions"]["total"] == 1 and only_bugfix["workflow"] == "BUGFIX"
-    wide = asyncio.run(main.metrics_summary(days=90, workflow=None, session=session, user={"id": "u1"}))
+    wide = main.metrics_summary(days=90, workflow=None, session=session, user={"id": "u1"})
     assert wide["executions"]["total"] == 3
-    clamped = asyncio.run(main.metrics_summary(days=100000, workflow=None, session=session, user={"id": "u1"}))
+    clamped = main.metrics_summary(days=100000, workflow=None, session=session, user={"id": "u1"})
     assert clamped["period_days"] == 365
 
 
 def test_metrics_summary_with_no_executions_is_empty(session):
-    result = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "nobody"}))
+    result = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "nobody"})
     assert result["executions"]["total"] == 0 and result["agents"] == []
 
 
@@ -280,14 +280,14 @@ def test_execution_agent_runs_endpoint_orders_by_pipeline_and_checks_ownership(s
     entry = _execution(session, "u1")
     _agent_run(session, entry, "qa", 5.0)
     _agent_run(session, entry, "design", 3.0)
-    rows = asyncio.run(main.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u1"}))
+    rows = main.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u1"})
     assert [r["agent"] for r in rows] == ["design", "qa"] and rows[0]["label"] == "Conception"
     assert rows[0]["tokens_known"] is True and rows[0]["duration_seconds"] == 3.0
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(main.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u2"}))
+        main.execution_agent_runs(execution_id=entry.id, session=session, user={"id": "u2"})
     assert excinfo.value.status_code == 404
     with pytest.raises(HTTPException):
-        asyncio.run(main.execution_agent_runs(execution_id=9999, session=session, user={"id": "u1"}))
+        main.execution_agent_runs(execution_id=9999, session=session, user={"id": "u1"})
 
 
 # --- Suppression d'historique et exécution de bout en bout ------------------------------------
@@ -299,22 +299,22 @@ def test_deleting_an_execution_removes_its_agent_runs_and_only_its_own(session):
     for entry in (doomed, kept):
         _agent_run(session, entry, "design")
         _agent_run(session, entry, "qa")
-    result = asyncio.run(main.delete_history_entry(execution_id=doomed.id, session=session, user={"id": "u1"}))
+    result = main.delete_history_entry(execution_id=doomed.id, session=session, user={"id": "u1"})
     assert result == {"status": "deleted", "id": doomed.id}
     remaining = list(session.exec(select(AgentRun)))
     assert {r.execution_id for r in remaining} == {kept.id} and len(remaining) == 2
     running = _execution(session, "u1", status="running")
     _agent_run(session, running, "design")
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(main.delete_history_entry(execution_id=running.id, session=session, user={"id": "u1"}))
+        main.delete_history_entry(execution_id=running.id, session=session, user={"id": "u1"})
     assert excinfo.value.status_code == 409
     assert any(r.execution_id == running.id for r in session.exec(select(AgentRun)))
 
 
 def _bulk(session, ids, user="u1"):
-    return asyncio.run(main.bulk_delete_history(
+    return main.bulk_delete_history(
         payload=main.BulkDeleteInput(ids=ids), session=session, user={"id": user},
-    ))
+    )
 
 
 def test_bulk_delete_removes_only_own_non_running_executions_and_their_agent_runs(session):
@@ -459,7 +459,7 @@ def test_endpoint_applies_and_clamps_the_time_zone_offset(session):
     next_day = (created + timedelta(days=1)).date().isoformat()
 
     def days(offset):
-        result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=offset, session=session, user={"id": "u1"}))
+        result = main.metrics_summary(days=30, workflow=None, tz_offset=offset, session=session, user={"id": "u1"})
         return [d["date"] for d in result["daily"]]
 
     assert days(0) == [utc_day] and days(120) == [next_day]
@@ -480,7 +480,7 @@ def test_endpoint_reads_all_agent_runs_across_several_chunks(session, monkeypatc
     session.add_all([AgentRun(execution_id=e.id, user_id="u1", workflow="BUGFIX", agent="design", duration_seconds=5.0,
                               llm_calls=2, usage_calls=2, total_tokens=10, created_at=e.created_at) for e in entries])
     session.commit()
-    result = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"}))
+    result = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
     design = next(a for a in result["agents"] if a["agent"] == "design")
     assert result["executions"]["total"] == 23 and design["runs"] == 23
 
@@ -497,7 +497,7 @@ def test_endpoint_handles_the_maximum_number_of_executions_with_the_real_chunk_s
     session.add_all([AgentRun(execution_id=e.id, user_id="u1", workflow="BUGFIX", agent="qa", duration_seconds=1.0,
                               llm_calls=1, created_at=e.created_at) for e in entries])
     session.commit()
-    result = asyncio.run(main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"}))
+    result = main.metrics_summary(days=30, workflow=None, session=session, user={"id": "u1"})
     assert result["executions"]["total"] == 1000
     assert next(a for a in result["agents"] if a["agent"] == "qa")["runs"] == 1000
 
@@ -534,7 +534,7 @@ def test_summary_endpoint_exposes_failure_causes_for_the_user_and_period_only(se
     for entry in (mine, other, old):
         session.add(entry)
     session.commit()
-    result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"}))
+    result = main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"})
     assert result["failures"] == [{"code": "LLM_TIMEOUT", "label": "Délai du modèle dépassé", "count": 1}]
 
 
@@ -554,16 +554,16 @@ def test_summary_flags_truncation_when_the_execution_limit_is_reached(session, m
     monkeypatch.setattr(main, "_METRICS_EXECUTION_LIMIT", 2)
     for _ in range(3):
         _execution(session, "u1")
-    result = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"}))
+    result = main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u1"})
     assert result["truncated"] is True and result["executions"]["total"] == 2
-    fewer = asyncio.run(main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u9"}))
+    fewer = main.metrics_summary(days=30, workflow=None, tz_offset=0, session=session, user={"id": "u9"})
     assert fewer["truncated"] is False
 
 
 # --- Comparaison à la période précédente et exactitude au-delà de 1 000 exécutions ------------------
 
 def _summary(session, days=30, workflow=None, user="u1"):
-    return asyncio.run(main.metrics_summary(days=days, workflow=workflow, tz_offset=0, session=session, user={"id": user}))
+    return main.metrics_summary(days=days, workflow=workflow, tz_offset=0, session=session, user={"id": user})
 
 
 def test_summary_compares_with_the_previous_period_of_the_same_length(session):
@@ -733,7 +733,7 @@ def _list(session, **params):
     defaults = dict(days=30, workflow=None, status=None, sort="created_at", order="desc", limit=20, offset=0, user="u1")
     defaults.update(params)
     user = defaults.pop("user")
-    return asyncio.run(main.metrics_executions(session=session, user={"id": user}, **defaults))
+    return main.metrics_executions(session=session, user={"id": user}, **defaults)
 
 
 def test_executions_list_is_scoped_filtered_and_carries_the_measures(session):

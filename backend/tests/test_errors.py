@@ -173,3 +173,31 @@ def test_structured_http_detail_is_preserved_and_gateway_statuses_have_codes(cli
     assert res.status_code == 502
     assert res.json()["code"] == "SERVICE_UNAVAILABLE" and res.json()["retryable"] is True
     assert res.json()["errors"] == {"upstream": "x"}
+
+
+# --- Points d'accès synchrones : exécutés dans le pool de threads, jamais sur la boucle d'événements -------------
+
+SYNC_ENDPOINTS = (
+    "create_conversation", "list_conversations", "get_conversation_messages", "get_conversation_progress",
+    "list_repo_targets", "metrics_summary", "metrics_executions", "execution_agent_runs", "get_history",
+    "delete_history_entry", "bulk_delete_history",
+)
+
+
+def test_database_endpoints_are_plain_functions_so_fastapi_runs_them_in_a_thread():
+    import inspect
+    for name in SYNC_ENDPOINTS:
+        assert not inspect.iscoroutinefunction(getattr(main, name)), f"{name} bloquerait la boucle d'événements"
+    # Ceux qui attendent GitHub ou le LLM restent asynchrones.
+    assert inspect.iscoroutinefunction(main.execute_workflow) and inspect.iscoroutinefunction(main.qualify_request)
+
+
+def test_endpoints_serve_requests_from_the_thread_pool(client):
+    assert client.get("/api/history").json() == []
+    summary = client.get("/api/metrics/summary").json()
+    assert summary["executions"]["total"] == 0
+    assert client.get("/api/metrics/executions").json() == {"total": 0, "items": []}
+    assert client.get("/api/conversations").json() == []
+    created = client.post("/api/conversations", json={"title": "t"})
+    assert created.status_code == 200 and created.json()["title"] == "t"
+    assert client.get(f"/api/conversations/{created.json()['id']}/messages").json() == []

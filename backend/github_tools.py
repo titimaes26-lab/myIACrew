@@ -93,10 +93,45 @@ def _github_error(e: GithubException) -> str:
     return f"ERREUR_GITHUB : {message}"
 
 
+# Toutes les branches de travail créées par ce service (voir main.execute_workflow) commencent par ce préfixe : c'est
+# la SEULE zone où les agents ont le droit d'écrire. Ni `main`, ni `test`, ni une branche de production : le nom de
+# branche d'un appel d'outil vient du modèle, qu'une consigne glissée dans le dépôt cible pourrait détourner.
+WORK_BRANCH_PREFIX = "crewai/"
+
+# Branche de travail de l'exécution en cours, quand elle est connue : seule celle-ci est alors écrivable (plus strict
+# que le préfixe). Absente d'un thread qui n'a pas hérité du contexte, la règle du préfixe reste en vigueur.
+_write_scope: ContextVar[str | None] = ContextVar("write_scope", default=None)
+
+
+@contextmanager
+def track_write_scope(branch: str):
+    """Limite les écritures GitHub de l'exécution de crew en cours à `branch` (une branche `crewai/…`)."""
+    token = _write_scope.set(branch)
+    try:
+        yield
+    finally:
+        _write_scope.reset(token)
+
+
 def _reject_protected_branch(branch: str) -> str | None:
-    """None si l'écriture peut continuer, sinon le message d'erreur à renvoyer tel quel."""
+    """None si l'écriture sur `branch` peut continuer, sinon le message d'erreur à renvoyer tel quel (aucun appel réseau)."""
     if branch in ("main", "master"):
         return "ERREUR : écriture directe sur la branche principale interdite. Utilise d'abord github_create_branch."
+    valid = (
+        isinstance(branch, str) and branch.startswith(WORK_BRANCH_PREFIX) and len(branch) > len(WORK_BRANCH_PREFIX)
+        and ".." not in branch
+    )
+    if not valid:
+        return (
+            f"ERREUR : écriture refusée sur la branche '{branch}' : seules les branches de travail "
+            f"'{WORK_BRANCH_PREFIX}…' sont modifiables. Utilise la branche de travail indiquée dans le contexte repository."
+        )
+    scope = _write_scope.get()
+    if scope is not None and branch != scope:
+        return (
+            f"ERREUR : écriture refusée sur la branche '{branch}' : cette exécution ne peut écrire que sur sa branche "
+            f"de travail '{scope}'."
+        )
     return None
 
 
@@ -406,6 +441,9 @@ def github_create_branch(owner: str, repo: str, new_branch: str, base_branch: st
         owner (str), repo (str), new_branch (str): nom de la branche de travail à créer.
         base_branch (str): branche source (défaut 'main').
     """
+    rejection = _reject_protected_branch(new_branch)
+    if rejection:
+        return rejection
     try:
         gh_repo = _get_repo(owner, repo)
         try:

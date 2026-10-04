@@ -235,7 +235,7 @@ def test_no_resume_id_means_no_resume(engine):
 def test_deleting_an_execution_deletes_its_checkpoints(engine):
     with Session(engine) as db:
         conversation, entry = _failed_with_checkpoints(db)
-        asyncio.run(main.delete_history_entry(execution_id=entry.id, session=db, user={"id": "u1"}))
+        main.delete_history_entry(execution_id=entry.id, session=db, user={"id": "u1"})
         assert not db.exec(select(ExecutionCheckpoint)).all()
 
 

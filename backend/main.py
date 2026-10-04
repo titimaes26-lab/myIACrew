@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator, model_validator
 from dataclasses import dataclass
+from contextlib import nullcontext
 from typing import Any, List, Literal, NamedTuple, Optional
 from sqlalchemy import case, update as sql_update
 from sqlmodel import Session, col, func, select
@@ -38,6 +39,7 @@ from errors import (
 from github_tools import (
     verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
     check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue, build_repo_snapshot, track_read_cache,
+    track_write_scope, WORK_BRANCH_PREFIX,
 )
 from delivery import render_partial_delivery_block
 
@@ -1288,8 +1290,9 @@ async def _run_crew_and_persist(
                     _capture_branch_sha(data, work_branch, has_repo_target),
                 )
                 _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
-                # Cache de lecture GitHub partagé par l'aperçu et les agents de CETTE exécution (voir track_read_cache).
-                with track_read_cache():
+                # Cache de lecture GitHub partagé par l'aperçu et les agents de CETTE exécution (voir track_read_cache) ;
+                # écritures GitHub limitées à la branche de travail de cette exécution (voir track_write_scope).
+                with track_read_cache(), (track_write_scope(work_branch) if work_branch else nullcontext()):
                     branch_exists = state.sha_before is not None
                     repo_snapshot = await _prefetch_repo_snapshot(
                         data, work_branch, normalized_base_branch, has_repo_target, branch_exists, resume_outputs)
@@ -1507,7 +1510,7 @@ async def execute_workflow(
                 work_branch = entry.work_branch
                 break
         if not work_branch:
-            work_branch = f"crewai/{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
+            work_branch = f"{WORK_BRANCH_PREFIX}{data.target_workflow.lower()}-{uuid.uuid4().hex[:8]}"
 
     # Enregistrement immédiat (statut "running") pour garder une trace même en cas d'échec
     db_entry = ExecutionHistory(
@@ -1557,7 +1560,7 @@ async def execute_workflow(
     }
 
 @app.post("/api/conversations", response_model=Conversation)
-async def create_conversation(
+def create_conversation(
     data: ConversationCreateInput,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
@@ -1573,7 +1576,7 @@ async def create_conversation(
     return conversation
 
 @app.get("/api/conversations", response_model=List[Conversation])
-async def list_conversations(
+def list_conversations(
     limit: int = 20,
     offset: int = 0,
     session: Session = Depends(get_session),
@@ -1592,7 +1595,7 @@ async def list_conversations(
     return session.exec(statement).all()
 
 @app.get("/api/conversations/{conversation_id}/messages", response_model=List[ExecutionHistory])
-async def get_conversation_messages(
+def get_conversation_messages(
     conversation_id: int,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
@@ -1670,7 +1673,7 @@ def _parse_completed_agents(result_text: str) -> dict[str, str]:
     return agents
 
 @app.get("/api/conversations/{conversation_id}/progress")
-async def get_conversation_progress(
+def get_conversation_progress(
     conversation_id: int,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
@@ -1709,7 +1712,7 @@ async def get_conversation_progress(
     }
 
 @app.get("/api/repo-targets")
-async def list_repo_targets(
+def list_repo_targets(
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
 ):
@@ -1756,7 +1759,7 @@ def _token_prices() -> Optional[tuple[float, float]]:
     return prices if prices[0] > 0 or prices[1] > 0 else None
 
 @app.get("/api/metrics/summary")
-async def metrics_summary(
+def metrics_summary(
     days: int = 30,
     workflow: Optional[str] = None,
     tz_offset: int = 0,
@@ -1841,7 +1844,7 @@ async def metrics_summary(
     return result
 
 @app.get("/api/metrics/executions")
-async def metrics_executions(
+def metrics_executions(
     days: int = 30,
     workflow: Optional[str] = None,
     status: Optional[Literal["success", "failed"]] = None,
@@ -1907,7 +1910,7 @@ async def metrics_executions(
     )
 
 @app.get("/api/executions/{execution_id}/agent-runs")
-async def execution_agent_runs(
+def execution_agent_runs(
     execution_id: int,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
@@ -1923,7 +1926,7 @@ async def execution_agent_runs(
     return [agent_run_view(row) for row in sort_pipeline(rows)]
 
 @app.get("/api/history", response_model=List[ExecutionHistory])
-async def get_history(
+def get_history(
     limit: int = 20,
     offset: int = 0,
     session: Session = Depends(get_session),
@@ -1956,7 +1959,7 @@ def _delete_executions(session: Session, entries: List[ExecutionHistory]) -> Non
         session.delete(entry)
 
 @app.delete("/api/history/{execution_id}")
-async def delete_history_entry(
+def delete_history_entry(
     execution_id: int,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
@@ -1994,7 +1997,7 @@ async def delete_history_entry(
     return {"status": "deleted", "id": execution_id}
 
 @app.post("/api/history/bulk-delete")
-async def bulk_delete_history(
+def bulk_delete_history(
     payload: BulkDeleteInput,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),

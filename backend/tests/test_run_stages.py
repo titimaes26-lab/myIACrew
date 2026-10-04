@@ -486,3 +486,26 @@ def test_previous_plan_is_not_loaded_when_the_architecture_will_not_run(engine, 
 def test_crew_inputs_carry_the_previous_plan_with_an_empty_default():
     assert main._crew_inputs(_data(), 1, "p", "c", "b", "main", True, False)["previous_plan"] == ""
     assert main._crew_inputs(_data(), 1, "p", "c", "b", "main", True, False, "", "PLAN")["previous_plan"] == "PLAN"
+
+
+# --- Périmètre d'écriture GitHub de l'exécution -------------------------------------------------------------------
+
+def test_the_crew_runs_with_its_write_scope_limited_to_the_work_branch(engine, monkeypatch):
+    import github_tools
+    seen_scopes: list = []
+
+    async def run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None, **kwargs):
+        seen_scopes.append(github_tools._write_scope.get())
+        return SimpleNamespace(raw="résultat")
+
+    monkeypatch.setattr(main, "AppDevelopmentCrew", type("C", (), {"run_dynamic_crew": run}))
+    monkeypatch.setattr(main, "get_branch_head_sha", lambda *a: None)
+    execution_id, conversation_id = _new_execution(engine, "FEATURE")
+    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(target_workflow="FEATURE"), True, False, "crewai/feature-ab12cd34", "main", "p", "c"))
+    assert seen_scopes == ["crewai/feature-ab12cd34"]
+    assert github_tools._write_scope.get() is None   # jamais conservé après l'exécution
+
+
+def test_work_branches_are_named_with_the_shared_prefix():
+    import github_tools
+    assert main.WORK_BRANCH_PREFIX == github_tools.WORK_BRANCH_PREFIX == "crewai/"

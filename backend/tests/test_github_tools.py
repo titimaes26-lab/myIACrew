@@ -229,3 +229,50 @@ def test_repo_snapshot_falls_back_to_the_raw_files_when_package_json_is_not_json
     snapshot = gt.build_repo_snapshot("o", "r", "main")
     assert "## package.json" in snapshot and "ceci n'est pas du json" in snapshot
     assert "## Résumé du projet" not in snapshot and "## tsconfig.json" in snapshot
+
+
+# --- Écriture limitée aux branches de travail `crewai/…` ----------------------------------------------------------
+
+BLOCKED = ["main", "master", "test", "develop", "production", "feature/x", "crewai/", "crewai/../main", "", "crewai"]
+
+
+def _write_calls(branch):
+    return [
+        gt.github_write_file.func("o", "r", "src/a.ts", "export const a = 1;", branch, "msg"),
+        gt.github_write_files.func("o", "r", branch, "msg", '[{"path": "src/a.ts", "content": "export const a = 1;"}]'),
+        gt.github_edit_file.func("o", "r", "src/a.ts", branch, "a", "b", "msg"),
+        gt.github_create_branch.func("o", "r", branch, "main"),
+    ]
+
+
+@pytest.mark.parametrize("branch", BLOCKED)
+def test_agents_cannot_write_or_create_anything_outside_work_branches(counting, branch):
+    for result in _write_calls(branch):
+        assert result.startswith("ERREUR"), result
+    assert counting.created == []   # refusé avant tout appel à GitHub
+
+
+def test_refusal_names_the_rule_so_the_agent_can_correct_itself(counting):
+    refused = gt.github_write_file.func("o", "r", "a.ts", "x", "test", "msg")
+    assert "'crewai/…'" in refused and "contexte repository" in refused
+    assert "principale" in gt.github_write_file.func("o", "r", "a.ts", "x", "main", "msg")
+
+
+@pytest.mark.parametrize("branch", ["crewai/feature-ab12cd34", "crewai/bugfix-00000000", "crewai/x"])
+def test_work_branches_are_accepted(branch):
+    assert gt._reject_protected_branch(branch) is None
+
+
+def test_write_scope_restricts_the_execution_to_its_own_work_branch():
+    assert gt._reject_protected_branch("crewai/b") is None   # sans périmètre : la règle du préfixe seule
+    with gt.track_write_scope("crewai/a"):
+        assert gt._reject_protected_branch("crewai/a") is None
+        refused = gt._reject_protected_branch("crewai/b")
+        assert refused and "crewai/a" in refused
+        assert gt._reject_protected_branch("test")          # le préfixe reste exigé
+    assert gt._reject_protected_branch("crewai/b") is None   # le périmètre disparaît avec le contexte
+
+
+def test_the_commit_helper_used_by_the_crew_refuses_other_branches(counting):
+    result = gt.write_files_to_branch("o", "r", "test", "msg", [{"path": "src/a.ts", "content": "export const a = 1;"}])
+    assert result.startswith("ERREUR") and counting.created == []

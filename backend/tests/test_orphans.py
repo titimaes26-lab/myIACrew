@@ -71,7 +71,7 @@ def test_progress_poll_releases_a_dead_execution(session):
     session.commit()
     session.refresh(conversation)
     stale = _running(session, conversation_id=conversation.id)
-    result = asyncio.run(main.get_conversation_progress(conversation_id=conversation.id, session=session, user={"id": "u1"}))
+    result = main.get_conversation_progress(conversation_id=conversation.id, session=session, user={"id": "u1"})
     assert result["status"] is None  # plus rien en cours : le frontend resynchronise le tour
     session.refresh(stale)
     assert stale.status == "failed" and stale.error_code == "INTERRUPTED"
@@ -79,12 +79,12 @@ def test_progress_poll_releases_a_dead_execution(session):
 
 def test_stale_running_entry_becomes_deletable(session):
     stale = _running(session)
-    result = asyncio.run(main.delete_history_entry(execution_id=stale.id, session=session, user={"id": "u1"}))
+    result = main.delete_history_entry(execution_id=stale.id, session=session, user={"id": "u1"})
     assert result["status"] == "deleted"
     live = _running(session, age=timedelta(seconds=5))
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(main.delete_history_entry(execution_id=live.id, session=session, user={"id": "u1"}))
+        main.delete_history_entry(execution_id=live.id, session=session, user={"id": "u1"})
     assert excinfo.value.status_code == 409
 
 

@@ -18,7 +18,10 @@ if DATABASE_URL.startswith("postgres://"):
 # lecture d'historique/conversation) : désactivé par défaut, réactivable via SQL_ECHO=true
 # pour le débogage sans devoir modifier le code.
 _SQL_ECHO = os.getenv("SQL_ECHO", "false").strip().lower() == "true"
-engine = create_engine(DATABASE_URL, echo=_SQL_ECHO)
+# pool_pre_ping : une connexion coupée par le pooler (Supabase, Render) pendant qu'elle dormait dans le pool est
+# détectée avant usage et remplacée, au lieu de faire échouer la requête suivante. pool_recycle : aucune connexion
+# n'est gardée plus de 30 minutes.
+engine = create_engine(DATABASE_URL, echo=_SQL_ECHO, pool_pre_ping=True, pool_recycle=1800)
 
 # Regroupe plusieurs exécutions en un fil de discussion persistant
 class Conversation(SQLModel, table=True):
