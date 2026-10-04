@@ -18,13 +18,24 @@ def _level_from_env() -> int:
     return level if isinstance(level, int) else logging.INFO
 
 
+class OneLineFormatter(logging.Formatter):
+    """Un événement = une ligne : les retours à la ligne du MESSAGE sont écrits en clair (`\\n`), pour qu'un texte
+    d'exception ou de dépôt cible multi-lignes ne puisse pas fabriquer de fausses lignes de log (« 12:00 WARNING … »).
+    La trace d'une exception (exc_info) garde ses propres lignes, après le message."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        text = super().formatMessage(record)
+        return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 def configure_logging() -> logging.Logger:
-    """Configure (une seule fois) le logger parent et le renvoie ; les appels suivants ne dupliquent rien."""
+    """Configure (une seule fois) le logger parent et le renvoie ; les appels suivants ne changent plus rien
+    (ni doublon de handler, ni niveau réécrit : un niveau réglé ensuite par programme est conservé)."""
     root = logging.getLogger(ROOT_NAME)
-    root.setLevel(_level_from_env())
     if not any(getattr(handler, "_myiacrew", False) for handler in root.handlers):
+        root.setLevel(_level_from_env())
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter(_FORMAT))
+        handler.setFormatter(OneLineFormatter(_FORMAT))
         handler._myiacrew = True  # type: ignore[attr-defined]
         root.addHandler(handler)
     return root

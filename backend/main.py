@@ -233,8 +233,8 @@ async def _handle_validation_error(request: Request, exc: RequestValidationError
 # de la requête, comme le ferait CORSMiddleware lui-même.
 @app.exception_handler(Exception)
 async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
-    # Ce diagnostic (print/lecture mémoire) ne doit JAMAIS empêcher de renvoyer une réponse :
-    # print() lui-même peut échouer (pipe de logs saturé/coupé, disque plein — plausible pile
+    # Ce diagnostic (journalisation/lecture mémoire) ne doit JAMAIS empêcher de renvoyer une réponse :
+    # écrire dans les logs peut lui-même échouer (pipe saturé/coupé, disque plein — plausible pile
     # dans les conditions de pression mémoire que ce diagnostic vise à détecter). Une exception
     # ICI, dans ce handler global lui-même, ne serait rattrapée par personne (ServerErrorMiddleware
     # ne retombe sur son propre filet de sécurité QUE quand aucun handler custom n'est enregistré,
@@ -243,12 +243,8 @@ async def _log_unhandled_exception(request: Request, exc: Exception) -> JSONResp
     # pour éliminer.
     try:
         _log_memory(f"exception non gérée sur {request.url.path}")
-        # flush=True : sys.stdout est bufferisé par bloc (pas par ligne) dès qu'il n'est pas
-        # attaché à un terminal — le cas normal une fois redirigé vers les logs Render. Sans
-        # vidage explicite, ce print() pourrait rester en mémoire tampon, jamais écrit, si le
-        # process se termine brutalement juste après (ex: OOM kill, SIGKILL — qui ne laisse
-        # aucune chance de vider ce tampon en sortie normale) : exactement le genre de trace
-        # perdue que ce handler existe pour éviter.
+        # Le handler de logs (logs.py) vide la sortie à chaque ligne : la trace n'attend pas en mémoire tampon
+        # si le process est tué juste après (OOM kill, SIGKILL), exactement le cas que ce handler veut couvrir.
         log.error(f"exception non gérée sur {request.method} {request.url.path}", exc_info=exc)
     except Exception:
         pass
@@ -353,7 +349,7 @@ def _current_memory_mb() -> Optional[float]:
     Ajouté pour diagnostiquer les cas où le process backend semble mourir sans laisser aucune
     trace applicative (voir _log_memory, appelé à chaque changement d'étape d'exécution) : sur le
     plan gratuit de Render, ni l'onglet "Events" (qui indiquerait un OOM kill explicitement) ni le
-    graphique mémoire des "Metrics" ne sont accessibles, ce print() dans les logs applicatifs est
+    graphique mémoire des "Metrics" ne sont accessibles, cette ligne dans les logs applicatifs est
     donc le seul moyen de voir la tendance mémoire avant une éventuelle coupure brutale — un OOM
     kill (SIGKILL) tue le process instantanément, sans qu'aucune exception Python ne soit jamais
     levée ni journalisée : seules ces lectures PÉRIODIQUES avant le crash peuvent le suggérer
@@ -430,12 +426,12 @@ def _container_memory_limit_mb() -> Optional[_MemoryLimit]:
 _CONTAINER_MEMORY_LIMIT_MB = _container_memory_limit_mb()
 
 def _log_memory(context: str) -> None:
-    # Best-effort, y compris print() lui-même : appelée depuis des points qui doivent absolument
+    # Best-effort, y compris l'écriture du log elle-même : appelée depuis des points qui doivent absolument
     # ne jamais lever (le except d'execute_workflow avant que db_entry ne soit marqué "failed", et
-    # _persist_current_step avant la classification CrewStepError — voir leurs docstrings). print()
-    # peut échouer (pipe de logs saturé/coupé, disque plein) précisément dans les conditions de
-    # pression mémoire que ce diagnostic vise à observer ; sans cette garde, l'échec d'un simple
-    # print() de diagnostic ferait dérailler l'exécution qu'il essaie seulement d'observer.
+    # _persist_current_step avant la classification CrewStepError — voir leurs docstrings). Écrire dans les logs
+    # peut échouer (pipe saturé/coupé, disque plein) précisément dans les conditions de pression mémoire que ce
+    # diagnostic vise à observer ; sans cette garde, l'échec d'un simple log de diagnostic ferait dérailler
+    # l'exécution qu'il essaie seulement d'observer.
     try:
         mem_mb = _current_memory_mb()
         if mem_mb is not None:

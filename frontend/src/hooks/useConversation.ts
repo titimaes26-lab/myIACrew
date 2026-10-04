@@ -346,7 +346,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // typeof turn.id === 'number' est la condition-clé de ce choix : ce n'est vrai QUE si
   // applyExecuteAccepted a déjà tourné, c'est-à-dire que /api/execute a déjà répondu et que ce
   // tour est donc bien suivi par un id réel que le sondage de progression peut retrouver plus tard
-  // via getConversationMessages. Si /api/execute est encore en vol (id encore le tempId local,
+  // via getExecution. Si /api/execute est encore en vol (id encore le tempId local,
   // une string) au moment de ce clic, dismissedLocally serait un piège bien pire que le 409
   // ci-dessus : `status` resterait "running" à jamais SANS qu'aucun mécanisme ne puisse jamais le
   // faire sortir de cet état (le sondage ne resynchronise que par id réel — voir
