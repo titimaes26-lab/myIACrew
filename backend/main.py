@@ -14,7 +14,7 @@ from pydantic import BaseModel, field_validator
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
 from sqlalchemy import update as sql_update
-from sqlmodel import Session, func, select
+from sqlmodel import Session, col, func, select
 
 from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
@@ -26,17 +26,17 @@ from database import (
     create_db_and_tables, get_session, engine, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
 )
 from agent_metrics import (
-    agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
+    ExecutionMetrics, agent_run_view, build_agent_run_rows, flush_events, sort_pipeline, summarize, step_for_role,
 )
 from auth import get_current_user, close_http_client
 import validation
 from orphans import HEARTBEAT_RETRY_SECONDS, HEARTBEAT_SECONDS, sweep_stale_executions
 from errors import (
-    AppError, ErrorCode, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
+    AppError, ErrorCode, ErrorInfo, classify_exception, code_for_status, error_body, http_status_for, is_retryable_status,
 )
 from github_tools import (
     verify_github_delivery, get_branch_head_sha, describe_partial_delivery, GitHubVerificationUnavailable,
-    check_github_access, GitHubAccessProblem,
+    check_github_access, GitHubAccessProblem, DeliveredPullRequest, DeliveryIssue,
 )
 from delivery import render_partial_delivery_block
 
@@ -152,7 +152,7 @@ async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
 async def _handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     # Couvre aussi les HTTPException levées par FastAPI/Starlette elles-mêmes (404 de route,
     # 405...) et par auth.py : même format partout, en-têtes d'origine conservés (ex: WWW-Authenticate).
-    structured = {} if isinstance(exc.detail, str) else {"errors": exc.detail}
+    structured: dict[str, Any] = {} if isinstance(exc.detail, str) else {"errors": exc.detail}
     message = exc.detail if isinstance(exc.detail, str) else "Requête refusée."
     return JSONResponse(
         status_code=exc.status_code,
@@ -361,12 +361,12 @@ def _container_memory_limit_mb() -> Optional[_MemoryLimit]:
         pass
     try:
         with open("/sys/fs/cgroup/memory/memory.limit_in_bytes") as f:
-            raw = int(f.read().strip())
+            raw_v1 = int(f.read().strip())
             # cgroup v1 représente "illimité" par une très grande valeur (pas un mot-clé explicite
             # comme "max" en v2) : un seuil large mais arbitraire écarte ce cas plutôt que
             # d'afficher une "limite" de plusieurs exaoctets, dénuée de sens pratique.
-            if 0 < raw < (1 << 62):
-                return _MemoryLimit(raw / (1024 * 1024), True)
+            if 0 < raw_v1 < (1 << 62):
+                return _MemoryLimit(raw_v1 / (1024 * 1024), True)
     except Exception:
         pass
     try:
@@ -804,7 +804,7 @@ class _RunState:
     """État d'UNE tentative d'exécution, lu par le chemin d'échec même quand le crew a planté en route :
     SHA de la branche de travail AVANT le crew (None tant que non capturé) et métriques de la tentative."""
     sha_before: Optional[str] = None
-    metrics: Optional[Any] = None
+    metrics: Optional[ExecutionMetrics] = None
 
 
 def _repo_instructions(
@@ -857,11 +857,13 @@ def _crew_inputs(
     }
 
 
-async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, should_verify: bool) -> Optional[str]:
+async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, has_repo_target: bool) -> Optional[str]:
     """SHA de la branche de travail AVANT le crew : repère de verify_github_delivery pour distinguer « cette
     exécution a poussé un commit » de « une branche/PR d'un tour précédent existe toujours ». None = branche
     absente OU vérification indisponible : traité pareil (best-effort), une panne réseau n'empêche pas le crew."""
-    if not should_verify:
+    # Pour TOUT run avec repository cible (pas seulement ceux qui vérifient la livraison) : les consignes
+    # données aux agents dépendent de l'existence de la branche, ANALYSE_ONLY compris.
+    if not has_repo_target:
         return None
     try:
         return await asyncio.to_thread(get_branch_head_sha, data.repo_owner, data.repo_name, work_branch)
@@ -870,7 +872,7 @@ async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, 
 
 
 async def _run_crew(
-    crew: Any, state: _RunState, execution_id: int, request_type: str, inputs: dict,
+    crew: AppDevelopmentCrew, state: _RunState, execution_id: int, request_type: str, inputs: dict,
     resume_outputs: Optional[dict[str, str]],
 ) -> Any:
     """Lance le crew avec ses métriques et son sondage mémoire périodique (toujours annulé, succès ou non)."""
@@ -901,7 +903,7 @@ async def _run_crew(
                 raise
 
 
-def _delivery_failure_message(issue: Any, raw_result: str) -> str:
+def _delivery_failure_message(issue: DeliveryIssue, raw_result: str) -> str:
     """Message d'une livraison non confirmée sur GitHub. `likely_access_problem` (champ structuré, pas un
     texte à parser) distingue « branche introuvable / API injoignable » (vérifier GITHUB_TOKEN est juste) du
     cas « branche et commits confirmés mais PR manquante » (l'agent n'a pas terminé : conseil de jeton faux).
@@ -927,7 +929,7 @@ def _delivery_failure_message(issue: Any, raw_result: str) -> str:
 async def _verify_delivery(
     data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], sha_before: Optional[str],
     raw_result: str,
-) -> Any:
+) -> Optional[DeliveredPullRequest]:
     """Vérifie via l'API GitHub (jamais d'après le texte d'un agent : la QA n'a aucun outil pour ça) qu'une
     branche et une PR à jour existent. Renvoie la PR confirmée ; lève RuntimeError sinon. Appel bloquant :
     dans un thread."""
@@ -939,7 +941,7 @@ async def _verify_delivery(
     return delivered_pr
 
 
-def _with_pull_request_line(raw_result: str, delivered_pr: Any) -> str:
+def _with_pull_request_line(raw_result: str, delivered_pr: Optional[DeliveredPullRequest]) -> str:
     """Ajoute l'URL de la PR réellement observée à la SUITE du résultat, sans nouveau séparateur de section :
     le frontend ne découpe que sur « \\n\\n---\\n\\n## », donc la ligne reste dans la dernière section."""
     if delivered_pr is None:
@@ -982,7 +984,33 @@ async def _persist_success(
     _cleanup_persisted_agents(db_entry.id)
 
 
-def _failure_detail(exc: BaseException, info: Any) -> str:
+async def _persist_success_safely(
+    db_entry_id: int, conversation_id: int, session: Session, db_entry: ExecutionHistory,
+    conversation: Conversation, raw_result: str, state: _RunState,
+) -> None:
+    """_persist_success, avec UNE reprise sur une Session neuve si la première tentative échoue (connexion
+    périmée après une longue exécution). Si la reprise échoue aussi, l'erreur est journalisée et la ligne
+    reste « running » : le balayage des orphelines la libérera, plutôt que de la déclarer en échec à tort."""
+    try:
+        await _persist_success(session, db_entry, conversation, raw_result, state)
+        return
+    except Exception as first_error:
+        print(f"AVERTISSEMENT : validation du succès impossible (execution_id={db_entry_id}), nouvel essai : "
+              f"{type(first_error).__name__}: {first_error}", flush=True)
+    try:
+        with Session(engine) as fresh:
+            fresh_entry = fresh.get(ExecutionHistory, db_entry_id)
+            fresh_conversation = fresh.get(Conversation, conversation_id)
+            if fresh_entry is None or fresh_conversation is None:
+                return
+            await _persist_success(fresh, fresh_entry, fresh_conversation, raw_result, state)
+    except Exception as second_error:
+        print(f"ERREUR : succès non enregistré (execution_id={db_entry_id}) : {type(second_error).__name__}: "
+              f"{second_error}", flush=True)
+        _cleanup_persisted_agents(db_entry_id)
+
+
+def _failure_detail(exc: BaseException, info: ErrorInfo) -> str:
     """Message d'échec : cause lisible (sinon texte d'origine) suivie du détail technique tronqué — sans lui,
     ni l'utilisateur ni la base ne diraient POURQUOI (ce que reproche un garde-fou, délai « retry after »)."""
     technical = str(exc).strip()[:500]
@@ -993,7 +1021,7 @@ def _failure_detail(exc: BaseException, info: Any) -> str:
 
 
 async def _persist_failure(
-    session: Session, db_entry: ExecutionHistory, conversation: Conversation, exc: BaseException, info: Any,
+    session: Session, db_entry: ExecutionHistory, conversation: Conversation, exc: BaseException, info: ErrorInfo,
     data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], should_verify: bool,
     state: _RunState,
 ) -> None:
@@ -1018,13 +1046,17 @@ async def _persist_failure(
 
 
 async def _retry_outputs_if_transient(
-    exc: BaseException, info: Any, db_entry_id: int, data: "WorkflowExecutionInput", auto_retry_allowed: bool,
+    exc: BaseException, info: ErrorInfo, db_entry_id: int, data: "WorkflowExecutionInput", auto_retry_allowed: bool,
 ) -> Optional[dict[str, str]]:
     """Sorties à réutiliser pour la seconde tentative AUTOMATIQUE (une seule), ou None (échec définitif).
     Seulement après un échec transitoire survenu AVANT l'écriture du code : rien n'a été poussé sur GitHub et
     les étapes réussies sont reprises. Plus tard (développement, QA, vérification), l'utilisateur relance :
     il faudrait réécrire sur GitHub et repayer ces étapes. Sans le point de reprise de CHAQUE étape déjà
     réussie, relancer les repayerait pour rien. L'attente se fait chez l'appelant, hors sémaphore."""
+    # isinstance (en plus de _failed_before_development) : `exc.step_index` ci-dessous ne dépend ainsi pas
+    # d'un couplage implicite entre ces deux conditions.
+    if not isinstance(exc, CrewStepError):
+        return None
     if not (auto_retry_allowed and info.retryable and _failed_before_development(exc, data.target_workflow)):
         return None
     saved = await asyncio.to_thread(_load_checkpoints_for, db_entry_id)
@@ -1105,7 +1137,7 @@ async def _run_crew_and_persist(
                 # « failed » au lieu de la laisser « running ».
                 crew, state.sha_before = await asyncio.gather(
                     asyncio.to_thread(AppDevelopmentCrew),
-                    _capture_branch_sha(data, work_branch, should_verify_github_delivery),
+                    _capture_branch_sha(data, work_branch, has_repo_target),
                 )
                 _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
                 inputs = _crew_inputs(
@@ -1122,7 +1154,6 @@ async def _run_crew_and_persist(
                     delivered_pr = await _verify_delivery(
                         data, work_branch, normalized_base_branch, state.sha_before, raw_result)
                 raw_result = _with_pull_request_line(raw_result, delivered_pr)
-                await _persist_success(session, db_entry, conversation, raw_result, state)
             except Exception as e:
                 _log_memory(f"execution_id={db_entry.id}, exception attrapée")
                 print("--- ERREUR CREWAI EXECUTION DETECTEE ---", flush=True)
@@ -1135,6 +1166,11 @@ async def _run_crew_and_persist(
                     session, db_entry, conversation, e, info, data, work_branch, normalized_base_branch,
                     should_verify_github_delivery, state,
                 )
+            else:
+                # Hors du try du crew : une erreur APRÈS le succès (connexion coupée par le pooler en pleine
+                # validation) ne doit jamais faire passer en échec une exécution dont la PR est déjà ouverte
+                # et vérifiée — elle proposerait un nouvel essai, donc du travail en double.
+                await _persist_success_safely(db_entry_id, conversation_id, session, db_entry, conversation, raw_result, state)
         return None
     except Exception as e:
         _mark_startup_failure(db_entry_id, e)
@@ -1164,7 +1200,7 @@ def _load_qualification_context(conversation_id: int, user_id) -> str | None:
         recent = session.exec(
             select(ExecutionHistory)
             .where(ExecutionHistory.conversation_id == conversation.id)
-            .order_by(ExecutionHistory.created_at.desc())
+            .order_by(col(ExecutionHistory.created_at).desc())
             .limit(MAX_PRIOR_TURNS_IN_CONTEXT)
         ).all()
         return build_conversation_context(list(reversed(recent)), total_count=total)
@@ -1258,7 +1294,7 @@ async def execute_workflow(
     prior_entries = session.exec(
         select(ExecutionHistory)
         .where(ExecutionHistory.conversation_id == conversation.id)
-        .order_by(ExecutionHistory.created_at.asc())
+        .order_by(col(ExecutionHistory.created_at).asc())
     ).all()
     conversation_context = build_conversation_context(prior_entries)
 
@@ -1277,7 +1313,7 @@ async def execute_workflow(
             prior_entries = session.exec(
                 select(ExecutionHistory)
                 .where(ExecutionHistory.conversation_id == conversation.id)
-                .order_by(ExecutionHistory.created_at.asc())
+                .order_by(col(ExecutionHistory.created_at).asc())
             ).all()
             conversation_context = build_conversation_context(prior_entries)
     if any(entry.status == "running" for entry in prior_entries):
@@ -1391,7 +1427,7 @@ async def list_conversations(
     statement = (
         select(Conversation)
         .where(Conversation.user_id == user.get("id"))
-        .order_by(Conversation.updated_at.desc())
+        .order_by(col(Conversation.updated_at).desc())
         .offset(offset)
         .limit(limit)
     )
@@ -1411,7 +1447,7 @@ async def get_conversation_messages(
     statement = (
         select(ExecutionHistory)
         .where(ExecutionHistory.conversation_id == conversation_id)
-        .order_by(ExecutionHistory.created_at.asc())
+        .order_by(col(ExecutionHistory.created_at).asc())
     )
     return session.exec(statement).all()
 
@@ -1523,9 +1559,9 @@ async def list_repo_targets(
     statement = (
         select(ExecutionHistory.repo_owner, ExecutionHistory.repo_name, ExecutionHistory.base_branch)
         .where(ExecutionHistory.user_id == user.get("id"))
-        .where(ExecutionHistory.repo_owner.is_not(None))
-        .where(ExecutionHistory.repo_name.is_not(None))
-        .order_by(ExecutionHistory.created_at.desc())
+        .where(col(ExecutionHistory.repo_owner).is_not(None))
+        .where(col(ExecutionHistory.repo_name).is_not(None))
+        .order_by(col(ExecutionHistory.created_at).desc())
     )
     rows = session.exec(statement).all()
 
@@ -1569,8 +1605,8 @@ async def metrics_summary(
         )
         .where(ExecutionHistory.user_id == uid)
         .where(ExecutionHistory.created_at >= since)
-        .where(ExecutionHistory.status.in_(("success", "failed")))
-        .order_by(ExecutionHistory.created_at.desc())
+        .where(col(ExecutionHistory.status).in_(("success", "failed")))
+        .order_by(col(ExecutionHistory.created_at).desc())
         .limit(_METRICS_EXECUTION_LIMIT)
     )
     if workflow:
@@ -1584,7 +1620,7 @@ async def metrics_summary(
     ]
     # Par paquets : une liste IN de ~1000 identifiants dépasse la limite de paramètres des anciennes
     # versions de SQLite (999) ; sans effet notable sous Postgres.
-    runs = []
+    runs: list[dict[str, Any]] = []
     ids = [e["id"] for e in executions]
     for start in range(0, len(ids), _IN_CLAUSE_CHUNK):
         runs.extend(
@@ -1592,7 +1628,7 @@ async def metrics_summary(
             for row in session.exec(
                 select(AgentRun)
                 .where(AgentRun.user_id == uid)
-                .where(AgentRun.execution_id.in_(ids[start:start + _IN_CLAUSE_CHUNK]))
+                .where(col(AgentRun.execution_id).in_(ids[start:start + _IN_CLAUSE_CHUNK]))
             ).all()
         )
     result = summarize(runs, executions, days, workflow, tz_offset)
@@ -1630,7 +1666,7 @@ async def get_history(
     statement = (
         select(ExecutionHistory)
         .where(ExecutionHistory.user_id == user.get("id"))
-        .order_by(ExecutionHistory.created_at.desc())
+        .order_by(col(ExecutionHistory.created_at).desc())
         .offset(offset)
         .limit(limit)
     )
@@ -1643,9 +1679,9 @@ def _delete_executions(session: Session, entries: List[ExecutionHistory]) -> Non
     if not entries:
         return
     ids = [entry.id for entry in entries]
-    for agent_run in session.exec(select(AgentRun).where(AgentRun.execution_id.in_(ids))).all():
+    for agent_run in session.exec(select(AgentRun).where(col(AgentRun.execution_id).in_(ids))).all():
         session.delete(agent_run)
-    for checkpoint in session.exec(select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id.in_(ids))).all():
+    for checkpoint in session.exec(select(ExecutionCheckpoint).where(col(ExecutionCheckpoint.execution_id).in_(ids))).all():
         session.delete(checkpoint)
     for entry in entries:
         session.delete(entry)
@@ -1707,7 +1743,7 @@ async def bulk_delete_history(
         session.expire_all()
         rows = session.exec(
             select(ExecutionHistory).where(
-                ExecutionHistory.id.in_(valid_ids), ExecutionHistory.user_id == user.get("id")
+                col(ExecutionHistory.id).in_(valid_ids), ExecutionHistory.user_id == user.get("id")
             )
         ).all()
         entries = {row.id: row for row in rows}

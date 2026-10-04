@@ -108,3 +108,181 @@ def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
     ))
     assert entry.status == "failed" and entry.current_step is None
     assert entry.result == "boum\n\n--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé"
+
+
+# --- Orchestration : état d'une tentative, relance, succès, démarrage ------------------------------
+
+from sqlalchemy.pool import StaticPool  # noqa: E402
+from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
+
+from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
+
+
+@pytest.fixture()
+def engine(monkeypatch):
+    eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(eng)
+    monkeypatch.setattr(main, "engine", eng)
+    return eng
+
+
+def _new_execution(engine, workflow="BUGFIX"):
+    with Session(engine) as db:
+        conversation = Conversation(user_id="u1", title="t")
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        entry = ExecutionHistory(user_request="x", workflow=workflow, status="running", user_id="u1", conversation_id=conversation.id)
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        return entry.id, conversation.id
+
+
+def _fake_crew(monkeypatch, outcome, seen):
+    async def run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        seen.append(inputs)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return SimpleNamespace(raw="résultat")
+
+    class FakeCrew:
+        run_dynamic_crew = run
+
+    monkeypatch.setattr(main, "AppDevelopmentCrew", FakeCrew)
+
+
+def test_analysis_with_a_repo_target_still_learns_that_the_work_branch_exists(engine, monkeypatch):
+    # Régression : le SHA n'était capturé que pour les runs qui vérifient la livraison, donc ANALYSE_ONLY
+    # disait aux agents que la branche « n'existe pas encore » même quand elle existait.
+    seen: list[dict] = []
+    _fake_crew(monkeypatch, None, seen)
+    monkeypatch.setattr(main, "get_branch_head_sha", lambda *a: "abc123")
+    execution_id, conversation_id = _new_execution(engine, "ANALYSE_ONLY")
+    data = _data(target_workflow="ANALYSE_ONLY")
+    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, data, True, False, "crewai/b", "main", "p", "c"))
+    assert "EXISTE DÉJÀ" in seen[0]["repo_instructions"]
+    with Session(engine) as db:
+        assert db.get(ExecutionHistory, execution_id).status == "success"
+
+
+def test_success_persistence_error_never_turns_a_delivered_run_into_a_failure(engine, monkeypatch):
+    seen: list[dict] = []
+    _fake_crew(monkeypatch, None, seen)
+    real = main._persist_success
+    calls = []
+
+    async def flaky(session, db_entry, conversation, raw_result, state):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("connexion coupée par le pooler")
+        await real(session, db_entry, conversation, raw_result, state)
+
+    monkeypatch.setattr(main, "_persist_success", flaky)
+    execution_id, conversation_id = _new_execution(engine)
+    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
+    with Session(engine) as db:
+        saved = db.get(ExecutionHistory, execution_id)
+    assert len(calls) == 2  # une reprise sur Session neuve
+    assert saved.status == "success" and saved.error_code is None
+
+
+def test_when_success_persistence_fails_twice_the_row_is_not_declared_failed(engine, monkeypatch, capsys):
+    seen: list[dict] = []
+    _fake_crew(monkeypatch, None, seen)
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("base injoignable")
+
+    monkeypatch.setattr(main, "_persist_success", broken)
+    execution_id, conversation_id = _new_execution(engine)
+    asyncio.run(main._run_crew_and_persist(execution_id, conversation_id, _data(repo_owner=None, repo_name=None), False, False, "", None, "p", "c"))
+    with Session(engine) as db:
+        assert db.get(ExecutionHistory, execution_id).status == "running"  # libérée plus tard par le balayage
+    assert "succès non enregistré" in capsys.readouterr().out
+
+
+def test_persist_success_records_result_metrics_and_clears_the_step(engine, monkeypatch):
+    execution_id, conversation_id = _new_execution(engine)
+    with Session(engine) as db:
+        db.add(ExecutionCheckpoint(execution_id=execution_id, step="design", raw="d"))
+        db.commit()
+        entry, conversation = db.get(ExecutionHistory, execution_id), db.get(Conversation, conversation_id)
+        entry.current_step = "qa"
+        state = main._RunState(metrics=SimpleNamespace(api_calls_count=7, rate_limit_hits=1, total_wait_time=3.5))
+        monkeypatch.setattr(main, "_persist_agent_runs", lambda *a: None)
+        asyncio.run(main._persist_success(db, entry, conversation, "texte final", state))
+    with Session(engine) as db:
+        saved = db.get(ExecutionHistory, execution_id)
+        assert (saved.status, saved.result, saved.current_step) == ("success", "texte final", None)
+        assert (saved.api_calls_count, saved.rate_limit_hits, saved.total_wait_time_seconds) == (7, 1, 3.5)
+        assert not db.exec(select(ExecutionCheckpoint)).all()  # points de reprise purgés après le succès
+
+
+def test_run_crew_keeps_the_metrics_and_stops_the_memory_ticker_when_the_crew_crashes(monkeypatch):
+    state = main._RunState()
+    ticker = {"cancelled": False}
+
+    async def endless_ticker(label):
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            ticker["cancelled"] = True
+            raise
+
+    async def crash(inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        raise RuntimeError("le crew plante en route")
+
+    monkeypatch.setattr(main, "_periodic_memory_logger", endless_ticker)
+    crew = SimpleNamespace(run_dynamic_crew=crash)
+    with pytest.raises(RuntimeError, match="plante en route"):
+        asyncio.run(main._run_crew(crew, state, 1, "BUGFIX", {}, None))
+    assert state.metrics is not None  # le chemin d'échec peut encore lire les métriques de la tentative
+    assert ticker["cancelled"] is True
+
+
+def _step_error(index, message="503 UNAVAILABLE"):
+    return CrewStepError(index, 5, "Designer", RuntimeError(message))
+
+
+@pytest.mark.parametrize("scenario, expected", [
+    ("transient_early_with_checkpoints", {"design": "d"}),
+    ("not_a_step_error", None),
+    ("auto_retry_not_allowed", None),
+    ("not_retryable", None),
+    ("missing_checkpoint_for_a_finished_step", None),
+    ("failure_at_development", None),
+])
+def test_retry_decision(monkeypatch, scenario, expected):
+    saved = {"design": "d"}
+    error = _step_error(2)
+    allowed = True
+    if scenario == "not_a_step_error":
+        error = RuntimeError("503 UNAVAILABLE")
+    elif scenario == "auto_retry_not_allowed":
+        allowed = False
+    elif scenario == "not_retryable":
+        error = _step_error(2, "bug interne")
+    elif scenario == "missing_checkpoint_for_a_finished_step":
+        error, saved = _step_error(3), {"design": "d"}  # étape 3 en échec mais l'étape 2 n'a pas de sauvegarde
+    elif scenario == "failure_at_development":
+        error = _step_error(4)
+    monkeypatch.setattr(main, "_load_checkpoints_for", lambda execution_id: saved)
+    data = _data(target_workflow="DESIGN_AND_DEV")
+    result = asyncio.run(main._retry_outputs_if_transient(error, classify_exception(error), 1, data, allowed))
+    assert result == expected
+
+
+def test_mark_startup_failure_only_touches_a_running_row(engine):
+    execution_id, _ = _new_execution(engine)
+    main._mark_startup_failure(execution_id, RuntimeError("pool épuisé"))
+    with Session(engine) as db:
+        saved = db.get(ExecutionHistory, execution_id)
+        assert (saved.status, saved.error_code, saved.error_retryable) == ("failed", "INTERNAL_ERROR", False)
+        assert "pool épuisé" in saved.result and saved.current_step is None
+        saved.status, saved.result = "success", "déjà livré"
+        db.add(saved)
+        db.commit()
+    main._mark_startup_failure(execution_id, RuntimeError("autre"))
+    with Session(engine) as db:
+        assert db.get(ExecutionHistory, execution_id).result == "déjà livré"  # jamais écrasée
