@@ -3,6 +3,7 @@ from typing import Any
 
 import crew_guardrails
 import crew_workspace
+from crew_state import CrewExecutionState
 from crewai.tools import tool
 from analyst_output import build_delivery_report, find_import_problems, format_manifest
 from delivery import (
@@ -30,7 +31,7 @@ _RETRY_HINT = (
 )
 
 
-class CrewToolsMixin:
+class CrewToolsMixin(CrewExecutionState):
     """Méthodes de AppDevelopmentCrew qui fabriquent les outils d'agents ; lit l'état posé par _reset_execution_state."""
 
     def _base_source(self):

@@ -10,7 +10,7 @@ pipeline. Ce module extrait ces fichiers une fois pour toutes, pour que :
 - le guardrail de diagnostic_task rejette une sortie incomplète AVANT qu'elle n'arrive au
   Développeur (voir review_diagnostic_output) ;
 - le Développeur committe le contenu extrait tel quel, sans le recopier (voir
-  github_commit_analyst_files, crewquestion.py) ;
+  github_commit_analyst_files, crew_tools.py) ;
 - la QA compare le contenu RÉELLEMENT présent sur la branche à celui rédigé par l'Analyste,
   sans devoir le faire "à l'œil" (voir build_delivery_report).
 """
@@ -99,7 +99,7 @@ SHORTCUT_ONLY = re.compile(
 # assumé et documenté, pas un oubli de format.
 # "NON réalisé" suivi d'une raison ("— NON réalisé : trop volumineux") marque un fichier non
 # livré ; suivi de ": aucun" ("Fichiers NON réalisé(s) : aucune"), c'est l'inverse. Partagé avec
-# le repérage des fichiers retirés (crewquestion._withdrawn_paths) pour que les deux concordent.
+# le repérage des fichiers retirés (crew_guardrails._withdrawn_paths) pour que les deux concordent.
 # "(?!\w)" avant l'exclusion : sans lui, "réalisés : aucun" se rabattrait sur "réalisé" + "s".
 NOT_DELIVERED_MARKER = re.compile(
     r"non\s+r[ée]alis[ée]e?s?(?:\(e?s\))?(?!\w)"
@@ -532,7 +532,7 @@ def review_diagnostic_output(
     {chemin: raison} des fichiers annoncés mais inexploitables).
 
     Les fichiers à raccourci sont extraits mais ne doivent JAMAIS être committés tels quels,
-    même si l'Analyste ne corrige pas sa réponse (voir _diagnostic_guardrail, crewquestion.py).
+    même si l'Analyste ne corrige pas sa réponse (voir _diagnostic_guardrail, crew_checks.py).
 
     read_base(chemin) -> (contenu, erreur) lit le fichier d'ORIGINE : il sert à résoudre les blocs
     <<<MODIFICATION: ...>>> en fichiers complets (sans lui, une modification est inexploitable).

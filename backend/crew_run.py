@@ -1,15 +1,14 @@
 """Déroulement d'UNE exécution du crew : tâches choisies et reliées entre elles, reprise, retry résumable sur quota,
 échec attribué à une étape, résumé final."""
 import asyncio
-import time
 from typing import Any, Callable, NoReturn, Optional
 
 from crewai import Crew, Process
 from crewai.tasks.task_output import TaskOutput
 
 import crew_cache
+import crew_result
 import crew_retry
-import crew_summary
 import crew_workflow
 from agent_metrics import _current_metrics
 from github_tools import track_edit_failures
@@ -33,17 +32,6 @@ MAX_RETRIES = 5
 BASE_DELAY = 15.0
 
 
-class _CombinedCrewResult:
-    """Résultat final reconstruit depuis les sorties accumulées par on_task_complete au fil de TOUTES les tentatives
-    (et pas depuis le CrewOutput de la seule DERNIÈRE, qui ne couvrirait que les tâches de ce sous-crew en cas de
-    reprise), dans l'ordre ORIGINAL des étapes : crew_workflow._format_crew_result et crew_summary._generate_summary
-    ne lisent que .tasks_output et .raw."""
-
-    def __init__(self, tasks_output):
-        self.tasks_output = tasks_output
-        self.raw = str(getattr(tasks_output[-1], "raw", "") or "") if tasks_output else ""
-
-
 class CrewRun:
     def __init__(
         self,
@@ -64,7 +52,7 @@ class CrewRun:
         self.scope = scope
 
         # Clés alignées sur WORKFLOW_STEPS (frontend/src/constants/workflowSteps.ts) : c'est
-        # ce que on_step_change transmet à main.py pour persister l'étape en cours (voir
+        # ce que on_step_change transmet à execution_state.persist_current_step pour persister l'étape en cours (voir
         # ExecutionHistory.current_step), et le frontend s'attend exactement à ces 5 valeurs
         # pour faire correspondre la progression réelle à l'étape affichée dans StepIndicator.
         # 'diagnostic' précède toujours 'development' (jamais l'inverse) : diagnostic_task
@@ -87,13 +75,9 @@ class CrewRun:
         self.selected_tasks = [task for _, task in self.selected]
         self.total_steps = len(self.selected)
 
-        # Retry RÉSUMABLE : sur une erreur de quota/rate-limit survenant APRÈS que certaines tâches ont
-        # déjà terminé, seules les tâches RESTANTES sont rejouées — jamais celles déjà réussies.
-        # Les objets Task de `selected` sont créés UNE SEULE FOIS ci-dessus : une tâche déjà terminée,
-        # simplement exclue du prochain sous-crew, continue de fournir sa sortie aux tâches suivantes
-        # qui l'attendent en contexte — aggregate_raw_outputs_from_tasks (crewai/utilities/formatter.py)
-        # ne lit que `task.output` (posé par CrewAI sur l'objet Task lui-même après exécution), sans exiger
-        # que cette tâche appartienne au crew en cours d'exécution.
+        # Retry RÉSUMABLE : sur une erreur de quota survenant après que certaines tâches ont terminé, seules les
+        # tâches RESTANTES sont rejouées. Les objets Task sont créés UNE SEULE FOIS (voir __init__) : une tâche déjà terminée,
+        # exclue du prochain sous-crew, fournit toujours sa sortie (`task.output`) aux tâches suivantes en contexte.
         self.completed_keys: list[str] = []
         self.completed_outputs: dict[str, Any] = {}
         self.attempt_completed = 0
@@ -153,18 +137,9 @@ class CrewRun:
         while True:
             remaining = [(k, t) for k, t in self.selected if k not in self.completed_keys]
 
-            # diagnostic_task n'a pas encore complété (elle est toujours dans `remaining`) :
-            # si elle avait déjà entamé un cycle guardrail (_diagnostic_guardrail_failures,
-            # potentiellement incrémenté au-delà de 0, voir _diagnostic_guardrail) avant
-            # qu'une erreur de quota n'interrompe l'exécution EN COURS de cette tâche, cette
-            # prochaine tentative la relance depuis zéro (agent ré-invoqué au tout début) et
-            # doit donc repartir avec un budget guardrail intact, pas celui, entamé,
-            # d'une tentative avortée — sinon le premier souci constaté sur cette nouvelle
-            # exécution pourrait être accepté avec un simple avertissement au lieu du droit
-            # normal à une correction. `_analyst_files`/`_not_extracted` (fusionnés au fil des
-            # cycles guardrail d'UNE MÊME exécution de la tâche, voir sa docstring) sont
-            # repartis à zéro pour la même raison : ceux d'une tentative avortée ne
-            # correspondent à aucune sortie réellement produite par cette nouvelle exécution.
+            # diagnostic_task rejouée depuis zéro : elle repart avec un budget guardrail intact (sinon le premier
+            # souci constaté serait accepté avec un simple avertissement) et sans les fichiers fusionnés par une
+            # tentative avortée (`_analyst_files`/`_not_extracted`, voir _diagnostic_guardrail).
             if any(k == 'diagnostic' for k, _ in remaining):
                 self.crew._diagnostic_guardrail_failures = 0
                 self.crew._analyst_files = []
@@ -182,16 +157,9 @@ class CrewRun:
                 self._on_task_complete(task_output, _remaining)
 
             if self.on_step_change is not None:
-                # await asyncio.to_thread(...) et non un appel direct : ce point du code
-                # s'exécute encore sur le thread de la boucle asyncio elle-même (avant le
-                # premier `await kickoff_async`), contrairement aux appels suivants
-                # (déclenchés par task_callback depuis le thread d'arrière-plan de
-                # kickoff_async, voir _on_task_complete). on_step_change effectue
-                # une écriture DB synchrone bloquante (voir persist_current_step) :
-                # l'appeler ici directement bloquerait la boucle asyncio, et donc TOUTES les
-                # autres requêtes concurrentes servies par ce même worker.
-                # step_keys[len(completed_keys)] (pas systématiquement step_keys[0]) : une
-                # reprise redémarre à la prochaine tâche RESTANTE, pas depuis le début.
+                # to_thread : on_step_change écrit en base (bloquant, voir persist_current_step) et ce code tourne
+                # sur la boucle asyncio ; les appels de _on_task_complete, eux, viennent du thread de kickoff_async.
+                # step_keys[len(completed_keys)] : une reprise redémarre à la prochaine tâche RESTANTE.
                 await asyncio.to_thread(self.on_step_change, self.step_keys[len(self.completed_keys)])
 
             dynamic_crew = Crew(
@@ -199,13 +167,9 @@ class CrewRun:
                 tasks=[t for _, t in remaining],
                 process=Process.sequential,
                 task_callback=on_task_complete,
-                # 13 (pas 3) : partagé par TOUS les agents de ce crew en séquence (design,
-                # architecture, diagnostic, development, qa) — qa_task étant dernier et ayant
-                # le max_iter le plus élevé (10, voir qa_agent), c'est lui qui hérite le plus
-                # de la latence cumulée d'un plafond trop bas. Relevé sur demande explicite
-                # pour réduire cette latence ; le retry résumable absorbe toujours
-                # les 429 transitoires si cette valeur s'avère trop optimiste face au quota
-                # Gemini réel.
+                # 13 (pas 3) : partagé par TOUS les agents en séquence ; la QA, dernière et au max_iter le plus
+                # élevé, hérite le plus de la latence cumulée d'un plafond trop bas. Le retry résumable absorbe
+                # les 429 si cette valeur est trop optimiste face au quota Gemini réel.
                 max_rpm=13,
                 output_log_file='crew_execution.log',
                 verbose=True
@@ -215,11 +179,8 @@ class CrewRun:
             if m is not None:
                 m.record_attempt()
             try:
-                # track_edit_failures() : isole le suivi des échecs répétés de
-                # github_edit_file (voir github_tools.py) à CETTE exécution, pour qu'il ne se
-                # souvienne pas à tort d'échecs d'un tour précédent sur le même work_branch
-                # réutilisé (voir la docstring de _edit_failure_counts dans github_tools.py
-                # pour le raisonnement complet).
+                # track_edit_failures() : isole le suivi des échecs répétés de github_edit_file à CETTE exécution
+                # (voir _edit_failure_counts dans github_tools.py).
                 with track_edit_failures():
                     await dynamic_crew.kickoff_async(inputs=self.inputs)
                 return  # succès : toutes les tâches de `remaining` ont rejoint completed_keys
@@ -329,31 +290,6 @@ class CrewRun:
             t.callback = None
 
     async def _final_result(self) -> str:
-        result = _CombinedCrewResult([self.completed_outputs[k] for k in self.step_keys if k in self.completed_outputs])
-
-        # execution_duration reste valide pour chaque Task déjà exécutée, quelle que soit la
-        # tentative qui l'a réellement exécutée (start_time/end_time sont posés sur l'objet Task
-        # lui-même). Ignore les agents sans durée connue (tâche jamais exécutée après un échec
-        # définitif en cours de route) plutôt que d'y mettre None, pour que
-        # crew_workflow._format_crew_result n'ait qu'un seul test.
-        task_durations = {
-            t.agent.role.strip(): t.execution_duration
-            for t in self.selected_tasks
-            if t.execution_duration is not None
-        }
-        formatted = crew_workflow._format_crew_result(result, task_durations)
-
-        # last_execution_time n'est délibérément pas remis à jour avant cet appel :
-        # on_task_complete() l'a déjà fait à la fin de la dernière tâche. Le remettre à
-        # `time.time()` ici ferait toujours mesurer un écart quasi nul à adaptive_pause() dans
-        # crew_summary._generate_summary, forçant une pause maximale systématique au lieu d'une
-        # pause proportionnée au temps déjà écoulé depuis le dernier appel Gemini réel.
-        summary = await crew_summary._generate_summary(self.inputs.get('user_request', ''), result)
-        summary_body = crew_summary._compose_summary_body(
-            list(crew_workflow._iter_task_sections(result)), self.request_type, self.scope, summary
+        return await crew_result.build_final_result(
+            self.inputs, self.request_type, self.scope, self.step_keys, self.completed_outputs, self.selected_tasks
         )
-        if summary_body:
-            formatted = f"{formatted}\n\n{crew_summary.SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary_body}"
-
-        crew_retry.quota_mgr.last_execution_time = time.time()
-        return formatted

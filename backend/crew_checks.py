@@ -3,6 +3,7 @@ from typing import Optional
 
 import crew_guardrails
 import crew_workspace
+from crew_state import CrewExecutionState
 from analyst_output import (
     parse_edit_sections, review_diagnostic_output,
 )
@@ -15,7 +16,7 @@ log = get_logger("crew")
 MAX_RETRY_CONTEXT_CHARS = 4000
 
 
-class CrewChecksMixin:
+class CrewChecksMixin(CrewExecutionState):
     """Méthodes de AppDevelopmentCrew qui posent l'état d'une exécution et contrôlent la sortie des agents (guardrails)."""
 
     def _reset_execution_state(self, inputs: Optional[dict] = None) -> None:

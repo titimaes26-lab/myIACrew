@@ -74,8 +74,8 @@ def persist_completed_agent(
     Formate la sortie de l'agent en markdown et l'ajoute au champ result existant via UPDATE SQL atomique,
     permettant au sondage /progress de retourner les agents complétés jusqu'à présent même pendant l'exécution.
 
-    duration_seconds (temps d'exécution de l'agent, voir Task.execution_duration dans
-    crewquestion.py) est encodé, quand connu, via le même marqueur HTML que celui écrit
+    duration_seconds (temps d'exécution de l'agent, voir Task.execution_duration, lu dans
+    crew_run.py) est encodé, quand connu, via le même marqueur HTML que celui écrit
     par _format_crew_result pour le résultat final — une seule logique d'extraction côté
     frontend suffit alors, que la section vienne du polling progressif ou du résultat final.
 
@@ -101,7 +101,7 @@ def persist_completed_agent(
         with Session(database.engine) as agent_session:
             entry = agent_session.get(ExecutionHistory, execution_id)
             if entry is not None:
-                # Format identique à _format_crew_result dans crewquestion.py : sections séparées par AGENT_SECTION_SEPARATOR
+                # Format identique à crew_workflow._format_crew_result : sections séparées par AGENT_SECTION_SEPARATOR
                 if duration_seconds is not None:
                     agent_section = f"## {agent_name}\n<!--agent-duration:{duration_seconds:.2f}-->\n\n{agent_output}"
                 else:

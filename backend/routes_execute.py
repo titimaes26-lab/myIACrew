@@ -106,7 +106,7 @@ async def execute_workflow(
 
     has_repo_target = bool(data.repo_owner and data.repo_name)
     # ANALYSE_ONLY ne comprend que design_task/architecture_task, en lecture seule (voir
-    # run_dynamic_crew dans crewquestion.py) : jamais de branche/commit/PR à vérifier pour ce
+    # crew_run.CrewRun) : jamais de branche/commit/PR à vérifier pour ce
     # workflow. Calculé une seule fois et réutilisé aux deux points qui en ont besoin plus bas
     # (capture du SHA de référence avant le crew, vérification après coup) plutôt que dupliqué,
     # pour qu'ils ne puissent pas diverger silencieusement si l'un est modifié sans l'autre.

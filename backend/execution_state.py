@@ -94,10 +94,10 @@ def safe_refresh(session: Session, db_entry: ExecutionHistory, context: str) -> 
         log.warning(f"échec du refresh de db_entry avant finalisation ({context}, id={db_entry.id}) : {type(e).__name__}: {e}")
 
 def persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
-    """Invoqué par run_dynamic_crew (voir crewquestion.py) à chaque changement d'étape.
+    """Invoqué par run_dynamic_crew (voir crew_run.py) à chaque changement d'étape.
 
     step_key=None efface la progression affichée (fin d'exécution, ou pause avant une nouvelle
-    tentative suite à une erreur de quota — voir l'appel correspondant dans crewquestion.py).
+    tentative suite à une erreur de quota — voir l'appel correspondant dans crew_run.py).
 
     Ouvre sa propre Session plutôt que de réutiliser celle de la requête HTTP en cours : ce
     callback est appelé par CrewAI depuis le thread d'arrière-plan de kickoff_async (pas le

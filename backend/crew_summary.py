@@ -20,7 +20,7 @@ SUMMARY_SENTINEL = "<!--crew-summary-->"
 # Borne la taille du texte envoyé au modèle pour la synthèse : le résultat combiné peut
 # contenir du code source complet (workflows FEATURE/DESIGN_AND_DEV), et ce résumé n'est
 # qu'un ajout de confort qui ne justifie pas de peser significativement sur le quota
-# Gemini déjà sous tension (cf. adaptive_pause/crew_retry.retry_on_rate_limit_async ci-dessus).
+# Gemini déjà sous tension (cf. crew_retry.QuotaManager et crew_retry.retry_on_rate_limit_async).
 MAX_SUMMARY_INPUT_CHARS = 6000
 
 MAX_SUMMARY_REQUEST_CHARS = 1500
@@ -89,12 +89,12 @@ def _build_summary_prompt(user_request: str, summary_input: str) -> str:
     )
 
 # Borne le temps d'attente total (au-delà du request_timeout de crew_llms.summary_llm lui-même),
-# car LITELLM_NUM_RETRIES=7 (défini plus haut, process-wide) s'applique aussi à cet
+# car LITELLM_NUM_RETRIES=7 (défini dans crew_llms.py, process-wide) s'applique aussi à cet
 # appel : sans ce filet, une erreur transitoire pourrait déclencher jusqu'à 7 tentatives
 # internes avant que crew_llms.summary_llm.call() ne lève enfin, contredisant l'objectif même
 # d'un résumé qui ne doit jamais faire attendre longtemps une réponse déjà acquise.
 # 30 et non 25 : doit rester strictement supérieur au request_timeout de crew_llms.summary_llm
-# (25 désormais, voir plus haut) pour continuer à lui laisser le temps de lever sa
+# (25 désormais, voir crew_llms.summary_llm) pour continuer à lui laisser le temps de lever sa
 # propre erreur de timeout plutôt que d'être coupé par celui-ci en premier.
 SUMMARY_WALL_CLOCK_TIMEOUT = 30
 

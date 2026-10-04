@@ -265,7 +265,7 @@ def _reject_invalid_syntax(path: str, content: str) -> str | None:
 # Suivi des échecs CONSÉCUTIFS de github_edit_file sur un même fichier (ex: old_string mal
 # recopié à répétition, conflit persistant). Le message d'erreur de l'outil pousse déjà à
 # relire le fichier après un premier échec, mais rien n'empêchait l'agent de re-tenter
-# indéfiniment la même approche jusqu'à épuiser son budget max_iter (voir crewquestion.py,
+# indéfiniment la même approche jusqu'à épuiser son budget max_iter (voir crew_tools.py,
 # developer_agent) sans jamais committer le correctif. Au-delà du seuil, le message d'erreur
 # pousse explicitement vers github_write_file (contenu complet) comme stratégie de repli.
 #
@@ -274,7 +274,7 @@ def _reject_invalid_syntax(path: str, content: str) -> str | None:
 # tort d'échecs d'un tour précédent (déjà résolus, potentiellement via github_write_file,
 # qui ne réinitialise pas ce compteur) et déclencherait une fausse alerte "échec répété" dès
 # la première tentative d'un tour suivant sur ce même fichier — même raisonnement que
-# _current_metrics dans crewquestion.py (qui a évité ce même piège pour les métriques de
+# _current_metrics dans crew_tools.py (qui a évité ce même piège pour les métriques de
 # coût/performance). track_edit_failures() (ci-dessous) délimite sa portée à une seule
 # exécution de crew, appelé par run_dynamic_crew aux côtés de track_execution_metrics.
 _edit_failure_counts: ContextVar[dict[tuple[str, str, str, str], int] | None] = ContextVar(
@@ -364,7 +364,7 @@ def _decode_content_file(gh_repo, content_file, path: str) -> tuple[str | None, 
 
 def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tuple[str | None, str | None]]:
     """Fonction path -> (contenu, None) ou (None, raison), pour un usage Python interne (voir
-    qa_verify_delivered_files, crewquestion.py), sans passer par l'objet Tool crewai.
+    qa_verify_delivered_files, crew_tools.py), sans passer par l'objet Tool crewai.
 
     Le dépôt est résolu UNE fois pour toutes les lectures (un seul get_repo, au lieu d'un par
     fichier). Un fichier qui existe mais n'a pas pu être décodé (au-delà de 1 Mo l'API ne
@@ -634,7 +634,7 @@ def write_files_to_branch(
     rejected_sink: dict[str, str] | None = None,
 ) -> str:
     """Implémentation de github_write_files, factorée en fonction Python pure pour être aussi
-    appelée par github_commit_analyst_files (crewquestion.py) avec les fichiers extraits en
+    appelée par github_commit_analyst_files (crew_tools.py) avec les fichiers extraits en
     Python de la sortie de diagnostic_task — mêmes garde-fous (branche protégée, syntaxe,
     collision avec un dossier), sans passer par un JSON rédigé par le LLM.
     rejected_sink reçoit {chemin: raison} des fichiers rejetés par la vérification syntaxique,

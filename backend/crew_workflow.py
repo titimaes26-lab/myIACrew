@@ -11,7 +11,7 @@ MAX_AGENT_OUTPUT_SIZE = 10_000_000  # 10MB par agent
 MAX_AGENT_NAME_LENGTH = 200
 
 # Étapes de chaque workflow, dans l'ordre (clés alignées sur WORKFLOW_STEPS côté frontend) : source
-# unique, utilisée par run_dynamic_crew ET par main.py (reprise d'une exécution en échec).
+# unique, utilisée par run_dynamic_crew ET par execution_resume.py (reprise d'une exécution en échec).
 WORKFLOW_STEP_KEYS = {
     "ANALYSE_ONLY": ["design", "architecture"],
     "BUGFIX": ["diagnostic", "development", "qa"],
@@ -84,7 +84,7 @@ def _format_crew_result(result, task_durations: Optional[dict[str, float]] = Non
     task_durations : mapping optionnel agent_name -> secondes d'exécution (voir
     run_dynamic_crew, construit depuis Task.execution_duration). Quand une durée est
     connue pour un agent, elle est encodée juste après son heading via le même marqueur
-    HTML que celui écrit par _persist_completed_agent (main.py), pour que le frontend
+    HTML que celui écrit par _persist_completed_agent (execution_persistence.py), pour que le frontend
     n'ait qu'une seule logique d'extraction à implémenter, que la section vienne du
     polling progressif ou de ce résultat final.
 

@@ -8,8 +8,8 @@ from typing import Any, Callable
 from agent_metrics import _current_metrics
 from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
 
-# Partagés entre retry_on_rate_limit_async (ci-dessous, utilisé par analyze_user_request) et le
-# retry résumable de run_dynamic_crew (plus bas) : une seule définition de "qu'est-ce qu'une
+# Partagés entre retry_on_rate_limit_async (utilisé par analyze_user_request) et le
+# retry résumable de crew_run.CrewRun : une seule définition de "qu'est-ce qu'une
 # erreur transitoire" et "combien de temps attendre", pour que les deux mécanismes de retry ne
 # puissent jamais diverger silencieusement si l'un est mis à jour (ex: nouveau message d'erreur
 # Gemini à reconnaître) sans que l'autre le soit.

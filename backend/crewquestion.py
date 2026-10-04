@@ -2,7 +2,7 @@ import os
 import time
 import json
 import re
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import crew_llms  # noqa: F401  (charge .env et règle LiteLLM AVANT l'import de crewai)
 from crewai import Agent, Crew, Process, Task
@@ -34,7 +34,7 @@ from agent_metrics import (  # noqa: F401
 
 # --- MÉTRIQUES & PAUSES ---
 # ExecutionMetrics, _current_metrics et track_execution_metrics vivent dans agent_metrics.py (mesure
-# par agent à partir des événements CrewAI) ; réexportés ici car main.py les importe d'ici.
+# par agent à partir des événements CrewAI) ; réexportés ici car execution.py les importe d'ici.
 register_event_listeners()
 
 
@@ -47,8 +47,9 @@ llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
 # --- CREW BASE ---
 @CrewBase
 class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin):
-    agents_config = 'agentsquestion.yaml'
-    tasks_config = 'tasksquestion.yaml'
+    # str au chargement, remplacé par CrewBase par le dict lu dans le YAML.
+    agents_config: Any = 'agentsquestion.yaml'
+    tasks_config: Any = 'tasksquestion.yaml'
 
     @agent
     def qualification_agent(self) -> Agent:
@@ -192,7 +193,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
 
     # --- Outils et guardrails propres à UNE exécution ---
     # Ils lisent self._analyst_files, rempli par _diagnostic_guardrail et remis à zéro au début
-    # de chaque run_dynamic_crew. Portée par instance (et non un global) : main.py crée un
+    # de chaque run_dynamic_crew. Portée par instance (et non un global) : execution.py crée un
     # AppDevelopmentCrew() dédié à chaque exécution, donc deux conversations concurrentes ne
     # partagent jamais ces fichiers. Pas de ContextVar non plus : CrewAI peut exécuter les
     # outils dans un pool de threads qui ne recopie pas le contexte courant.
