@@ -15,61 +15,16 @@ pipeline. Ce module extrait ces fichiers une fois pour toutes, pour que :
   sans devoir le faire "à l'œil" (voir build_delivery_report).
 """
 import difflib
-import posixpath
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 import analyst_blocks
+import analyst_edits
+import analyst_imports
+import analyst_placeholders
 from tools import check_syntax_content
 
-
-# Modification ciblée d'un fichier EXISTANT, pour ne pas le réécrire en entier :
-#   <<<MODIFICATION: chemin>>> puis un ou plusieurs blocs
-#   "<<<<<<< CHERCHER" / texte exact / "=======" / texte de remplacement / ">>>>>>> REMPLACER",
-#   puis <<<FIN_MODIFICATION>>>. Résolue EN PYTHON contre le fichier d'origine (voir
-#   review_diagnostic_output) : en aval, le fichier modifié est un fichier complet comme les autres.
-EDIT_START = re.compile(r"^<<<\s*MODIFICATION\s*:\s*(.*?)\s*>{3,}.*$", re.IGNORECASE)
-EDIT_END = re.compile(r"^<<<\s*FIN[\s_]+MODIFICATION\s*>{3,}.*$", re.IGNORECASE)
-EDIT_SEARCH = re.compile(r"^<{7}\s*CHERCHER\s*$", re.IGNORECASE)
-EDIT_SEPARATOR = re.compile(r"^={7}\s*$")
-EDIT_REPLACE = re.compile(r"^>{7}\s*REMPLACER\s*$", re.IGNORECASE)
-
-# Seules les lignes de COMMENTAIRE sont inspectées : un "..." peut apparaître légitimement
-# dans du code (spread JS `...props`, texte d'interface), alors qu'un commentaire
-# "// ... reste du code inchangé" ne l'est jamais dans un fichier complet. "#" n'est un
-# commentaire que pour certaines extensions (ailleurs, c'est un titre Markdown, un sélecteur
-# CSS d'id...) et les fichiers de texte libre ne sont pas inspectés du tout.
-COMMENT_MARKER = re.compile(r"^\s*(//|/\*+|\*|\{/\*|<!--|#)\s*")
-HASH_COMMENT_EXTENSIONS = {"py", "yaml", "yml", "sh", "toml", "rb"}
-# Deux formes de raccourci, testées sur le TEXTE du commentaire (marqueur retiré) :
-# 1. une ellipse en tête, seule ou suivie d'un mot de raccourci : "// ...", "// ... reste",
-#    "# ... code existant" — mais pas "// ...args are forwarded" (commentaire sur un spread) ;
-# 2. un commentaire qui n'est QUE la formule de raccourci : "// reste du code inchangé",
-#    "/* code existant */" — mais pas "// Code inchangé si l'utilisateur n'est pas connecté",
-#    une vraie phrase qui continue après la formule.
-SHORTCUT_WORDS = (
-    r"(reste|rest|code|existing|existant|inchang[ée]e?s?|unchanged|autres?|others?|same|"
-    r"m[êe]me|previous|pr[ée]c[ée]dente?s?|etc|remaining|suite)(?![\w])"
-)
-# Un espace est exigé entre l'ellipse et le mot : "// ...rest is forwarded" décrit un spread.
-# Jusqu'à deux articles/déterminants sont tolérés avant le mot : "// ... le reste du fichier",
-# "// ... the rest", "# ... les autres fonctions".
-_FILLER_WORDS = r"((le|la|les|the|all|tout|toute|toutes|tous|de|du|des)\s+|l['’]\s*){0,2}"
-LEADING_ELLIPSIS = re.compile(
-    r"^(\.{3}|…)(\s*$|\s*[*/}>-]|\s+" + _FILLER_WORDS + SHORTCUT_WORDS + r")", re.IGNORECASE
-)
-SHORTCUT_ONLY = re.compile(
-    r"^(\.{3}|…)?\s*(le\s+|the\s+)?"
-    r"(reste du (code|fichier|composant)|code (existant|inchang[ée])|"
-    r"rest of (the )?(code|file|component)|(existing|unchanged) code)"
-    # "... est inchangé", "... remains unchanged", "... restent identiques" : un verbe d'état
-    # suivi de la formule reste un raccourci, pas une vraie phrase.
-    r"(\s+(est|sont|reste|restent|remains?|stays?|is|are))?"
-    r"(\s+(inchang[ée]e?s?|existante?s?|identiques?|ici|here|unchanged|the same|as before|comme avant))*"
-    r"\s*(\.{3}|…)?\s*[.:;*/}>-]*\s*$",
-    re.IGNORECASE,
-)
 
 # Marqueur que diagnostic_task utilise pour signaler un fichier volontairement NON fourni (voir
 # tasksquestion.yaml) : une sortie sans aucun bloc de fichier mais qui l'emploie est un choix
@@ -97,231 +52,6 @@ MAX_DIFF_LINES_PER_FILE = 40
 MAX_PARALLEL_FETCHES = 8
 
 
-def parse_edit_sections(text: str) -> tuple[dict[str, list[tuple[str, str]]], dict[str, str]]:
-    """({chemin: [(texte à chercher, remplacement), ...]}, {chemin: raison} des blocs inexploitables).
-
-    Même philosophie que analyst_blocks.parse_file_sections : un bloc incomplet (balise de fin ou séparateur
-    manquant, réponse coupée) rend le fichier inexploitable, jamais appliqué à moitié. En cas de
-    chemin dupliqué, la DERNIÈRE version fait foi."""
-    edits: dict[str, list[tuple[str, str]]] = {}
-    broken: dict[str, str] = {}
-    path: str | None = None
-    raw_path = ""
-    blocks: list[tuple[str, str]] = []
-    state = "out"  # out | search | replace
-    search: list[str] = []
-    replace: list[str] = []
-    in_edit = False
-
-    def fail(reason: str) -> None:
-        key = path or raw_path.strip() or "(chemin vide)"
-        edits.pop(key, None)
-        broken[key] = reason
-
-    for line in (text or "").splitlines():
-        stripped = analyst_blocks._undecorate(line.strip())
-        start = EDIT_START.match(stripped)
-        if start and state == "out":
-            if in_edit:
-                fail("balise <<<FIN_MODIFICATION>>> manquante")
-            in_edit, raw_path, path, blocks = True, start.group(1) or " ", analyst_blocks.normalize_path(start.group(1)), []
-            continue
-        if not in_edit:
-            continue
-        if EDIT_END.match(stripped) and state == "out":
-            if path is None:
-                fail("chemin invalide")
-            elif not blocks:
-                fail("aucun bloc CHERCHER / REMPLACER")
-            else:
-                edits[path] = blocks
-                broken.pop(path, None)
-            in_edit, path, raw_path, blocks = False, None, "", []
-            continue
-        if state == "out" and EDIT_SEARCH.match(stripped):
-            state, search, replace = "search", [], []
-        elif state == "search" and EDIT_SEPARATOR.match(stripped):
-            state = "replace"
-        elif state == "replace" and EDIT_REPLACE.match(stripped):
-            blocks.append(("\n".join(search), "\n".join(replace)))
-            state = "out"
-        elif state == "search":
-            search.append(line)
-        elif state == "replace":
-            replace.append(line)
-    if in_edit:
-        fail("balise <<<FIN_MODIFICATION>>> manquante ou bloc incomplet : contenu probablement tronqué")
-    return edits, broken
-
-
-def apply_edits(base: str, blocks: list[tuple[str, str]]) -> tuple[str | None, str | None]:
-    """(contenu modifié, None) ou (None, raison). Chaque texte cherché doit apparaître EXACTEMENT
-    une fois dans le fichier (au moment où son bloc est appliqué) : jamais de remplacement
-    deviné au mauvais endroit."""
-    crlf = "\r\n" in base
-    content = base.replace("\r\n", "\n") if crlf else base
-    for number, (search, replace) in enumerate(blocks, start=1):
-        if not search.strip():
-            return None, f"bloc {number} : texte à chercher vide"
-        occurrences = content.count(search)
-        if occurrences == 0:
-            return None, (
-                f"bloc {number} : texte à chercher introuvable dans le fichier d'origine "
-                "(copie-le EXACTEMENT depuis ta lecture, indentation comprise)"
-            )
-        if occurrences > 1:
-            return None, (
-                f"bloc {number} : texte à chercher présent {occurrences} fois, ajoute des lignes "
-                "de contexte pour le rendre unique"
-            )
-        content = content.replace(search, replace, 1)
-    return (content.replace("\n", "\r\n") if crlf else content), None
-
-
-# --- Cohérence des imports entre fichiers livrés -------------------------------------------------
-CODE_EXTENSIONS = {"ts", "tsx", "js", "jsx"}
-_IMPORT_FROM = re.compile(
-    r"""import\s+(?:type\s+)?([\w$]+)?\s*,?\s*(?:\{([^}]*)\})?\s*(?:\*\s+as\s+[\w$]+)?\s*from\s*['"](\.{1,2}/[^'"]+)['"]""",
-    re.DOTALL,
-)
-_IMPORT_SIDE_EFFECT = re.compile(r"""^\s*import\s*['"](\.{1,2}/[^'"]+)['"]""", re.MULTILINE)
-_EXPORT_DECL = re.compile(
-    r"export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|abstract\s+class|type|interface|enum)\s+([\w$]+)"
-)
-_EXPORT_LIST = re.compile(r"export\s*(?:type\s*)?\{([^}]*)\}")
-_EXPORT_DESTRUCTURED = re.compile(r"export\s+(?:const|let|var)\s*[{\[]([^}\]]*)[}\]]")
-_RESOLVE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".json", ".css")
-_ASSET_EXTENSIONS = {"css", "scss", "json", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico"}
-
-
-def _exports_of(content: str) -> tuple[set[str], bool, bool]:
-    """(noms exportés, export par défaut ?, `export *` présent ?)."""
-    names = set(_EXPORT_DECL.findall(content))
-    for group in _EXPORT_DESTRUCTURED.findall(content):
-        for item in group.split(","):
-            # "a", "a: alias", "a = defaut", "...reste" : le nom exporté est celui de la dernière position.
-            name = item.split("=")[0].split(":")[-1].strip().lstrip(".").strip()
-            if name.isidentifier():
-                names.add(name)
-    has_default = bool(re.search(r"export\s+default\b", content))
-    for group in _EXPORT_LIST.findall(content):
-        for item in group.split(","):
-            parts = item.replace("type ", "", 1).strip().split(" as ")
-            exported = parts[-1].strip()
-            if exported == "default":
-                has_default = True
-            elif exported:
-                names.add(exported)
-    return names, has_default, bool(re.search(r"export\s*\*", content))
-
-
-def _import_candidates(importer: str, spec: str) -> list[str]:
-    target = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
-    if target.startswith(".."):
-        return []
-    extension = target.rsplit(".", 1)[-1].lower() if "." in posixpath.basename(target) else ""
-    if extension in _ASSET_EXTENSIONS:
-        return [target]
-    if extension in ("js", "jsx"):
-        stem = target.rsplit(".", 1)[0]
-        return [target, stem + ".ts", stem + ".tsx"]
-    return (
-        [target + suffix for suffix in _RESOLVE_SUFFIXES]
-        + [f"{target}/index{suffix}" for suffix in _RESOLVE_SUFFIXES[:4]]
-    )
-
-
-def find_import_problems(
-    files: list[dict],
-    list_dir: Callable[[str], set[str] | None] | None = None,
-    context_files: list[dict] | None = None,
-    import_scope: dict[str, str] | None = None,
-) -> list[str]:
-    """Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un
-    fichier existant, et import nommé (ou par défaut) absent des exports d'un fichier LIVRÉ.
-
-    list_dir(dossier) -> noms des entrées, ou None si inconnu (erreur réseau, dossier absent) :
-    dans le doute, un import n'est jamais signalé (pas de faux positif sur une panne GitHub).
-    context_files : fichiers livrés à une tentative PRÉCÉDENTE : ils servent à résoudre les imports
-    de `files` mais ne sont pas contrôlés eux-mêmes.
-    import_scope : {chemin: texte} — pour ces fichiers, seuls les imports de CE texte sont contrôlés
-    (le texte ajouté par une modification ciblée), pas ceux déjà présents dans le fichier d'origine."""
-    delivered = {f["path"]: f["content"] for f in (context_files or [])}
-    delivered.update({f["path"]: f["content"] for f in files})
-    dir_cache: dict[str, set[str] | None] = {}
-
-    def entries(directory: str) -> set[str] | None:
-        if list_dir is None:
-            return None
-        if directory not in dir_cache:
-            dir_cache[directory] = list_dir(directory)
-        return dir_cache[directory]
-
-    problems: list[str] = []
-    scanned = {f["path"]: f["content"] for f in files}
-    scanned.update({p: t for p, t in (import_scope or {}).items() if p in scanned})
-    for path, content in scanned.items():
-        if analyst_blocks._extension(path) not in CODE_EXTENSIONS:
-            continue
-        imports = [(m.group(1), m.group(2), m.group(3)) for m in _IMPORT_FROM.finditer(content)]
-        imports += [(None, None, m.group(1)) for m in _IMPORT_SIDE_EFFECT.finditer(content)]
-        for default_name, named, spec in imports:
-            candidates = _import_candidates(path, spec)
-            resolved = next((c for c in candidates if c in delivered), None)
-            if resolved is None:
-                known_absent = bool(candidates)
-                for candidate in candidates:
-                    names = entries(posixpath.dirname(candidate))
-                    if names is None:
-                        known_absent = False
-                        break
-                    if posixpath.basename(candidate) in names:
-                        known_absent = False
-                        break
-                if known_absent and list_dir is not None:
-                    problems.append(
-                        f"{path} : l'import '{spec}' ne correspond à aucun fichier livré ni existant "
-                        "(livre ce fichier, ou corrige le chemin)."
-                    )
-                continue
-            if analyst_blocks._extension(resolved) not in CODE_EXTENSIONS:
-                continue
-            exported, has_default, star = _exports_of(delivered[resolved])
-            if star:
-                continue
-            if default_name and not has_default:
-                problems.append(f"{path} : import par défaut depuis '{spec}', mais {resolved} n'a pas d'export par défaut.")
-            for item in (named or "").split(","):
-                name = item.replace("type ", "", 1).strip().split(" as ")[0].strip()
-                if name and name not in exported:
-                    problems.append(f"{path} : '{name}' est importé depuis '{spec}', mais {resolved} ne l'exporte pas.")
-    return list(dict.fromkeys(problems))
-
-
-def find_placeholders(files: list[dict]) -> list[tuple[str, int, str]]:
-    """(chemin, numéro de ligne, ligne) pour chaque commentaire trahissant un fichier incomplet."""
-    issues = []
-    for f in files:
-        ext = analyst_blocks._extension(f["path"])
-        if ext in analyst_blocks.PROSE_EXTENSIONS:
-            continue
-        # Sans extension du tout (".env", ".gitignore", "Dockerfile", "Makefile"...) : ces
-        # fichiers utilisent quasi toujours "#" comme commentaire, et aucun n'est dans
-        # analyst_blocks.PROSE_EXTENSIONS (déjà exclu ci-dessus) — les en priver de ce contrôle les laisserait
-        # committer tronqués sans jamais être détectés.
-        hash_is_comment = ext in HASH_COMMENT_EXTENSIONS or not ext
-        for n, line in enumerate(f["content"].splitlines(), start=1):
-            marker = COMMENT_MARKER.match(line)
-            if not marker or (marker.group(1) == "#" and not hash_is_comment):
-                continue
-            # "(reste du code inchangé)", "[...]" : les parenthèses et crochets autour de la
-            # formule ne changent rien à sa nature.
-            body = re.sub(r"\s+", " ", re.sub(r"[()\[\]]", " ", line[marker.end():])).strip()
-            if LEADING_ELLIPSIS.match(body) or SHORTCUT_ONLY.match(body):
-                issues.append((f["path"], n, line.strip()[:120]))
-    return issues
-
-
 def review_diagnostic_output(
     text: str,
     read_base: Callable[[str], tuple[str | None, str | None]] | None = None,
@@ -336,10 +66,10 @@ def review_diagnostic_output(
 
     read_base(chemin) -> (contenu, erreur) lit le fichier d'ORIGINE : il sert à résoudre les blocs
     <<<MODIFICATION: ...>>> en fichiers complets (sans lui, une modification est inexploitable).
-    list_dir sert à vérifier les imports relatifs (voir find_import_problems).
+    list_dir sert à vérifier les imports relatifs (voir analyst_imports.find_import_problems).
     """
     files, broken = analyst_blocks.parse_file_sections(text)
-    edits, edit_broken = parse_edit_sections(text)
+    edits, edit_broken = analyst_edits.parse_edit_sections(text)
     broken.update(edit_broken)
     edited_paths: set[str] = set()
     replaced_text: list[dict] = []
@@ -358,7 +88,7 @@ def review_diagnostic_output(
                 "— pour créer un nouveau fichier, utilise <<<FICHIER>>>"
             )
             continue
-        content, error = apply_edits(base, blocks)
+        content, error = analyst_edits.apply_edits(base, blocks)
         if content is None:
             broken[path] = error or "modification inapplicable"
             continue
@@ -385,8 +115,8 @@ def review_diagnostic_output(
                 "'<<<MODIFICATION: chemin>>>'). Si tu ne peux livrer aucun fichier, dis-le "
                 "explicitement en le marquant 'NON réalisé' avec la raison."
             )
-    placeholders = find_placeholders([f for f in files if f["path"] not in edited_paths])
-    placeholders += find_placeholders(replaced_text)
+    placeholders = analyst_placeholders.find_placeholders([f for f in files if f["path"] not in edited_paths])
+    placeholders += analyst_placeholders.find_placeholders(replaced_text)
     if placeholders:
         listing = "\n".join(f"- {p} ligne {n} : {line}" for p, n, line in placeholders[:10])
         problems.append(
@@ -394,7 +124,7 @@ def review_diagnostic_output(
             f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
             "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
         )
-    import_problems = find_import_problems(
+    import_problems = analyst_imports.find_import_problems(
         files, list_dir, context_files,
         import_scope={path: text["content"] for path, text in ((r["path"], r) for r in replaced_text)},
     )
@@ -431,7 +161,7 @@ def build_delivery_report(
     signalés NON LIVRÉS s'ils ne sont pas identiques à la version de l'Analyste. not_extracted :
     {chemin: raison} des fichiers annoncés par l'Analyste mais jamais committables.
     scope_notes : écarts entre les fichiers livrés et le plan de l'Architecte ; import_notes :
-    incohérences d'imports entre fichiers livrés (voir find_import_problems) — deux sections ajoutées
+    incohérences d'imports entre fichiers livrés (voir analyst_imports.find_import_problems) — deux sections ajoutées
     à la fin, sans quoi ces contrôles n'apparaîtraient pas dans le rapport de la QA.
     Les résultats sont étiquetés [vérifié outil] : ils proviennent d'une comparaison exacte en
     Python et de check_syntax_content, jamais d'une lecture LLM.

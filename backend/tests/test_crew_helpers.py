@@ -460,7 +460,7 @@ def test_github_dir_lister_maps_404_to_empty_and_other_errors_to_unknown(monkeyp
 
 
 def test_unresolved_import_is_flagged_with_real_listing_semantics(tmp_path):
-    from analyst_output import find_import_problems
+    from analyst_imports import find_import_problems
     (tmp_path / "src").mkdir()
     (tmp_path / "src/App.tsx").write_text("x")
     files = [{"path": "src/Main.tsx", "content": "import Header from './components/Header';\n"}]

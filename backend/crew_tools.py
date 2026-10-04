@@ -5,7 +5,8 @@ import crew_guardrails
 import crew_workspace
 from crew_state import CrewExecutionState
 from crewai.tools import tool
-from analyst_output import build_delivery_report, find_import_problems, format_manifest
+from analyst_output import build_delivery_report, format_manifest
+from analyst_imports import find_import_problems
 from delivery import (
     build_pull_request_body, conventional_commit_message, extract_section,
 )

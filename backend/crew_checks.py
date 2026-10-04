@@ -4,9 +4,8 @@ from typing import Optional
 import crew_guardrails
 import crew_workspace
 from crew_state import CrewExecutionState
-from analyst_output import (
-    parse_edit_sections, review_diagnostic_output,
-)
+from analyst_output import review_diagnostic_output
+from analyst_edits import parse_edit_sections
 from delivery import extract_user_request, render_delivery_block, unconfirmed_pr_urls
 from logs import get_logger
 from qa_report import QA_VERDICT, qa_report_issues, reconcile_verdict, required_verdict

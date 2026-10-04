@@ -3,7 +3,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, apply_edits, build_delivery_report, find_import_problems, find_placeholders, parse_edit_sections, review_diagnostic_output
+from analyst_output import FILE_ABSENT, PRESENT_UNREADABLE, build_delivery_report, review_diagnostic_output
+from analyst_placeholders import find_placeholders
+from analyst_imports import find_import_problems
+from analyst_edits import apply_edits, parse_edit_sections
 from analyst_blocks import parse_file_sections
 
 
