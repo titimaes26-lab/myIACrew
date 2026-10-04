@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.59 — Mise à jour le 2026-10-04
+> Version : 1.60 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -28,6 +28,7 @@
 > - 1.47 (10-04) : `useConversation.ts` (728 lignes) découpé en hooks dédiés (dossier `hooks/conversation/`), comportement inchangé.
 > - 1.48 (10-04) : `sendMessage` et l'effet de sondage découpés en fonctions nommées (`progressMerge`), `useSendOutcomes` stable, tests unitaires des pièces extraites.
 > - 1.49 (10-04) : `ChatInput.tsx` (303 lignes) découpé (`useRepoTarget`, `RepoTargetPanel`, `WorkflowTypeSelect`, `ChatComposer`) et testé.
+> - 1.60 (10-04) : gros fichiers de tests répartis par thème, même nombre de tests (800, vérifié aussi en ordre inverse) : `test_crew_helpers` → `test_crew_qualification`, `test_crew_spec_guardrails`, `test_crew_diagnostic`, `test_crew_sources` ; `test_run_stages` → `test_run_context`, `test_run_history_context`, `test_run_outcomes`, `test_run_orchestration` ; `test_resume` → `test_resume_pipeline`, `test_resume_server`, `test_auto_retry`, `test_execution_deadline` ; `test_analyst_output` → `test_analyst_blocks`, `test_analyst_placeholders`, `test_analyst_imports`, `test_analyst_review` ; fabriques communes dans `*_support.py`. Correction d'une pollution entre tests : un identifiant d'exécution « abandonné » restait dans `execution_state` et faisait échouer d'autres tests selon l'ordre ; `tests/conftest.py` remet cet état à zéro avant et après chaque test.
 > - 1.59 (10-04) : revue du découpage d'`agent_metrics` : `current_metrics` public, `execution.py` importe `track_execution_metrics` directement (plus de ré-export par `crewquestion`) ; `tests/test_agent_metrics.py` (814 lignes) réparti en `test_metrics_collect`, `test_metrics_report`, `test_metrics_endpoints`, `test_metrics_comparison`, `test_history_deletion`, `test_run_metrics` (+ `metrics_support` pour les fabriques communes), même nombre de tests ; 1 test ajouté (rôles : YAML illisible ou entrées incomplètes).
 > - 1.58 (10-04) : `backend/agent_metrics.py` (534 lignes) découpé sans changement de comportement : `metrics_roles` (rôle → étape, libellés), `metrics_collect` (événements CrewAI, compteurs par agent, lignes persistées), `metrics_report` (agrégats du tableau de bord) ; le module d'origine disparaît (son `__all__` aussi) ; 2 tests ajoutés (dates naïves/avec fuseau, durée inconnue), 25 mutations détectées sur 27 avant ces tests, 2 survivantes maintenant détectées.
 > - 1.57 (10-04) : revue du découpage d'`analyst_output.py` : `undecorate`/`extension` rendus publics ; `FILE_ABSENT`, `PRESENT_UNREADABLE`, `NOT_DELIVERED_MARKER` déplacés dans `analyst_blocks` (les consommateurs n'importent plus tout `analyst_output`) ; `parse_file_sections` (classe `_FileSectionParser`) et `find_import_problems` (trois aides) découpés sous la complexité 15 ; 3 tests ajoutés, toutes les mutations contrôlées détectées.
