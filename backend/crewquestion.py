@@ -3,7 +3,6 @@ import time
 import asyncio
 import json
 import re
-import functools
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
@@ -36,11 +35,11 @@ from crewai.tasks.task_output import TaskOutput
 from crewai.tools import tool
 from logs import get_logger
 from summary import delivery_facts, fallback_summary
+import crew_retry
 import llm_limiter
 from tools import check_syntax
 
 log = get_logger("crew")
-from errors import QUOTA_MARKERS, UNAVAILABLE_MARKERS
 from github_tools import (
     github_read_file,
     github_list_directory,
@@ -92,73 +91,11 @@ from analyst_output import (
 # par agent à partir des événements CrewAI) ; réexportés ici car main.py les importe d'ici.
 register_event_listeners()
 
-# Partagés entre retry_on_rate_limit_async (ci-dessous, utilisé par analyze_user_request) et le
-# retry résumable de run_dynamic_crew (plus bas) : une seule définition de "qu'est-ce qu'une
-# erreur transitoire" et "combien de temps attendre", pour que les deux mécanismes de retry ne
-# puissent jamais diverger silencieusement si l'un est mis à jour (ex: nouveau message d'erreur
-# Gemini à reconnaître) sans que l'autre le soit.
-def _is_retryable_error(err_msg: str) -> bool:
-    return any(marker in err_msg for marker in QUOTA_MARKERS + UNAVAILABLE_MARKERS)
-
-def _compute_backoff_wait(err_msg: str, retries: int, base_delay: float) -> float:
-    match = re.search(r'retry after (\d+(\.\d+)?)', err_msg)
-    return float(match.group(1)) + 2.0 if match else base_delay * (2 ** (retries - 1))
-
-def retry_on_rate_limit_async(max_retries: int = 5, base_delay: float = 10.0):
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            retries = 0
-            while True:
-                m = _current_metrics.get()
-                if m is not None:
-                    m.record_attempt()
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    err_msg = str(e).lower()
-                    if _is_retryable_error(err_msg):
-                        retries += 1
-                        if retries > max_retries:
-                            raise e
-                        wait_time = _compute_backoff_wait(err_msg, retries, base_delay)
-                        if m is not None:
-                            m.record_rate_limit(wait_time)
-                        await asyncio.sleep(wait_time)
-                    else:
-                        raise e
-        return wrapper
-    return decorator
-
-class QuotaManager:
-    def __init__(self):
-        self.last_execution_time = 0.0
-        self.min_interval_seconds = 5.0
-
-    def adaptive_pause(self, task_output=None):
-        elapsed = time.time() - self.last_execution_time
-        if elapsed < self.min_interval_seconds:
-            wait_time = self.min_interval_seconds - elapsed
-            m = _current_metrics.get()
-            if m is not None:
-                m.record_wait(wait_time)
-            time.sleep(wait_time)
-        self.last_execution_time = time.time()
-
-quota_mgr = QuotaManager()
-
-
-def _record_limiter_wait(wait_seconds: float) -> None:
-    """Attente imposée par le limiteur global Gemini : comptée dans les mesures de l'exécution quand le contexte la voit."""
-    metrics = _current_metrics.get()
-    if metrics is not None:
-        metrics.record_wait(wait_seconds)
-
 
 # Sous TOUS les appels au modèle (agents, planificateur/observateur de CrewAI, qualification, résumé) : plafond commun
 # de requêtes par minute et pause commune après un 429 (voir llm_limiter.py). Le max_rpm d'un crew, lui, ne couvre ni
 # les autres exécutions en parallèle ni les appels internes de CrewAI.
-llm_limiter.install(on_wait=_record_limiter_wait)
+llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
 
 # Étapes de chaque workflow, dans l'ordre (clés alignées sur WORKFLOW_STEPS côté frontend) : source
 # unique, utilisée par run_dynamic_crew ET par main.py (reprise d'une exécution en échec).
@@ -203,7 +140,7 @@ class CrewStepError(Exception):
     """Erreur levée quand le crew échoue à une étape précise (voir run_dynamic_crew).
 
     Conserve le message de l'exception d'origine (str(e) identique) pour que
-    retry_on_rate_limit_async continue de détecter les erreurs de quota/rate-limit
+    crew_retry.retry_on_rate_limit_async continue de détecter les erreurs de quota/rate-limit
     normalement, tout en exposant l'étape et l'agent en cours au moment de l'échec.
     """
     def __init__(self, step_index: int, total_steps: int, agent_role: str, original: Exception):
@@ -499,7 +436,7 @@ SUMMARY_SENTINEL = "<!--crew-summary-->"
 # Borne la taille du texte envoyé au modèle pour la synthèse : le résultat combiné peut
 # contenir du code source complet (workflows FEATURE/DESIGN_AND_DEV), et ce résumé n'est
 # qu'un ajout de confort qui ne justifie pas de peser significativement sur le quota
-# Gemini déjà sous tension (cf. adaptive_pause/retry_on_rate_limit_async ci-dessus).
+# Gemini déjà sous tension (cf. adaptive_pause/crew_retry.retry_on_rate_limit_async ci-dessus).
 MAX_SUMMARY_INPUT_CHARS = 6000
 
 # Timeout dédié, plus court que celui des agents (120s) : un résumé qui traîne ne doit
@@ -593,7 +530,7 @@ async def _generate_summary(user_request: str, result) -> str | None:
     sans retry applicatif : ce n'est qu'un ajout de confort, pas la livraison principale.
     """
     def _call() -> str:
-        quota_mgr.adaptive_pause()
+        crew_retry.quota_mgr.adaptive_pause()
         return summary_llm.call(_build_summary_prompt(user_request, _build_summary_input(result)))
 
     try:
@@ -601,7 +538,7 @@ async def _generate_summary(user_request: str, result) -> str | None:
         # loop.run_in_executor() ne copie PAS automatiquement le contexte courant dans le
         # thread (contrairement à asyncio.to_thread, qui le fait mais impose son propre
         # executor par défaut) : sans ce copy_context().run(...) explicite, l'appel à
-        # quota_mgr.adaptive_pause() dans _call() perdrait de vue le _current_metrics de
+        # crew_retry.quota_mgr.adaptive_pause() dans _call() perdrait de vue le _current_metrics de
         # CETTE requête (il verrait la valeur par défaut, None), et le temps d'attente
         # de cet appel ne serait jamais comptabilisé dans les métriques renvoyées.
         ctx = copy_context()
@@ -1623,7 +1560,7 @@ class AppDevelopmentCrew():
         self._local_read_tool = read_a_files_content
         return read_a_files_content
 
-    @retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
+    @crew_retry.retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
     async def analyze_user_request(self, user_prompt: str, conversation_context: str = "", has_repo_target: bool = False) -> QualificationResult:
         qualif_agent = self.qualification_agent()
         task_prompt = _build_qualification_prompt(user_prompt, conversation_context, has_repo_target)
@@ -1632,7 +1569,7 @@ class AppDevelopmentCrew():
         
         # Exécution asynchrone pour éviter l'erreur d'event loop
         result = await analysis_crew.kickoff_async()
-        quota_mgr.last_execution_time = time.time()
+        crew_retry.quota_mgr.last_execution_time = time.time()
 
         if hasattr(result, 'pydantic') and result.pydantic is not None:
             return QualificationResult(**_enforce_confidence_threshold(result.pydantic).model_dump())
@@ -1703,7 +1640,7 @@ class AppDevelopmentCrew():
         selected_tasks = [task for _, task in selected]
         total_steps = len(selected)
 
-        # Retry RÉSUMABLE (remplace l'ancien @retry_on_rate_limit_async posé sur toute la
+        # Retry RÉSUMABLE (remplace l'ancien @crew_retry.retry_on_rate_limit_async posé sur toute la
         # méthode) : sur une erreur de quota/rate-limit survenant APRÈS que certaines tâches ont
         # déjà terminé, seules les tâches RESTANTES sont rejouées — jamais celles déjà réussies.
         # Les objets Task de `selected` sont créés UNE SEULE FOIS ci-dessus (pas reconstruits à
@@ -1792,7 +1729,7 @@ class AppDevelopmentCrew():
                 def on_task_complete(task_output, _remaining=remaining):
                     nonlocal attempt_completed
                     attempt_completed += 1
-                    quota_mgr.adaptive_pause(task_output)
+                    crew_retry.quota_mgr.adaptive_pause(task_output)
 
                     # Garde-fou (comme l'ancien `completed_count <= len(selected_tasks)`) : si
                     # CrewAI invoquait jamais task_callback plus de fois qu'il n'y a de tâches
@@ -1878,9 +1815,9 @@ class AppDevelopmentCrew():
                     break  # succès : toutes les tâches de `remaining` ont rejoint completed_keys
                 except Exception as e:
                     err_msg = str(e).lower()
-                    if _is_retryable_error(err_msg) and retries < max_retries:
+                    if crew_retry._is_retryable_error(err_msg) and retries < max_retries:
                         retries += 1
-                        wait_time = _compute_backoff_wait(err_msg, retries, base_delay)
+                        wait_time = crew_retry._compute_backoff_wait(err_msg, retries, base_delay)
                         if m is not None:
                             m.record_rate_limit(wait_time)
                         if on_step_change is not None:
@@ -1979,12 +1916,12 @@ class AppDevelopmentCrew():
         # on_task_complete() (task_callback ci-dessus) l'a déjà fait à la fin de la
         # dernière tâche. Le remettre à `time.time()` ici ferait toujours mesurer un
         # écart quasi nul à adaptive_pause() dans _generate_summary, forçant une pause
-        # maximale (min_interval_seconds, voir QuotaManager) systématique au lieu d'une
+        # maximale (min_interval_seconds, voir crew_retry.QuotaManager) systématique au lieu d'une
         # pause proportionnée au temps déjà écoulé depuis le dernier appel Gemini réel.
         summary = await _generate_summary(inputs.get('user_request', ''), result)
         summary_body = _compose_summary_body(list(_iter_task_sections(result)), request_type, scope, summary)
         if summary_body:
             formatted = f"{formatted}\n\n{SUMMARY_SENTINEL}\n\n## Résumé\n\n{summary_body}"
 
-        quota_mgr.last_execution_time = time.time()
+        crew_retry.quota_mgr.last_execution_time = time.time()
         return formatted
