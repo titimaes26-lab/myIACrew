@@ -108,8 +108,8 @@ export function useRepoTarget(apiUrl: string, accessToken: string) {
   const currentTarget = (): RepoTarget => ({ owner: repoOwner.trim(), name: repoName.trim(), branch: baseBranch.trim() });
 
   return {
-    showRepoFields, repoOwner, repoName, baseBranch, repoSuggestions,
-    applySuggestion, handleRepoOwnerChange, handleRepoNameChange, handleBaseBranchChange,
-    togglePanel, collapsePanel, currentTarget,
+    showRepoFields, repoOwner, repoName, baseBranch, repoSuggestions, currentTarget, applySuggestion,
+    panel: { toggle: togglePanel, collapse: collapsePanel },
+    onChange: { owner: handleRepoOwnerChange, name: handleRepoNameChange, branch: handleBaseBranchChange },
   };
 }

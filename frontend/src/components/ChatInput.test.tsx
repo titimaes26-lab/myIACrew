@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatInput from './ChatInput';
@@ -60,6 +60,26 @@ describe('ChatInput — envoi', () => {
     expect(box()).toHaveValue('brouillon');
     await userEvent.type(box(), ' suite');
     expect(window.localStorage.getItem('myiacrew:chat-draft')).toBe('brouillon suite');
+  });
+});
+
+describe('ChatInput — saisie assistée', () => {
+  it('Entrée pendant une composition n’envoie pas, une Entrée normale envoie ensuite', async () => {
+    const { props } = renderInput();
+    await userEvent.type(box(), 'Corrige');
+    fireEvent.keyDown(box(), { key: 'Enter', isComposing: true });            // valide un mot (IME, autocorrection)
+    fireEvent.keyDown(box(), { key: 'Enter', keyCode: 229 });                  // Chrome Android pendant une composition
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(box()).toHaveValue('Corrige');
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    expect(props.onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('Entrée avec Maj pendant une composition n’envoie pas non plus', async () => {
+    const { props } = renderInput();
+    await userEvent.type(box(), 'x');
+    fireEvent.keyDown(box(), { key: 'Enter', shiftKey: true, isComposing: true });
+    expect(props.onSend).not.toHaveBeenCalled();
   });
 });
 
@@ -144,6 +164,16 @@ describe('ChatInput — repository cible', () => {
     expect(screen.getByPlaceholderText(/owner/)).toHaveValue('autre');
     expect(screen.getByDisplayValue('projet')).toBeInTheDocument();
     expect(screen.getByDisplayValue('dev')).toBeInTheDocument();
+  });
+
+  it('pendant une exécution, les suggestions et les champs du panneau sont désactivés', async () => {
+    const { rerenderWith } = renderInput();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'autre/projet@dev' })).toBeEnabled());
+    rerenderWith({ disabled: true });
+    expect(screen.getByRole('button', { name: 'autre/projet@dev' })).toBeDisabled();
+    expect(screen.getByPlaceholderText(/owner/)).toBeDisabled();
+    expect(screen.getByDisplayValue('PlatformGame')).toBeDisabled();
+    expect(screen.getByDisplayValue('main')).toBeDisabled();
   });
 
   it('un échec de chargement des suggestions ne bloque pas la saisie', async () => {

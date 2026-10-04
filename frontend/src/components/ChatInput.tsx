@@ -86,10 +86,13 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
     // explicite) : ne réinitialise PAS repoOwner/repoName/baseBranch (le bouton replié continue
     // d'afficher "owner/repo" sélectionné, voir plus bas), donc rouvrir le panneau pour un
     // message suivant retrouve les mêmes valeurs sans avoir à les ressaisir.
-    repo.collapsePanel();
+    repo.panel.collapse();
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Entrée qui VALIDE un mot en cours de saisie assistée (clavier virtuel, autocorrection, saisie japonaise ou chinoise)
+    // n'envoie rien : `isComposing`, et le code 229 que Chrome Android renvoie pendant une composition.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -112,7 +115,7 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
           variant="ghost"
           size="sm"
           aria-expanded={repo.showRepoFields}
-          onClick={repo.togglePanel}
+          onClick={repo.panel.toggle}
         >
           🔗 {repo.repoOwner && repo.repoName ? `${repo.repoOwner}/${repo.repoName}` : 'Repository GitHub cible (optionnel)'}
         </Button>
@@ -125,9 +128,9 @@ export default function ChatInput({ disabled, cancellable, onCancel, apiUrl, acc
           baseBranch={repo.baseBranch}
           suggestions={repo.repoSuggestions}
           onApplySuggestion={repo.applySuggestion}
-          onRepoOwnerChange={repo.handleRepoOwnerChange}
-          onRepoNameChange={repo.handleRepoNameChange}
-          onBaseBranchChange={repo.handleBaseBranchChange}
+          onRepoOwnerChange={repo.onChange.owner}
+          onRepoNameChange={repo.onChange.name}
+          onBaseBranchChange={repo.onChange.branch}
           disabled={disabled}
         />
       )}
