@@ -108,16 +108,33 @@ _WORK_BRANCH_NAME = re.compile(r"crewai/[A-Za-z0-9_](?:(?:[A-Za-z0-9._-]|/(?!/))
 # Branche de travail de l'exécution en cours, quand elle est connue : seule celle-ci est alors écrivable (plus strict
 # que le préfixe). Absente d'un thread qui n'a pas hérité du contexte, la règle du préfixe reste en vigueur.
 _write_scope: ContextVar[str | None] = ContextVar("write_scope", default=None)
+# Signal d'arrêt de l'exécution en cours : posé quand elle dépasse sa durée maximale (voir main.py). Le thread du crew,
+# lui, continue de tourner (Python ne sait pas le tuer) : sans ce signal, il pourrait écrire sur GitHub alors que le
+# créneau est rendu et qu'une relance écrit sur la même branche.
+_write_cancelled: ContextVar[threading.Event | None] = ContextVar("write_cancelled", default=None)
 
 
 @contextmanager
-def track_write_scope(branch: str):
-    """Limite les écritures GitHub de l'exécution de crew en cours à `branch` (une branche `crewai/…`)."""
+def track_write_scope(branch: str, cancelled: threading.Event | None = None):
+    """Limite les écritures GitHub de l'exécution de crew en cours à `branch` (une branche `crewai/…`) ; une fois
+    `cancelled` posé, plus aucune écriture ni ouverture de Pull Request."""
     token = _write_scope.set(branch)
+    cancel_token = _write_cancelled.set(cancelled)
     try:
         yield
     finally:
+        _write_cancelled.reset(cancel_token)
         _write_scope.reset(token)
+
+
+def writes_cancelled() -> bool:
+    event = _write_cancelled.get()
+    return event is not None and event.is_set()
+
+
+STOPPED_EXECUTION_MESSAGE = (
+    "ERREUR : écriture refusée : cette exécution a été arrêtée (durée maximale dépassée). Ne retente rien."
+)
 
 
 def _log_refused_write(branch: object) -> None:
@@ -136,6 +153,9 @@ def _log_refused_path(path: object) -> None:
 
 def _reject_protected_branch(branch: str) -> str | None:
     """None si l'écriture sur `branch` peut continuer, sinon le message d'erreur à renvoyer tel quel (aucun appel réseau)."""
+    if writes_cancelled():
+        log.warning("écriture GitHub refusée : l'exécution a été arrêtée (durée maximale dépassée).")
+        return STOPPED_EXECUTION_MESSAGE
     if branch in ("main", "master"):
         return "ERREUR : écriture directe sur la branche principale interdite. Utilise d'abord github_create_branch."
     valid = isinstance(branch, str) and _WORK_BRANCH_NAME.fullmatch(branch) is not None and ".." not in branch
@@ -1123,6 +1143,9 @@ def open_or_update_pull_request(
     de sa description est mise à jour (titre et texte ajouté à la main conservés) ; sinon une PR est
     créée, en brouillon si `draft` — avec repli sur une PR normale quand le dépôt n'accepte pas les
     brouillons (dépôts privés des offres gratuites). Évite le doublon d'un 2e tour sur la même branche."""
+    if writes_cancelled():
+        log.warning("ouverture de Pull Request refusée : l'exécution a été arrêtée (durée maximale dépassée).")
+        return None, STOPPED_EXECUTION_MESSAGE
     try:
         gh_repo = _get_repo(owner, repo)
         existing = next(iter(gh_repo.get_pulls(state="open", head=f"{owner}:{branch}", base=base_branch)), None)

@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import os
 import uuid
 import re
@@ -64,6 +65,10 @@ _background_tasks: set[asyncio.Task] = set()
 # Identifiants des exécutions réellement en cours dans CE process : le balayage des orphelines
 # (orphans.py) ne les touche jamais, même après un long silence.
 _active_execution_ids: set[int] = set()
+# Exécutions arrêtées pour durée maximale dépassée : leur thread de crew continue de tourner (Python ne sait pas le tuer)
+# et appelle encore les callbacks de persistance ; ceux-ci ne doivent plus rien écrire sur une ligne déjà en échec
+# (message d'échec mêlé à des sections d'agents, étape courante, points de reprise). Quelques entiers par arrêt.
+_abandoned_execution_ids: set[int] = set()
 
 # Limite le nombre d'exécutions de crew simultanées, TOUTES conversations confondues (le
 # garde-fou par conversation dans execute_workflow n'empêche qu'UNE MÊME conversation d'avoir
@@ -574,6 +579,8 @@ def _persist_current_step(execution_id: int, step_key: Optional[str]) -> None:
     # Appelé à CHAQUE changement d'étape (donc plusieurs fois par exécution) : le point le plus
     # régulier disponible pour observer la tendance mémoire pendant une exécution DESIGN_AND_DEV/
     # FEATURE, qui peut enchaîner 4 tâches sur plusieurs minutes. Voir _current_memory_mb.
+    if execution_id in _abandoned_execution_ids:
+        return
     _log_memory(f"execution_id={execution_id}, étape={step_key!r}")
     try:
         with Session(engine) as step_session:
@@ -682,6 +689,10 @@ def _persist_completed_agent(
     Utilise un tracker d'idempotence pour éviter les doublons si retry_on_rate_limit_async relance le crew.
     Similaire à _persist_current_step : ouvre sa propre Session thread-safe et best-effort.
     """
+    if execution_id in _abandoned_execution_ids:
+        log.info(f"execution_id={execution_id}: agent '{agent_name}' ignoré (exécution arrêtée).")
+        return
+
     # Valider et nettoyer les données
     agent_name, agent_output, duration_seconds = _validate_agent_data(agent_name, agent_output, duration_seconds)
 
@@ -1026,6 +1037,7 @@ async def _capture_branch_sha(data: "WorkflowExecutionInput", work_branch: str, 
 async def _run_crew(
     crew: AppDevelopmentCrew, state: _RunState, execution_id: int, request_type: str, inputs: dict,
     resume_outputs: Optional[dict[str, str]], scope: Optional[str] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Any:
     """Lance le crew avec ses métriques et son sondage mémoire périodique (toujours annulé, succès ou non)."""
     memory_ticker = asyncio.create_task(_periodic_memory_logger(f"execution_id={execution_id}, sondage périodique"))
@@ -1048,8 +1060,15 @@ async def _run_crew(
                 # Une TimeoutError levée PAR le crew (délai d'un appel) n'est pas notre échéance : elle garde sa classe.
                 if not deadline.expired():
                     raise
-                raise ExecutionTimeoutError(
-                    f"durée maximale d'une exécution dépassée ({_EXECUTION_TIMEOUT_S // 60} min)") from None
+                # Le thread du crew survit à l'annulation : il ne doit plus rien écrire (base ni GitHub).
+                _abandoned_execution_ids.add(execution_id)
+                if cancel_event is not None:
+                    cancel_event.set()
+                waited = run_metrics.total_wait_time
+                detail = f"durée maximale d'une exécution dépassée ({_EXECUTION_TIMEOUT_S / 60:g} min)"
+                if waited > 0:
+                    detail += f", dont {waited / 60:.1f} min d'attente du quota du modèle"
+                raise ExecutionTimeoutError(detail, quota_wait_seconds=waited, limit_seconds=_EXECUTION_TIMEOUT_S) from None
     finally:
         # Les handlers d'événements CrewAI tournent dans un pool de threads : sans cette attente, les derniers
         # appels LLM pourraient manquer aux métriques lues ensuite.
@@ -1312,7 +1331,8 @@ async def _run_crew_and_persist(
                 _log_memory(f"execution_id={db_entry.id}, crew instancié, avant kickoff")
                 # Cache de lecture GitHub partagé par l'aperçu et les agents de CETTE exécution (voir track_read_cache) ;
                 # écritures GitHub limitées à la branche de travail de cette exécution (voir track_write_scope).
-                with track_read_cache(), (track_write_scope(work_branch) if work_branch else nullcontext()):
+                cancel_event = threading.Event()
+                with track_read_cache(), (track_write_scope(work_branch, cancel_event) if work_branch else nullcontext()):
                     branch_exists = state.sha_before is not None
                     repo_snapshot = await _prefetch_repo_snapshot(
                         data, work_branch, normalized_base_branch, has_repo_target, branch_exists, resume_outputs)
@@ -1322,7 +1342,8 @@ async def _run_crew_and_persist(
                         data, conversation_id, final_prompt, conversation_context, work_branch,
                         normalized_base_branch, has_repo_target, branch_exists, repo_snapshot, previous_plan,
                     )
-                    result = await _run_crew(crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs, data.scope)
+                    result = await _run_crew(
+                        crew, state, db_entry.id, data.target_workflow, inputs, resume_outputs, data.scope, cancel_event)
                 raw_result = str(result.raw) if hasattr(result, 'raw') else str(result)
 
                 # Un rapport « réussi » ne prouve rien sur GitHub (un outil github_* en échec renvoie du texte à

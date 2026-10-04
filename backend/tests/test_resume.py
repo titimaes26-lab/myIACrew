@@ -564,3 +564,70 @@ def test_queue_position_counts_running_executions_and_older_queued_ones(engine):
         assert progress["queue_ahead"] == 3 and progress["current_step"] == "queued"
         done = main.get_conversation_progress(conversation_id=running.conversation_id, session=db, user={"id": "u1"})
         assert done["queue_ahead"] is None                                          # seulement quand l'exécution attend
+
+
+def _run_crew_with_deadline(monkeypatch, fake_run, cancel_event=None):
+    from agent_metrics import _current_metrics  # noqa: F401
+    monkeypatch.setattr(main, "_EXECUTION_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(main, "_abandoned_execution_ids", set())
+
+    class FakeCrew:
+        run_dynamic_crew = fake_run
+    state = main._RunState()
+    with pytest.raises(main.ExecutionTimeoutError) as err:
+        asyncio.run(main._run_crew(FakeCrew(), state, 4242, "BUGFIX", {}, None, None, cancel_event))
+    return err.value
+
+
+def test_a_stopped_execution_signals_its_thread_and_ignores_its_later_persistence(engine, monkeypatch):
+    import threading
+
+    async def stuck(self, **kwargs):
+        await asyncio.sleep(30)
+
+    event = threading.Event()
+    error = _run_crew_with_deadline(monkeypatch, stuck, event)
+    assert event.is_set() and 4242 in main._abandoned_execution_ids and error.quota_wait_seconds == 0
+
+    # le thread survivant appelle encore ces callbacks : rien ne doit être écrit sur la ligne déjà en échec
+    execution_id = _new_failed_execution(engine, "Échec : message d'échec")
+    main._abandoned_execution_ids.add(execution_id)
+    main._persist_completed_agent(execution_id, DESIGNER, "texte tardif", 1.0)
+    main._persist_current_step(execution_id, "qa")
+    saved = _saved(engine, execution_id)
+    assert saved.result == "Échec : message d'échec" and saved.current_step is None
+    with Session(engine) as db:
+        assert db.exec(select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id)).all() == []
+
+
+def _new_failed_execution(engine, result):
+    with Session(engine) as db:
+        conversation = Conversation(user_id="u1", title="t")
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+        entry = ExecutionHistory(user_request="x", workflow="BUGFIX", status="failed", user_id="u1",
+                                 conversation_id=conversation.id, result=result)
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        return entry.id
+
+
+def test_the_timeout_message_blames_the_quota_when_waiting_dominated(monkeypatch):
+    from agent_metrics import _current_metrics
+    from errors import ErrorCode, classify_exception
+
+    async def quota_bound(self, **kwargs):
+        _current_metrics.get().record_wait(600)      # 10 min d'attente du quota
+        await asyncio.sleep(30)
+
+    error = _run_crew_with_deadline(monkeypatch, quota_bound)
+    assert error.quota_dominant and "10.0 min d'attente du quota" in str(error)
+    info = classify_exception(error)
+    assert info.code == ErrorCode.EXECUTION_TIMEOUT and info.retryable and "quota" in info.message
+
+    async def slow(self, **kwargs):
+        await asyncio.sleep(30)
+    plain = classify_exception(_run_crew_with_deadline(monkeypatch, slow))
+    assert plain.code == ErrorCode.EXECUTION_TIMEOUT and "simplifiez" in plain.message

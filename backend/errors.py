@@ -63,6 +63,11 @@ _USER_MESSAGES = {
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub est momentanément injoignable : la livraison n'a pas pu être vérifiée. Réessayez.",
     ErrorCode.GUARDRAIL_FAILED: "Le résultat produit ne respecte pas les contrôles de qualité. Reformulez ou précisez la demande.",
 }
+# Variante d'EXECUTION_TIMEOUT quand l'attente du quota a dominé le temps passé (voir ExecutionTimeoutError).
+_QUOTA_TIMEOUT_MESSAGE = (
+    "L'exécution a dépassé sa durée maximale, en grande partie à cause de l'attente du quota du modèle IA (service saturé), "
+    "et a été arrêtée pour libérer le service. Réessayez dans quelques minutes."
+)
 
 
 class DeliveryError(RuntimeError):
@@ -71,7 +76,18 @@ class DeliveryError(RuntimeError):
 
 
 class ExecutionTimeoutError(RuntimeError):
-    """Le crew a dépassé la durée maximale d'une exécution (EXECUTION_TIMEOUT_S, voir main.py)."""
+    """Le crew a dépassé la durée maximale d'une exécution (EXECUTION_TIMEOUT_S, voir main.py).
+    `quota_wait_seconds` : part de ce temps passée à attendre le quota du modèle (pauses du limiteur, backoff) ; quand elle
+    est importante, la cause réelle est la saturation du quota, pas la taille de la demande."""
+
+    def __init__(self, message: str, quota_wait_seconds: float = 0.0, limit_seconds: float = 0.0):
+        super().__init__(message)
+        self.quota_wait_seconds = quota_wait_seconds
+        self.quota_dominant = limit_seconds > 0 and quota_wait_seconds >= QUOTA_DOMINANT_SHARE * limit_seconds
+
+
+# Part du délai passée à attendre le quota à partir de laquelle l'arrêt est attribué au quota.
+QUOTA_DOMINANT_SHARE = 0.25
 
 
 class ErrorInfo(NamedTuple):
@@ -146,7 +162,8 @@ def _classify_single(exc: BaseException) -> ErrorInfo:
     except Exception:
         pass
     if isinstance(exc, ExecutionTimeoutError):
-        return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT])
+        message = _QUOTA_TIMEOUT_MESSAGE if exc.quota_wait_seconds > 0 and exc.quota_dominant else _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT]
+        return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, message)
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return ErrorInfo(ErrorCode.LLM_TIMEOUT, True, _USER_MESSAGES[ErrorCode.LLM_TIMEOUT])
     text = str(exc).lower()

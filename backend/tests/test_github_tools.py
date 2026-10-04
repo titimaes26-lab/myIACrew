@@ -342,3 +342,36 @@ def test_a_refused_sensitive_write_is_logged_without_content(counting, caplog):
     caplog.set_level("INFO", logger="myiacrew")
     gt.github_write_file.func("o", "r", ".env", "CLE-SECRETE", "crewai/a", "msg")
     assert "fichier sensible '.env'" in caplog.text and "CLE-SECRETE" not in caplog.text
+
+
+# --- Exécution arrêtée (durée maximale) : le thread survivant n'écrit plus -----------------------------------------
+
+def test_a_stopped_execution_can_no_longer_write_or_open_a_pull_request(counting, monkeypatch):
+    import threading
+    event = threading.Event()
+    with gt.track_write_scope("crewai/a", event):
+        assert gt._reject_protected_branch("crewai/a") is None          # avant l'arrêt : écriture permise
+        event.set()                                                     # posé par un autre thread (délai dépassé)
+        refused = gt._reject_protected_branch("crewai/a")
+        assert refused == gt.STOPPED_EXECUTION_MESSAGE and "arrêtée" in refused
+        assert gt.github_write_file.func("o", "r", "src/a.ts", "x", "crewai/a", "msg").startswith("ERREUR")
+        assert gt.write_files_to_branch("o", "r", "crewai/a", "msg", [{"path": "src/a.ts", "content": "x"}]).startswith("ERREUR")
+        assert gt.github_create_branch.func("o", "r", "crewai/a", "main").startswith("ERREUR")
+        monkeypatch.setattr(gt, "_get_repo", lambda *a: (_ for _ in ()).throw(AssertionError("aucun appel réseau attendu")))
+        assert gt.open_or_update_pull_request("o", "r", "crewai/a", "main", "t", "b") == (None, gt.STOPPED_EXECUTION_MESSAGE)
+    assert counting.created == []
+    assert gt._reject_protected_branch("crewai/a") is None              # hors du contexte : plus de signal
+
+
+def test_the_stop_signal_is_seen_by_a_thread_that_copied_the_context():
+    import contextvars
+    import threading
+    event = threading.Event()
+    seen = []
+    with gt.track_write_scope("crewai/a", event):
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=lambda: context.run(lambda: seen.append(gt.writes_cancelled())))
+        event.set()
+        worker.start()
+        worker.join()
+    assert seen == [True]
