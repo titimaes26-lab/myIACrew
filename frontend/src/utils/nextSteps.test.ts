@@ -8,6 +8,10 @@ describe('extractNextSteps', () => {
     expect(extractNextSteps(summary('- Tester le panier\n* Ajouter un test\n'))).toEqual(['Tester le panier', 'Ajouter un test']);
   });
 
+  it('accepte aussi une liste numérotée', () => {
+    expect(extractNextSteps(summary('1. Tester le panier\n2) Ajouter un test\n'))).toEqual(['Tester le panier', 'Ajouter un test']);
+  });
+
   it('ignore « Rien de particulier. » et un résumé sans le bloc', () => {
     expect(extractNextSteps(summary('Rien de particulier.'))).toEqual([]);
     expect(extractNextSteps(summary('- Rien de particulier.'))).toEqual([]);

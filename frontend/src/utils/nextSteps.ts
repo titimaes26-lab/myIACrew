@@ -2,7 +2,7 @@
 // _build_summary_prompt, backend/crewquestion.py). Chacune devient un bouton qui préremplit la zone de saisie.
 const NEXT_STEPS_TITLE = /^#{2,4}\s*À faire ensuite\s*$/i;
 const ANY_TITLE = /^#{1,6}\s+\S/;
-const BULLET = /^\s*[-*•]\s+(.*\S)\s*$/;
+const BULLET = /^\s*(?:[-*•]|\d{1,2}[.)])\s+(.*\S)\s*$/;
 const NOTHING = /^rien\b/i;
 
 export const MAX_NEXT_STEPS = 3;

@@ -59,6 +59,11 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
     setShowHistory(false);
   };
 
+  // Prochaine étape du résumé : préremplit la zone de saisie (même mécanisme que « Relancer », sans prepareRetry ni envoi).
+  const handleSuggest = useCallback((text: string) => {
+    setRetryDraft({ text, nonce: Date.now() });
+  }, []);
+
   // Préremplit la zone de saisie avec la demande d'origine plutôt que de la renvoyer
   // directement : un échec vient souvent d'un problème qui mérite d'être corrigé avant de
   // relancer (repo cible, formulation ambiguë...), donc laisser l'utilisateur relire/modifier
@@ -70,11 +75,6 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   // rendu de Studio (déclenché ici environ toutes les 3s pendant une exécution, par le sondage
   // de progression de useConversation.ts) casserait cette comparaison superficielle et
   // re-rendrait TOUS les tours à chaque sondage, pas seulement celui en cours.
-  // Prochaine étape du résumé : préremplit la zone de saisie (même mécanisme que « Relancer », sans prepareRetry ni envoi).
-  const handleSuggest = useCallback((text: string) => {
-    setRetryDraft({ text, nonce: Date.now() });
-  }, []);
-
   const handleRetry = useCallback((turn: ChatTurn) => {
     prepareRetry(turn);
     setRetryDraft({ text: turn.userMessage, nonce: Date.now() });

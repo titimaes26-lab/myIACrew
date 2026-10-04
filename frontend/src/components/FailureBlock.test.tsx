@@ -100,7 +100,7 @@ describe('FailureBlock', () => {
   it('affiche la carte « Déjà réalisé avant l’échec » sans la mêler au détail technique', () => {
     const partial = "\n\n--- Déjà réalisé avant l'échec ---\n2 étapes terminées avant l'échec\n- Architecte : Plan\n- Analyste : Cause";
     renderFailure(`Échec à l'étape 3/4 (Développeur) : boum${partial}`, 'LLM_UNAVAILABLE', true);
-    expect(screen.getByText(/Déjà réalisé avant l’échec|Déjà réalisé avant l'échec/)).toBeInTheDocument();
+    expect(screen.getByText("✅ Déjà réalisé avant l'échec")).toBeInTheDocument();
     expect(screen.getByText('2 étapes terminées avant l\'échec')).toBeInTheDocument();
     expect(screen.getByText(/Architecte : Plan/)).toBeInTheDocument();
     expect(screen.queryByText(/--- Déjà réalisé/)).not.toBeInTheDocument();
