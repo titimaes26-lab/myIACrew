@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion as cq  # noqa: E402
 import main  # noqa: E402
+import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
 from database import Conversation, ExecutionCheckpoint, ExecutionHistory  # noqa: E402
@@ -168,8 +169,8 @@ def test_completed_agent_persists_a_checkpoint_only_for_resumable_steps(engine):
         db.add(entry)
         db.commit()
         entry_id = entry.id
-    main._persist_completed_agent(entry_id, "Analyste Diagnostic Technique", "diag", 1.0)
-    main._persist_completed_agent(entry_id, "Développeur", "dev", 1.0)
+    execution_persistence.persist_completed_agent(entry_id, "Analyste Diagnostic Technique", "diag", 1.0)
+    execution_persistence.persist_completed_agent(entry_id, "Développeur", "dev", 1.0)
     with Session(engine) as db:
         steps = [c.step for c in db.exec(select(ExecutionCheckpoint)).all()]
     assert steps == ["diagnostic"]
@@ -394,7 +395,7 @@ def test_resume_is_refused_when_the_clarifications_differ(engine):
 
 
 def test_checkpoint_purge_failure_never_fails_a_successful_execution(engine, monkeypatch):
-    real_session = main.Session
+    real_session = execution_persistence.Session
     state = {"purge": False}
 
     class BrokenOnPurge:
@@ -409,7 +410,7 @@ def test_checkpoint_purge_failure_never_fails_a_successful_execution(engine, mon
         def __exit__(self, *args):
             return self._inner.__exit__(*args)
 
-    original = main._delete_checkpoints_for
+    original = execution_persistence.delete_checkpoints_for
 
     def purge(execution_id):
         state["purge"] = True
@@ -418,8 +419,8 @@ def test_checkpoint_purge_failure_never_fails_a_successful_execution(engine, mon
         finally:
             state["purge"] = False
 
-    monkeypatch.setattr(main, "_delete_checkpoints_for", purge)
-    monkeypatch.setattr(main, "Session", BrokenOnPurge)
+    monkeypatch.setattr(execution_persistence, "delete_checkpoints_for", purge)
+    monkeypatch.setattr(execution_persistence, "Session", BrokenOnPurge)
 
     async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
         return type("R", (), {"raw": "ok"})()
@@ -594,7 +595,7 @@ def test_a_stopped_execution_signals_its_thread_and_ignores_its_later_persistenc
     # le thread survivant appelle encore ces callbacks : rien ne doit être écrit sur la ligne déjà en échec
     execution_id = _new_failed_execution(engine, "Échec : message d'échec")
     execution_state.abandoned_execution_ids.add(execution_id)
-    main._persist_completed_agent(execution_id, DESIGNER, "texte tardif", 1.0)
+    execution_persistence.persist_completed_agent(execution_id, DESIGNER, "texte tardif", 1.0)
     execution_state.persist_current_step(execution_id, "qa")
     saved = _saved(engine, execution_id)
     assert saved.result == "Échec : message d'échec" and saved.current_step is None

@@ -19,14 +19,14 @@ from crewquestion import (
     AppDevelopmentCrew, CrewStepError, MAX_PRIOR_TURNS_IN_CONTEXT, QualificationResult,
     build_conversation_context, track_execution_metrics, workflow_step_keys, resumable_prefix, RESUMABLE_STEPS,
     FINALIZATION_ROLE,
-    AGENT_SECTION_SEPARATOR, AGENT_SECTION_REGEX_PATTERN, MAX_AGENT_OUTPUT_SIZE, MAX_AGENT_NAME_LENGTH,
+    AGENT_SECTION_REGEX_PATTERN,
 )
 import database
 from database import (
     create_db_and_tables, get_session, Conversation, ExecutionHistory, AgentRun, ExecutionCheckpoint,
 )
 from agent_metrics import (
-    ExecutionMetrics, build_agent_run_rows, flush_events, step_for_role,
+    ExecutionMetrics, flush_events, step_for_role,
 )
 from auth import get_current_user, close_http_client
 from orphans import sweep_stale_executions
@@ -43,6 +43,7 @@ from github_tools import (
     track_write_scope, WORK_BRANCH_PREFIX,
 )
 from delivery import render_partial_delivery_block
+import execution_persistence
 import execution_state
 import memory_monitor
 from routes_metrics import router as metrics_router
@@ -167,48 +168,6 @@ BULK_DELETE_MAX = 100
 _SQL_INT_MAX = 2**31 - 1
 
 
-# --- TRACKER D'AGENTS PERSISTÉS POUR IDEMPOTENCE ---
-# Structure: {execution_id: set(agent_names_persisted)}
-# Évite les doublons si on_task_output_complete est appelé plusieurs fois pour le même agent
-_persisted_agents: dict[int, set[str]] = {}
-
-def _validate_agent_data(
-    agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
-) -> tuple[str, str, Optional[float]]:
-    """Valide et nettoie le nom d'agent, la sortie et la durée avant persistance.
-
-    Returns:
-        (cleaned_agent_name, cleaned_agent_output, cleaned_duration_seconds): données
-        validées et nettoyées. cleaned_duration_seconds est None si la valeur reçue
-        n'est pas un nombre fini et positif (durée manquante, NaN, infini, négative).
-    """
-    # Valider et nettoyer le nom d'agent
-    if not agent_name:
-        agent_name = "Agent"
-    agent_name = agent_name.strip()
-    # Retirer les newlines/caractères qui cassent le parsing
-    agent_name = agent_name.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    # Limiter la longueur
-    if len(agent_name) > MAX_AGENT_NAME_LENGTH:
-        agent_name = agent_name[:MAX_AGENT_NAME_LENGTH]
-    if not agent_name:
-        agent_name = "Agent"
-
-    # Valider et limiter la taille de l'output
-    if len(agent_output) > MAX_AGENT_OUTPUT_SIZE:
-        agent_output = agent_output[:MAX_AGENT_OUTPUT_SIZE] + f"\n\n**[Résultat tronqué - taille maximale atteinte ({MAX_AGENT_OUTPUT_SIZE} bytes)]**"
-
-    # Valider la durée : uniquement un nombre fini >= 0, sinon considérée absente plutôt
-    # que persistée telle quelle (ex: NaN/infini improbables mais pas impossibles selon
-    # l'implémentation de execution_duration côté CrewAI).
-    if not isinstance(duration_seconds, (int, float)) or isinstance(duration_seconds, bool):
-        duration_seconds = None
-    elif not (duration_seconds == duration_seconds) or duration_seconds in (float("inf"), float("-inf")) or duration_seconds < 0:
-        duration_seconds = None
-
-    return agent_name, agent_output, duration_seconds
-
-
 async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branch: str, sha_before) -> str:
     """Bloc « Travail déjà présent sur GitHub » d'un échec. Ne lève jamais et reste borné dans le
     temps : constater l'état de GitHub ne doit ni masquer l'échec d'origine ni le retarder."""
@@ -220,112 +179,6 @@ async def _partial_delivery_block(owner: str, repo: str, branch: str, base_branc
     except Exception as e:
         reason = "délai dépassé" if isinstance(e, (asyncio.TimeoutError, TimeoutError)) else (str(e) or type(e).__name__)
         return render_partial_delivery_block(owner, repo, branch, base_branch, None, reason)
-
-
-def _persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics) -> None:
-    """Une ligne AgentRun par agent mesuré (voir agent_metrics). Best-effort : une mesure qui ne
-    s'enregistre pas ne doit jamais faire échouer ni masquer le résultat de l'exécution."""
-    try:
-        rows = build_agent_run_rows(
-            run_metrics, execution_id=db_entry.id, conversation_id=db_entry.conversation_id,
-            user_id=db_entry.user_id, workflow=db_entry.workflow,
-        )
-        session.add_all([AgentRun(**row) for row in rows])
-    except Exception as e:
-        log.warning(f"métriques par agent non enregistrées pour execution_id={db_entry.id} : {type(e).__name__}: {e}")
-
-
-def _persist_completed_agent(
-    execution_id: int, agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
-) -> None:
-    """Invoqué quand un agent complète sa tâche, pour accumuler les résultats progressifs.
-
-    Formate la sortie de l'agent en markdown et l'ajoute au champ result existant via UPDATE SQL atomique,
-    permettant au sondage /progress de retourner les agents complétés jusqu'à présent même pendant l'exécution.
-
-    duration_seconds (temps d'exécution de l'agent, voir Task.execution_duration dans
-    crewquestion.py) est encodé, quand connu, via le même marqueur HTML que celui écrit
-    par _format_crew_result pour le résultat final — une seule logique d'extraction côté
-    frontend suffit alors, que la section vienne du polling progressif ou du résultat final.
-
-    Utilise un tracker d'idempotence pour éviter les doublons si retry_on_rate_limit_async relance le crew.
-    Similaire à execution_state.persist_current_step : ouvre sa propre Session thread-safe et best-effort.
-    """
-    if execution_id in execution_state.abandoned_execution_ids:
-        log.info(f"execution_id={execution_id}: agent '{agent_name}' ignoré (exécution arrêtée).")
-        return
-
-    # Valider et nettoyer les données
-    agent_name, agent_output, duration_seconds = _validate_agent_data(agent_name, agent_output, duration_seconds)
-
-    # IDEMPOTENCE: Vérifier si cet agent a déjà été persisté pour cette exécution
-    if execution_id not in _persisted_agents:
-        _persisted_agents[execution_id] = set()
-
-    if agent_name in _persisted_agents[execution_id]:
-        log.info(f"execution_id={execution_id}: agent '{agent_name}' déjà persisté, skip (idempotence).")
-        return
-
-    try:
-        with Session(database.engine) as agent_session:
-            entry = agent_session.get(ExecutionHistory, execution_id)
-            if entry is not None:
-                # Format identique à _format_crew_result dans crewquestion.py : sections séparées par AGENT_SECTION_SEPARATOR
-                if duration_seconds is not None:
-                    agent_section = f"## {agent_name}\n<!--agent-duration:{duration_seconds:.2f}-->\n\n{agent_output}"
-                else:
-                    agent_section = f"## {agent_name}\n\n{agent_output}"
-                output_size = len(agent_output)
-
-                # UPDATE SQL atomique au lieu de read-modify-write en Python
-                # Cela évite les race conditions avec des écritures concurrentes
-                if entry.result:
-                    # Append avec le séparateur standard
-                    new_result = entry.result + AGENT_SECTION_SEPARATOR + agent_section
-                else:
-                    # Première section : pas de séparateur au début
-                    new_result = agent_section
-
-                entry.result = new_result
-                agent_session.add(entry)
-                # Point de reprise : la sortie des étapes reprenables survit à un échec de l'exécution
-                # (entry.result, lui, est remplacé par le message d'échec).
-                step = step_for_role(agent_name)
-                if step in RESUMABLE_STEPS:
-                    agent_session.add(ExecutionCheckpoint(execution_id=execution_id, step=step, raw=agent_output))
-                agent_session.commit()
-
-                # Marquer l'agent comme persisté pour l'idempotence
-                _persisted_agents[execution_id].add(agent_name)
-
-                log.debug(f"execution_id={execution_id}: agent '{agent_name}' persisté ({output_size} bytes).")
-    except Exception as e:
-        log.warning(f"échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}")
-
-def _load_checkpoints(session: Session, execution_id: int) -> dict[str, str]:
-    """{étape: sortie} sauvegardées pour une exécution (la plus récente gagne en cas de doublon)."""
-    rows = session.exec(
-        select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id).order_by(ExecutionCheckpoint.id)
-    ).all()
-    return {row.step: row.raw for row in rows}
-
-def _load_checkpoints_for(execution_id: int) -> dict[str, str]:
-    """_load_checkpoints avec sa propre Session (appelable depuis un thread, hors boucle asyncio)."""
-    with Session(database.engine) as checkpoint_session:
-        return _load_checkpoints(checkpoint_session, execution_id)
-
-def _delete_checkpoints_for(execution_id: int) -> None:
-    """Les points de reprise ne servent qu'à une exécution en échec : inutiles (et volumineux, le code
-    complet de l'Analyste y figure) une fois celle-ci réussie. Best-effort."""
-    try:
-        with Session(database.engine) as cleanup_session:
-            for checkpoint in cleanup_session.exec(
-                select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id)
-            ).all():
-                cleanup_session.delete(checkpoint)
-            cleanup_session.commit()
-    except Exception as e:
-        log.warning(f"purge des points de reprise impossible (execution_id={execution_id}) : {type(e).__name__}: {e}")
 
 
 def _failed_before_development(exc: BaseException, request_type: str, scope: Optional[str] = None) -> bool:
@@ -357,16 +210,10 @@ def _resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id
         or (previous.base_branch or None) != ((data.base_branch or "main") if data.repo_owner and data.repo_name else None)
     ):
         return {}
-    saved = _load_checkpoints(session, previous.id)
+    saved = execution_persistence.load_checkpoints(session, previous.id)
     prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
     return {key: saved[key] for key in prefix}
 
-def _cleanup_persisted_agents(execution_id: int) -> None:
-    """Nettoie le tracker d'agents persistés après que l'exécution soit terminée.
-
-    Appelé après succès ou échec pour libérer la mémoire.
-    """
-    _persisted_agents.pop(execution_id, None)
 
 async def _execute_crew_and_persist(
     db_entry_id: int,
@@ -422,7 +269,7 @@ async def _execute_crew_and_persist(
             # Annulation pendant l'attente (arrêt du service) ou erreur imprévue avant la 2e tentative :
             # la ligne ne doit pas rester « running » et le suivi d'idempotence ne doit pas fuir.
             execution_state.fail_execution(db_entry_id, f"Exécution interrompue pendant l'attente de la nouvelle tentative : {type(e).__name__}")
-            _cleanup_persisted_agents(db_entry_id)
+            execution_persistence.cleanup_persisted_agents(db_entry_id)
             raise
 
 @dataclass
@@ -596,7 +443,7 @@ async def _run_crew(
                         inputs=inputs,
                         request_type=request_type,
                         on_step_change=lambda step_key: execution_state.persist_current_step(execution_id, step_key),
-                        on_task_output_complete=lambda agent_name, output, duration: _persist_completed_agent(
+                        on_task_output_complete=lambda agent_name, output, duration: execution_persistence.persist_completed_agent(
                             execution_id, agent_name, output, duration),
                         resume_outputs=resume_outputs,
                         # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
@@ -689,7 +536,7 @@ def _record_run_metrics(session: Session, db_entry: ExecutionHistory, state: _Ru
     db_entry.api_calls_count = state.metrics.api_calls_count
     db_entry.rate_limit_hits = state.metrics.rate_limit_hits
     db_entry.total_wait_time_seconds = state.metrics.total_wait_time
-    _persist_agent_runs(session, db_entry, state.metrics)
+    execution_persistence.persist_agent_runs(session, db_entry, state.metrics)
 
 
 def _commit_outcome(session: Session, db_entry: ExecutionHistory, conversation: Conversation) -> None:
@@ -714,8 +561,8 @@ async def _persist_success(
     log.info(f"execution_id={db_entry.id} : terminée avec succès (tâche de fond).")
     # Après le commit du succès, dans sa propre Session et au mieux : purger une ressource optionnelle ne
     # doit jamais faire échouer (ni être validée par) le chemin d'une exécution réussie.
-    await asyncio.to_thread(_delete_checkpoints_for, db_entry.id)
-    _cleanup_persisted_agents(db_entry.id)
+    await asyncio.to_thread(execution_persistence.delete_checkpoints_for, db_entry.id)
+    execution_persistence.cleanup_persisted_agents(db_entry.id)
 
 
 async def _persist_success_safely(
@@ -741,7 +588,7 @@ async def _persist_success_safely(
     except Exception as second_error:
         log.error(f"succès non enregistré (execution_id={db_entry_id}) : {type(second_error).__name__}: "
               f"{second_error}")
-        _cleanup_persisted_agents(db_entry_id)
+        execution_persistence.cleanup_persisted_agents(db_entry_id)
 
 
 def _failure_detail(exc: BaseException, info: ErrorInfo) -> str:
@@ -782,7 +629,7 @@ async def _persist_failure(
     db_entry.error_retryable = info.retryable
     _record_run_metrics(session, db_entry, state)
     _commit_outcome(session, db_entry, conversation)
-    _cleanup_persisted_agents(db_entry.id)
+    execution_persistence.cleanup_persisted_agents(db_entry.id)
 
 
 async def _retry_outputs_if_transient(
@@ -799,7 +646,7 @@ async def _retry_outputs_if_transient(
         return None
     if not (auto_retry_allowed and info.retryable and _failed_before_development(exc, data.target_workflow, data.scope)):
         return None
-    saved = await asyncio.to_thread(_load_checkpoints_for, db_entry_id)
+    saved = await asyncio.to_thread(execution_persistence.load_checkpoints_for, db_entry_id)
     prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
     if len(prefix) < exc.step_index - 1:
         return None
@@ -828,7 +675,7 @@ def _mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
     except Exception:
         pass
     finally:
-        _cleanup_persisted_agents(db_entry_id)
+        execution_persistence.cleanup_persisted_agents(db_entry_id)
 
 
 async def _run_crew_and_persist(

@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest  # noqa: E402
 
 import main  # noqa: E402
+import execution_persistence  # noqa: E402
 import execution_state  # noqa: E402
 import database  # noqa: E402
 import memory_monitor  # noqa: E402
@@ -120,7 +121,7 @@ def test_failure_report_separates_blocks_with_real_blank_lines(monkeypatch):
                             error_retryable=None, updated_at=None, api_calls_count=None)
     conversation = SimpleNamespace(updated_at=None)
     monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
-    monkeypatch.setattr(main, "_cleanup_persisted_agents", lambda *a: None)
+    monkeypatch.setattr(execution_persistence, "cleanup_persisted_agents", lambda *a: None)
     error = RuntimeError("boum")
     asyncio.run(main._persist_failure(
         Session(), entry, conversation, error, classify_exception(error), _data(), "crewai/b", "main", True, main._RunState(),
@@ -147,7 +148,7 @@ def _persist_failure_with_result(monkeypatch, previous_result):
     entry = SimpleNamespace(id=1, result=previous_result, status="running", current_step="qa", error_code=None,
                             error_retryable=None, updated_at=None, api_calls_count=None)
     monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
-    monkeypatch.setattr(main, "_cleanup_persisted_agents", lambda *a: None)
+    monkeypatch.setattr(execution_persistence, "cleanup_persisted_agents", lambda *a: None)
     error = RuntimeError("boum")
     asyncio.run(main._persist_failure(
         Session(), entry, SimpleNamespace(updated_at=None), error, classify_exception(error), _data(), "crewai/b", "main",
@@ -272,7 +273,7 @@ def test_persist_success_records_result_metrics_and_clears_the_step(engine, monk
         entry, conversation = db.get(ExecutionHistory, execution_id), db.get(Conversation, conversation_id)
         entry.current_step = "qa"
         state = main._RunState(metrics=SimpleNamespace(api_calls_count=7, rate_limit_hits=1, total_wait_time=3.5))
-        monkeypatch.setattr(main, "_persist_agent_runs", lambda *a: None)
+        monkeypatch.setattr(execution_persistence, "persist_agent_runs", lambda *a: None)
         asyncio.run(main._persist_success(db, entry, conversation, "texte final", state))
     with Session(engine) as db:
         saved = db.get(ExecutionHistory, execution_id)
@@ -329,7 +330,7 @@ def test_retry_decision(monkeypatch, scenario, expected):
         error, saved = _step_error(3), {"design": "d"}  # étape 3 en échec mais l'étape 2 n'a pas de sauvegarde
     elif scenario == "failure_at_development":
         error = _step_error(4)
-    monkeypatch.setattr(main, "_load_checkpoints_for", lambda execution_id: saved)
+    monkeypatch.setattr(execution_persistence, "load_checkpoints_for", lambda execution_id: saved)
     data = _data(target_workflow="DESIGN_AND_DEV")
     result = asyncio.run(main._retry_outputs_if_transient(error, classify_exception(error), 1, data, allowed))
     assert result == expected

@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine, select  # noqa: E402
 
 import crewquestion  # noqa: E402,F401  (enregistre les listeners d'événements)
 import main  # noqa: E402
+import execution_persistence  # noqa: E402
 import database  # noqa: E402
 import routes_metrics  # noqa: E402
 from agent_metrics import (  # noqa: E402
@@ -236,7 +237,7 @@ def test_persist_agent_runs_stores_one_row_per_measured_agent(session):
     metrics = ExecutionMetrics()
     metrics.record_llm_call(DESIGNER, {"prompt_tokens": 3, "completion_tokens": 1})
     metrics.record_agent_done(DESIGNER, 4.2)
-    main._persist_agent_runs(session, entry, metrics)
+    execution_persistence.persist_agent_runs(session, entry, metrics)
     session.commit()
     rows = list(session.exec(select(AgentRun)))
     assert len(rows) == 1 and rows[0].agent == "design" and rows[0].total_tokens == 4 and rows[0].user_id == "u1"
@@ -244,7 +245,7 @@ def test_persist_agent_runs_stores_one_row_per_measured_agent(session):
 
 def test_persist_agent_runs_never_raises(session, caplog):
     caplog.set_level("INFO", logger="myiacrew")
-    main._persist_agent_runs(session, ExecutionHistory(user_request="r", workflow="x"), object())
+    execution_persistence.persist_agent_runs(session, ExecutionHistory(user_request="r", workflow="x"), object())
     assert "non enregistrées" in caplog.text
 
 
