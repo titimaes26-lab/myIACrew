@@ -1,0 +1,50 @@
+import os
+import sys
+import warnings
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+import pytest  # noqa: E402
+
+import crewquestion as cq  # noqa: E402
+
+
+def _agents():
+    crew = cq.AppDevelopmentCrew()
+    return {
+        "qualification": crew.qualification_agent, "designer": crew.product_designer_agent,
+        "architect": crew.architect_agent, "diagnostic": crew.diagnostic_agent,
+        "developer": crew.developer_agent, "qa": crew.qa_agent,
+    }
+
+
+def test_diagnostic_plans_once_and_observes_without_extra_llm_calls(monkeypatch):
+    monkeypatch.delenv("DIAGNOSTIC_REASONING_EFFORT", raising=False)
+    agent = cq.AppDevelopmentCrew().diagnostic_agent()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)   # CrewAI lit lui-même le champ déprécié `reasoning`
+        assert agent.reasoning is False                      # plus de `reasoning=True` (effort « medium » implicite)
+    config = agent.planning_config
+    assert config is not None
+    assert config.reasoning_effort == "low"        # observation heuristique : aucun appel LLM par étape
+    assert config.observe_steps is None            # la valeur « low » suffit à désactiver l'observation LLM
+    assert config.max_attempts == 1
+    assert config.max_steps == cq.DIAGNOSTIC_PLAN_MAX_STEPS == 5
+    assert config.max_step_iterations == cq.DIAGNOSTIC_STEP_MAX_ITERATIONS == 5
+    assert agent.max_iter == 7                      # inchangé
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("", "low"), ("low", "low"), ("medium", "medium"), ("HIGH", "high"), (" medium ", "medium"),
+    ("extreme", "low"), ("0", "low"),
+])
+def test_diagnostic_effort_is_configurable_and_defaults_to_low(monkeypatch, value, expected):
+    monkeypatch.setenv("DIAGNOSTIC_REASONING_EFFORT", value)
+    assert cq._diagnostic_reasoning_effort() == expected
+    assert cq._diagnostic_planning_config().reasoning_effort == expected
+
+
+def test_only_the_diagnostic_agent_plans():
+    # Garde : un autre agent qui planifierait rajouterait un appel d'observation par étape (voir la config du diagnostic).
+    planning = {name: getattr(agent(), "planning_config", None) is not None for name, agent in _agents().items()}
+    assert planning == {name: name == "diagnostic" for name in planning}

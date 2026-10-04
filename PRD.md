@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.38 — Mise à jour le 2026-10-04
+> Version : 1.39 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été ajustées au produit réel.
 > Historique (condensé) :
 > - 1.0–1.2 (09-17 → 10-02) : version initiale, quota Gemini, 6 agents, contrôles de qualité, conversations.
@@ -17,6 +17,7 @@
 > - 1.36 (10-04) : un double envoi dans la même conversation garde le message de conflit précis (409) avant les plafonds par compte ; question ouverte RLS Supabase.
 > - 1.37 (10-04) : limiteur global des requêtes Gemini (plafond commun par minute, pause commune après un 429) sous tous les appels au modèle.
 > - 1.38 (10-04) : limiteur Gemini : pause commune plafonnée à 120 s (quota journalier : échec rapide), détection des 429 par code HTTP.
+> - 1.39 (10-04) : diagnostic : planification en effort « low » (un seul appel de plan, observation par heuristique, plan et étapes bornés) au lieu de l'observation LLM par étape.
 
 ---
 
@@ -74,6 +75,8 @@ Le plafond de sortie de l'Architecte est de `ARCHITECT_MAX_OUTPUT_TOKENS` (8192 
 **Prochaines étapes cliquables** : les puces du bloc « À faire ensuite » deviennent des boutons sous le résumé (`utils/nextSteps.ts`, 3 au plus) ; un clic préremplit la zone de saisie (même mécanisme que « Relancer »), sans envoi automatique ; masqués pendant une exécution, une clarification ou un aperçu en attente.
 
 **Échec avec travail déjà fait** : `_persist_failure` ajoute, après le bloc GitHub, un bloc « Déjà réalisé avant l'échec » construit sans modèle depuis les sections des agents terminés (`partial_work_block`) ; le frontend l'affiche en carte (`splitPartialWork`, `FailureBlock`).
+
+**Planification du diagnostic** : `diagnostic_agent` planifie avant d'agir (`PlanningConfig`, effort « low » par défaut, `DIAGNOSTIC_REASONING_EFFORT` = low | medium | high) : un seul appel de plan, l'observation de chaque étape se fait par heuristique sans appel au modèle, le plan est borné à 5 étapes et chaque étape à 5 itérations. L'ancien réglage (`reasoning=True`, effort « medium ») ajoutait un appel d'observation par étape, un replan complet sur échec (jusqu'à 3) et jusqu'à 15 itérations par étape, hors `max_rpm`.
 
 Séparation voulue : l'Analyste ne peut pas écrire sur GitHub, le Développeur ne peut pas lire ni raisonner — il committe tel quel. Chaque agent rapporte son temps d'exécution (`execution_duration`), affiché dans l'UI.
 
@@ -322,7 +325,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 - **Fiabilité** : retry sur 429/503, reprise des seules tâches restantes, contrôles automatiques déterministes (2.7), vérification de la livraison GitHub après le crew, une seule exécution à la fois par conversation.
 - **Sécurité** : toutes les routes `/api/*` exigent un token Supabase valide ; conversations et historique filtrés par utilisateur. CORS actuellement ouvert (`allow_origins=["*"]`). Écriture GitHub jamais directe sur la branche principale ; chemins d'écriture confinés (espace de travail local, pas de `..`). Le texte généré dans les PR neutralise les `@mentions` et les mots-clés de fermeture d'issues.
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`, `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (701 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (200 tests, 27 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
+- **Tests** : suite backend `pytest` (710 tests) couvrant les contrôles purs, les guardrails, les outils, la base et les logs ; suite frontend Vitest (200 tests, 27 fichiers) ; `tsc`, `eslint`, build. Aucun test de bout en bout contre le vrai Gemini ni un vrai GitHub.
 - **Internationalisation** : interface et prompts entièrement en français, non paramétrable.
 - **Responsive** : l'aperçu avant lancement et le fil restent utilisables à 390 px ; pas de layout mobile dédié pour le tableau de bord.
 - **Accessibilité** : attributs ARIA sur les contrôles récents (copie annoncée, aperçu en attente de confirmation, focus sur « Lancer ») ; pas d'audit WCAG complet.
@@ -355,6 +358,7 @@ Pas de routeur : un écran conditionnel (`Login` vs `Studio`) piloté par l'éta
 | `MAX_USER_RUNNING_EXECUTIONS` / `MAX_USER_EXECUTIONS_PER_HOUR` / `MAX_USER_QUALIFY_PER_MINUTE` | 1 / 30 / 20 | Plafonds par utilisateur (429 `RATE_LIMITED`) |
 | `AUTO_RETRY_DELAY_S` | 90 | Attente avant la seconde tentative automatique |
 | `GEMINI_MAX_REQUESTS_PER_MINUTE` | 12 | Plafond commun de requêtes Gemini par minute (par process) |
+| `DIAGNOSTIC_REASONING_EFFORT` | low | Effort de planification du diagnostic (low, medium, high) |
 | `COST_CURRENCY` / `TOKEN_PRICE_INPUT_PER_MILLION` / `TOKEN_PRICE_OUTPUT_PER_MILLION` | `$` / 0 / 0 | Coût estimé du tableau de bord |
 | `VITE_API_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | — | Frontend |
 

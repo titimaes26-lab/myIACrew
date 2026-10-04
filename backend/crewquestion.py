@@ -29,6 +29,7 @@ MAX_AGENT_OUTPUT_SIZE = 10_000_000  # 10MB par agent
 MAX_AGENT_NAME_LENGTH = 200
 
 from crewai import Agent, Crew, Process, Task, LLM
+from crewai.agent.planning_config import PlanningConfig
 from crewai.project import CrewBase, agent, task
 from crewai.project.utils import cache as _crewai_memoize_cache
 from crewai.tasks.task_output import TaskOutput
@@ -420,6 +421,26 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
     )
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
+
+DIAGNOSTIC_PLAN_MAX_STEPS = 5
+DIAGNOSTIC_STEP_MAX_ITERATIONS = 5
+
+
+def _diagnostic_reasoning_effort() -> str:
+    """Effort de planification du diagnostic (DIAGNOSTIC_REASONING_EFFORT : low | medium | high) ; « low » par défaut,
+    y compris pour une valeur illisible."""
+    value = os.getenv("DIAGNOSTIC_REASONING_EFFORT", "").strip().lower()
+    return value if value in ("low", "medium", "high") else "low"
+
+
+def _diagnostic_planning_config() -> PlanningConfig:
+    return PlanningConfig(
+        reasoning_effort=_diagnostic_reasoning_effort(),  # type: ignore[arg-type]
+        max_attempts=1,
+        max_steps=DIAGNOSTIC_PLAN_MAX_STEPS,
+        max_step_iterations=DIAGNOSTIC_STEP_MAX_ITERATIONS,
+    )
+
 
 def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
     # max_tokens borne la SORTIE d'un appel (la génération domine la latence) ; absent, le plafond du fournisseur.
@@ -1104,10 +1125,12 @@ class AppDevelopmentCrew():
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
             llm=diagnostic_llm, max_iter=7, verbose=True,
-            # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus
-            # critique du pipeline, dont tout le code livré dépend. Une seule passe de plan
-            # (max_reasoning_attempts=1) pour rester raisonnable face au quota Gemini.
-            reasoning=True, max_reasoning_attempts=1,
+            # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus critique du pipeline,
+            # dont tout le code livré dépend. Un seul appel de plan ; en effort « low », l'observation de chaque étape
+            # se fait par heuristique, SANS appel LLM : l'ancien `reasoning=True` (effort « medium ») ajoutait un appel
+            # d'observation par étape, un replan complet sur échec (jusqu'à 3) et jusqu'à 15 itérations par étape, hors
+            # `max_rpm` — la première source des 429 Gemini. Réglable sans déploiement : DIAGNOSTIC_REASONING_EFFORT.
+            planning_config=_diagnostic_planning_config(),
         )
 
     @agent
