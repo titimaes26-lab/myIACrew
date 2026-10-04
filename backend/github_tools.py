@@ -28,11 +28,16 @@ _read_cache_lock = threading.Lock()
 @contextmanager
 def track_read_cache():
     """Active le cache de lecture pour l'exécution de crew en cours (à entourer le prefetch ET le crew)."""
-    token = _read_cache.set({"repos": {}, "files": {}, "dirs": {}})
+    cache: dict = {"repos": {}, "files": {}, "dirs": {}, "stats": {"hits": 0, "reads": 0}}
+    token = _read_cache.set(cache)
     try:
         yield
     finally:
         _read_cache.reset(token)
+        stats = cache["stats"]
+        if stats["hits"] + stats["reads"]:
+            # Rend le gain du cache lisible dans les logs (et prouve qu'il est actif dans les threads d'outils).
+            print(f"[CACHE LECTURE] hits={stats['hits']} lectures={stats['reads']}", flush=True)
 
 
 def invalidate_read_cache(owner: str, repo: str, branch: str) -> None:
@@ -54,10 +59,12 @@ def _cached_read(kind: str, key: tuple, read: Callable[[], str]) -> str:
         return read()
     with _read_cache_lock:
         if key in cache[kind]:
+            cache["stats"]["hits"] += 1
             return cache[kind][key]
     value = read()
-    if not value.startswith("ERREUR"):
-        with _read_cache_lock:
+    with _read_cache_lock:
+        cache["stats"]["reads"] += 1
+        if not value.startswith("ERREUR"):
             cache[kind][key] = value
     return value
 
@@ -707,16 +714,29 @@ def github_edit_file(
 # Aperçu du repo donné à l'Architecte (voir main._execute_crew_and_persist) : ce qu'il lisait par 4 appels d'outils
 # (racine, package.json, tsconfig.json, src), lu ici en Python, sans tour de LLM.
 _SNAPSHOT_FILE_LIMITS = (("package.json", 6000), ("tsconfig.json", 3000))
+# Le prompt est renvoyé à chaque tour de la boucle de l'agent : un dossier très peuplé ne doit pas le gonfler.
+_SNAPSHOT_MAX_LISTING_LINES = 150
+
+
+def _capped_listing(listing: str) -> str:
+    lines = listing.splitlines()
+    if len(lines) <= _SNAPSHOT_MAX_LISTING_LINES:
+        return listing
+    hidden = len(lines) - _SNAPSHOT_MAX_LISTING_LINES
+    return "\n".join(lines[:_SNAPSHOT_MAX_LISTING_LINES] + [f"… {hidden} autres entrées"])
 
 
 def build_repo_snapshot(owner: str, repo: str, branch: str) -> str:
     """Texte « ## Racine / ## package.json / ## tsconfig.json / ## src » de la branche lue, ou "" si la racine est
     illisible (l'agent retombe alors sur ses outils). Une lecture secondaire qui échoue devient une ligne « non lu »."""
     root = list_directory_cached(owner, repo, "", branch)
-    if root.startswith("ERREUR") or root.startswith("INFO"):
+    if root.startswith("INFO"):
+        # Dossier vide : le dire (l'Architecte n'a alors rien à relire) plutôt que de le laisser relire la racine.
+        return f"Aperçu du repository {owner}/{repo} (branche lue : {branch}).\n\n## Racine\ndépôt vide"
+    if root.startswith("ERREUR"):
         return ""
     root_names = {line.split(": ", 1)[-1].strip() for line in root.splitlines()}
-    sections = [f"Aperçu du repository {owner}/{repo} (branche lue : {branch}).", f"## Racine\n{root}"]
+    sections = [f"Aperçu du repository {owner}/{repo} (branche lue : {branch}).", f"## Racine\n{_capped_listing(root)}"]
     for name, limit in _SNAPSHOT_FILE_LIMITS:
         if name not in root_names:
             continue
@@ -728,9 +748,8 @@ def build_repo_snapshot(owner: str, repo: str, branch: str) -> str:
             sections.append(f"## {name}\n{content[:limit]}{cut}")
     if "src" in root_names:
         listing = list_directory_cached(owner, repo, "src", branch)
-        sections.append(f"## src\n{'non lu : ' + listing if listing.startswith('ERREUR') else listing}")
+        sections.append(f"## src\n{'non lu : ' + listing if listing.startswith('ERREUR') else _capped_listing(listing)}")
     return "\n\n".join(sections)
-
 
 
 class GitHubVerificationUnavailable(Exception):

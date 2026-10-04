@@ -906,11 +906,15 @@ def _crew_inputs(
 
 async def _prefetch_repo_snapshot(
     data: "WorkflowExecutionInput", work_branch: str, base_branch: Optional[str], has_repo_target: bool, branch_exists: bool,
+    resume_outputs: Optional[dict[str, str]] = None,
 ) -> str:
     """Aperçu du repo pour l'Architecte (racine, package.json, tsconfig.json, src), lu en Python plutôt que par ses
-    appels d'outils : autant de tours de LLM en moins. Seulement avec un repository cible et une étape d'architecture.
+    appels d'outils : autant de tours de LLM en moins. Seulement avec un repository cible et une étape d'architecture
+    qui va réellement tourner (pas réutilisée par une reprise).
     Best-effort : toute erreur renvoie "" et l'agent lit lui-même (même règle de branche que _repo_instructions)."""
     if not has_repo_target or "architecture" not in workflow_step_keys(data.target_workflow):
+        return ""
+    if resume_outputs and "architecture" in resume_outputs:
         return ""
     branch = work_branch if branch_exists else (base_branch or "main")
     try:
@@ -1214,7 +1218,7 @@ async def _run_crew_and_persist(
                 with track_read_cache():
                     branch_exists = state.sha_before is not None
                     repo_snapshot = await _prefetch_repo_snapshot(
-                        data, work_branch, normalized_base_branch, has_repo_target, branch_exists)
+                        data, work_branch, normalized_base_branch, has_repo_target, branch_exists, resume_outputs)
                     inputs = _crew_inputs(
                         data, conversation_id, final_prompt, conversation_context, work_branch,
                         normalized_base_branch, has_repo_target, branch_exists, repo_snapshot,

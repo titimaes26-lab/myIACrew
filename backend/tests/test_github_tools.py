@@ -192,3 +192,32 @@ def test_repo_snapshot_skips_missing_files_truncates_and_degrades_to_empty(count
     snapshot = gt.build_repo_snapshot("o", "r", "main")
     assert "## tsconfig.json" not in snapshot and "[… tronqué]" in snapshot and "x" * 6001 not in snapshot
     assert gt.build_repo_snapshot("o", "r", "inconnue") == ""   # racine illisible : l'agent lira lui-même
+
+
+def test_repo_snapshot_caps_long_listings(counting):
+    counting.dirs[("main", "")] = [("package.json", "file"), ("src", "dir")]
+    counting.dirs[("main", "src")] = [(f"src/f{i}.ts", "file") for i in range(400)]
+    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    assert "src/f149.ts" in snapshot and "src/f150.ts" not in snapshot
+    assert "… 250 autres entrées" in snapshot
+
+
+def test_repo_snapshot_of_an_empty_repository_says_so(counting):
+    counting.dirs[("main", "")] = []
+    snapshot = gt.build_repo_snapshot("o", "r", "main")
+    assert "dépôt vide" in snapshot and "branche lue : main" in snapshot
+
+
+def test_read_cache_counts_hits_and_reads_and_logs_them(counting, capsys):
+    with gt.track_read_cache():
+        gt.github_read_file.func("o", "r", "package.json", "main")
+        gt.github_read_file.func("o", "r", "package.json", "main")
+        stats = dict(gt._read_cache.get()["stats"])
+    assert stats == {"hits": 1, "reads": 1}
+    assert "[CACHE LECTURE] hits=1 lectures=1" in capsys.readouterr().out
+
+
+def test_read_cache_logs_nothing_when_no_read_happened(capsys):
+    with gt.track_read_cache():
+        pass
+    assert "CACHE LECTURE" not in capsys.readouterr().out

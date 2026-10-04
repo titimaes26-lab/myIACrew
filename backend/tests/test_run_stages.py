@@ -324,6 +324,14 @@ def test_snapshot_is_prefetched_only_with_a_repo_and_an_architecture_step(monkey
     assert snapshot == ("APERÇU" if expected_branch else "")
 
 
+@pytest.mark.parametrize("resumed, reads", [({"design": "x", "architecture": "y"}, False), ({"design": "x"}, True), (None, True)])
+def test_no_snapshot_is_read_when_a_resume_reuses_the_architecture(monkeypatch, resumed, reads):
+    calls = []
+    monkeypatch.setattr(main, "build_repo_snapshot", lambda *a: calls.append(a) or "APERÇU")
+    asyncio.run(main._prefetch_repo_snapshot(_data(target_workflow="FEATURE"), "crewai/b", "main", True, False, resumed))
+    assert bool(calls) is reads
+
+
 def test_a_snapshot_failure_never_stops_the_execution(engine, monkeypatch, capsys):
     def boom(*args):
         raise RuntimeError("GitHub en panne")
