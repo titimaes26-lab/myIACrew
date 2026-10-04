@@ -14,6 +14,28 @@ export interface QualificationReport {
   scope?: 'PETIT' | 'GRAND';
 }
 
+// Ce que la qualification propose de lancer, que l'utilisateur confirme ou corrige avant l'exécution.
+export interface LaunchPreview {
+  workflow: QualificationReport['request_type'];
+  scope?: 'PETIT' | 'GRAND';
+  // « propriétaire/repo · branche » ; null sans repository cible (espace de travail local).
+  repoLabel: string | null;
+}
+
+export interface LaunchChoice {
+  workflow: QualificationReport['request_type'];
+  scope?: 'PETIT' | 'GRAND';
+}
+
+// Actions de l'aperçu avant lancement, transmises du hook jusqu'à chaque message (voir LaunchPreview).
+export interface LaunchControls {
+  onLaunch: (choice: LaunchChoice) => void;
+  onCancel: () => void;
+  alwaysConfirm: boolean;
+  onAlwaysConfirmChange: (value: boolean) => void;
+  disabled: boolean;
+}
+
 export interface BulkDeleteResult {
   deleted: number[];
   skipped: { id: number; reason: 'running' | 'not_found' }[];
@@ -63,6 +85,9 @@ export interface ChatTurn {
   errorRetryable?: boolean | null;
   // PETIT : l'étape d'architecture est sautée (voir workflowSteps).
   scope?: string | null;
+  // Aperçu avant lancement (voir LaunchPreview) : présent tant que la qualification attend la confirmation de
+  // l'utilisateur ; le tour est alors 'clarifying' (jamais 'running').
+  launchPreview?: LaunchPreview;
   // Étapes déjà réussies d'une exécution précédente, réutilisées par cette reprise (voir « Relancer »).
   resumedSteps?: string[];
   userMessage: string;

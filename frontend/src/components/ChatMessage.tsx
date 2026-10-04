@@ -1,5 +1,5 @@
-import { lazy, memo, Suspense, useMemo } from 'react';
-import type { ChatTurn } from '../types';
+import { memo, useMemo } from 'react';
+import type { ChatTurn, LaunchControls } from '../types';
 import StepIndicator from './StepIndicator';
 import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
@@ -7,14 +7,10 @@ import { isTransientFailure } from '../utils/failureView';
 import FailureBlock from './FailureBlock';
 import { stepShortLabelForKey } from '../constants/workflowSteps';
 import { elapsedSeconds, formatDuration, formatTime } from '../utils/formatDuration';
-import { agentIcon } from '../constants/agentIcons';
-import AgentSummary from './AgentSummary';
+import ResultSections from './ResultSections';
+import LaunchPreview from './LaunchPreview';
 import Button from './ui/Button';
 import ExecutionBreakdown from './metrics/ExecutionBreakdown';
-
-// Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer
-// dans le bundle que si un résultat d'agent est effectivement affiché.
-const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
 const STATUS_LABEL: Record<ChatTurn['status'], string> = {
   clarifying: '❓ Précisions nécessaires',
@@ -57,9 +53,11 @@ interface ChatMessageProps {
   // clarification est en attente vers cette clarification, quel que soit son contenu réel — voir
   // Studio.tsx).
   retryDisabled: boolean;
+  // Actions de l'aperçu avant lancement ; absentes, l'aperçu n'est tout simplement pas affiché.
+  launch?: LaunchControls;
 }
 
-function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
+function ChatMessage({ turn, onRetry, retryDisabled, launch }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
@@ -131,6 +129,8 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
 
         {turn.agentSummary && <p className="paragraph">{turn.agentSummary}</p>}
 
+        {turn.launchPreview && launch && <LaunchPreview preview={turn.launchPreview} controls={launch} />}
+
         {turn.questions && turn.questions.length > 0 && (
           <ul className="question-list">
             {turn.questions.map((q, i) => (
@@ -168,42 +168,7 @@ function ChatMessage({ turn, onRetry, retryDisabled }: ChatMessageProps) {
           <p className="note">{turn.result}</p>
         )}
 
-        {(isSuccess || isRunningWithAgents) && (
-          <Suspense fallback={<p className="note">Chargement du résultat...</p>}>
-            <div className="sections">
-              {sections.map((section, i) => (
-                // <details>/<summary> plutôt qu'un état React local : un résultat FEATURE/
-                // DESIGN_AND_DEV peut empiler plusieurs sections contenant du code source
-                // complet, repliables au clic sans code de gestion d'état supplémentaire et
-                // nativement accessibles au clavier/lecteur d'écran. Seule la DERNIÈRE section
-                // est ouverte par défaut (le résumé de synthèse quand il existe — parseCrewResult
-                // l'ajoute toujours en dernier — sinon le dernier agent à s'être exprimé) : les
-                // précédentes, déjà "dépassées" par la suite du résultat, restent repliées pour
-                // éviter un mur de texte sur un DESIGN_AND_DEV à 4 sections. `open` n'est lu par
-                // React qu'au premier rendu de ce <details> (non contrôlé ensuite) : un repli/
-                // dépli manuel par l'utilisateur reste donc acquis malgré un re-rendu du parent.
-                <details key={i} open={i === sections.length - 1} className="section-details">
-                  <summary>
-                    <div className="agent-title">
-                      <span aria-hidden="true">{agentIcon(section.agentName ?? 'Résultat')}</span>
-                      <span>{section.agentName ?? 'Résultat'}</span>
-                    </div>
-                    {section.agentName && (
-                      <AgentSummary
-                        agentName={section.agentName}
-                        content={section.content}
-                        durationSeconds={section.durationSeconds}
-                      />
-                    )}
-                  </summary>
-                  <div className="section-details__body">
-                    <MarkdownRenderer content={section.content} />
-                  </div>
-                </details>
-              ))}
-            </div>
-          </Suspense>
-        )}
+        {(isSuccess || isRunningWithAgents) && <ResultSections sections={sections} />}
       </div>
     </div>
   );

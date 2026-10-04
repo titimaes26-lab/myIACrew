@@ -9,7 +9,7 @@ import ChatThread from './components/ChatThread';
 import ChatInput from './components/ChatInput';
 import HistoryPanel from './components/HistoryPanel';
 import { isWorkflowType } from './constants/workflowTypes';
-import type { ChatTurn } from './types';
+import type { ChatTurn, LaunchControls } from './types';
 
 // Chargé à la demande : le tableau de bord n'entre dans le bundle que s'il est ouvert.
 const MetricsPanel = lazy(() => import('./components/metrics/MetricsPanel'));
@@ -20,7 +20,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   const [retryDraft, setRetryDraft] = useState<{ text: string; nonce: number } | null>(null);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const metricsApi = useMemo(() => ({ apiUrl: API_URL, accessToken }), [API_URL, accessToken]);
-  const { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
+  const { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, pendingClarification, pendingLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, confirmLaunch, cancelLaunch, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
   // `sending` seul (envoi en vol DANS cette session) ne suffit pas : un tour repris depuis
   // l'Historique peut encore être "running" côté serveur sans que CETTE session l'ait
   // elle-même envoyé (sending resterait alors false). Sans bloquer la saisie dans ce cas
@@ -37,7 +37,12 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   // route tout texte tapé pendant pendingClarification vers cette clarification, quel que soit
   // son contenu réel). Désactiver "Relancer" dans ce cas empêche la seule action qui peut
   // amener ce texte incohérent dans la zone de saisie.
-  const retryDisabled = busy || pendingClarification !== null;
+  const retryDisabled = busy || pendingClarification !== null || pendingLaunch !== null;
+  // Mémoïsé : transmis à chaque ChatMessage (React.memo), il ne change que si l'un de ses champs change.
+  const launchControls = useMemo<LaunchControls>(() => ({
+    onLaunch: confirmLaunch, onCancel: cancelLaunch, alwaysConfirm: confirmBeforeLaunch,
+    onAlwaysConfirmChange: setConfirmBeforeLaunch, disabled: sending,
+  }), [confirmLaunch, cancelLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, sending]);
 
   const handleResumeConversation = (conversationId: number) => {
     loadConversation(conversationId);
@@ -103,7 +108,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
         <ErrorBanner message={error} />
       )}
 
-      <ChatThread turns={turns} onRetry={handleRetry} retryDisabled={retryDisabled} />
+      <ChatThread turns={turns} onRetry={handleRetry} retryDisabled={retryDisabled} launch={launchControls} />
 
       <div className="stack--section">
         <ChatInput

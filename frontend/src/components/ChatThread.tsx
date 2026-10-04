@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import type { ChatTurn } from '../types';
+import type { ChatTurn, LaunchControls } from '../types';
 import ChatMessage from './ChatMessage';
 
 interface ChatThreadProps {
@@ -8,13 +8,14 @@ interface ChatThreadProps {
   // Nom volontairement pas "sending" : recouvre aussi le cas où une clarification est en
   // attente de réponse (voir Studio.tsx), pas seulement un envoi réseau en cours.
   retryDisabled: boolean;
+  launch?: LaunchControls;
 }
 
 // Au-delà de cette marge (en pixels) sous le viewport, on considère que l'utilisateur a
 // délibérément remonté lire l'historique plutôt que de simplement suivre la conversation.
 const NEAR_BOTTOM_THRESHOLD_PX = 150;
 
-export default function ChatThread({ turns, onRetry, retryDisabled }: ChatThreadProps) {
+export default function ChatThread({ turns, onRetry, retryDisabled, launch }: ChatThreadProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   // Vrai tant que l'utilisateur est resté "collé" au bas du fil (ou vient d'y être ramené par
@@ -119,7 +120,7 @@ export default function ChatThread({ turns, onRetry, retryDisabled }: ChatThread
         // même conséquence si turn.id était utilisé ici (démontage/remontage de ce <ChatMessage>,
         // donc réinitialisation de son StepIndicator interne, en plein milieu d'une progression
         // "running" suivie).
-        <ChatMessage key={turn.createdAt} turn={turn} onRetry={onRetry} retryDisabled={retryDisabled} />
+        <ChatMessage key={turn.createdAt} turn={turn} onRetry={onRetry} retryDisabled={retryDisabled} launch={launch} />
       ))}
       <div ref={bottomRef} />
     </div>

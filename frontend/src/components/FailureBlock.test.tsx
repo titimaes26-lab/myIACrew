@@ -51,4 +51,49 @@ describe('FailureBlock', () => {
     renderFailure("Échec à l'étape 1/3 (X) : <img src=x onerror=alert(1)>", null, false);
     expect(document.querySelector('img')).toBeNull();
   });
+
+  describe('échec de livraison GitHub', () => {
+    const report = 'RAPPORT-DE-L-AGENT ' + 'détail '.repeat(150) + 'FIN-DU-RAPPORT';
+    const delivery = (extra: string) => (
+      "Un repository GitHub cible était configuré mais la vérification après coup a échoué : la branche 'crewai/x' existe mais ne contient aucun nouveau commit. "
+      + "Cela peut venir d'un manque de permissions d'écriture.\n\n--- Rapport de l'agent (non vérifié sur GitHub) ---\n" + report + extra
+    );
+    const zeroAhead = "\n\n--- Travail déjà présent sur GitHub ---\n- Branche `crewai/x` : 0 commit(s) d'avance sur `test`, aucun nouveau commit de cette tentative — https://github.com/o/r/tree/crewai/x\n- Pull Request : aucune ouverte pour cette branche";
+
+    it('explique en une phrase ce qui s’est passé, au lieu de renvoyer à « Erreur interne »', () => {
+      renderFailure(delivery(zeroAhead), 'DELIVERY_FAILED', false);
+      expect(screen.getByText('Livraison GitHub non confirmée')).toBeInTheDocument();
+      expect(screen.getByText(/n'a aucun commit d'avance sur la branche de base/)).toBeInTheDocument();
+      expect(screen.getByText(/le Développeur n'a rien écrit pendant cette exécution/)).toBeInTheDocument();
+      expect(screen.queryByText('Erreur interne')).toBeNull();
+    });
+
+    it('replie le rapport de l’agent (copiable), affiche le guide et le lien de la branche', () => {
+      renderFailure(delivery(zeroAhead), 'DELIVERY_FAILED', false);
+      const summary = screen.getByText(/Rapport de l'agent \(non vérifié sur GitHub\)/);
+      const details = summary.closest('details') as HTMLDetailsElement;
+      expect(details.open).toBe(false);
+      expect(details).toHaveTextContent('FIN-DU-RAPPORT');   // le rapport complet est là, seulement replié
+      expect(screen.getByRole('button', { name: /Copier : Rapport de l'agent/ })).toBeInTheDocument();
+      expect(screen.getByText('Que faire ?')).toBeInTheDocument();
+      const open = screen.getByRole('link', { name: 'Ouvrir la branche crewai/x sur GitHub' });
+      expect(open).toHaveAttribute('href', 'https://github.com/o/r/tree/crewai/x');
+      expect(screen.queryByText(/Panne temporaire/)).toBeNull();
+    });
+
+    it('dit qu’aucune branche n’existe quand rien n’a été poussé', () => {
+      const none = "\n\n--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé : la branche `crewai/x` n'existe pas sur o/r.";
+      renderFailure(delivery(none).replace("existe mais ne contient aucun nouveau commit", "aucune branche 'crewai/x' n'existe"), 'DELIVERY_FAILED', false);
+      expect(screen.getByText(/Aucune branche n'a été créée sur GitHub/)).toBeInTheDocument();
+    });
+  });
+
+  it('replie un détail technique long et laisse un court visible', () => {
+    const long = "Échec à l'étape 1/3 (X) : " + 'z'.repeat(900);
+    const { unmount } = renderFailure(long, 'INTERNAL_ERROR', false);
+    expect(screen.getByText(/Détail technique \(900 caractères\)/).closest('details')).not.toBeNull();
+    unmount();
+    renderFailure("Échec à l'étape 1/3 (X) : court", 'INTERNAL_ERROR', false);
+    expect(document.querySelector('details')).toBeNull();
+  });
 });

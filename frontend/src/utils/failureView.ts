@@ -80,3 +80,47 @@ export function parseInline(line: string): InlinePart[] {
   if (last < line.length) parts.push({ kind: 'text', value: line.slice(last) });
   return parts;
 }
+
+// --- Échec de livraison GitHub (code DELIVERY_FAILED, voir backend/main.py::_delivery_failure_message) -----------
+
+const DELIVERY_REPORT_MARKER = "--- Rapport de l'agent (non vérifié sur GitHub) ---";
+const DELIVERY_REASON_PREFIX = /^Un repository GitHub cible était configuré mais la vérification après coup a échoué\s*:\s*/;
+
+export interface DeliveryFailureView {
+  // Constat du serveur (sans l'amorce fixe) et rapport de l'agent, tel que le serveur l'a joint (non vérifié).
+  reason: string;
+  report: string | null;
+  // Explication en une phrase, déduite de ce que GitHub contient réellement.
+  summary: string;
+  branch: string | null;
+  branchUrl: string | null;
+}
+
+// Découpe un message d'échec de livraison en constat, rapport de l'agent et diagnostic lisible. `githubLines` vient
+// de splitGithubWork (la carte « Travail déjà présent sur GitHub »).
+export function describeDeliveryFailure(main: string, githubLines: string[] | null): DeliveryFailureView {
+  const markerIndex = main.indexOf(DELIVERY_REPORT_MARKER);
+  const head = (markerIndex === -1 ? main : main.slice(0, markerIndex)).trim();
+  const report = markerIndex === -1 ? null : main.slice(markerIndex + DELIVERY_REPORT_MARKER.length).trim() || null;
+  const reason = head.replace(DELIVERY_REASON_PREFIX, '');
+
+  const branchLine = githubLines?.find((line) => /^Branche `[^`]+`/.test(line)) ?? null;
+  const branch = branchLine?.match(/^Branche `([^`]+)`/)?.[1] ?? null;
+  const branchUrl = branchLine
+    ? parseInline(branchLine).find((part) => part.kind === 'link')?.value ?? null
+    : null;
+  const nothingAhead = branchLine !== null && /\b0 commit\(s\) d'avance/.test(branchLine);
+
+  let summary = "La livraison n'a pas pu être confirmée sur GitHub.";
+  if (/aucune branche/i.test(reason) || githubLines?.some((line) => /^Rien n'a été poussé/.test(line))) {
+    summary = "Aucune branche n'a été créée sur GitHub : le Développeur n'a rien écrit.";
+  } else if (nothingAhead) {
+    summary = `La branche ${branch ? `\`${branch}\` ` : ''}existe mais n'a aucun commit d'avance sur la branche de base : le Développeur n'a rien écrit pendant cette exécution.`;
+  } else if (/impossible de vérifier/i.test(reason)) {
+    summary = "GitHub n'a pas répondu : la livraison n'a pas pu être vérifiée.";
+  }
+  return { reason, report, summary, branch, branchUrl };
+}
+
+// Un détail technique long est replié (voir FailureBlock) : au-delà de ce seuil, il n'est plus affiché d'office.
+export const LONG_FAILURE_TEXT_CHARS = 600;

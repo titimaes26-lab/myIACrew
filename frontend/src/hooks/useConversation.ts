@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient, type ExecuteAcceptedResponse } from '../api';
-import type { ChatTurn, ExecutionHistoryEntry, QualificationReport, RepoTarget } from '../types';
+import type { ChatTurn, ExecutionHistoryEntry, LaunchChoice, QualificationReport, RepoTarget } from '../types';
 import type { WorkflowType } from '../constants/workflowTypes';
 import { toDisplayedError, isConnectionFailure } from '../utils/errors';
 import { useConnectionStatus } from './useConnectionStatus';
@@ -9,6 +9,25 @@ import { useConnectionStatus } from './useConnectionStatus';
 // paraître réactif face à des étapes qui durent typiquement plusieurs dizaines de secondes,
 // sans multiplier inutilement les requêtes.
 const PROGRESS_POLL_MS = 3000;
+
+const CONFIRM_LAUNCH_KEY = 'studio.confirmLaunch';
+
+// Préférence « confirmer avant de lancer » : activée par défaut ; localStorage peut être indisponible (navigation
+// privée, stockage bloqué), l'interface fonctionne alors avec la valeur par défaut.
+function readConfirmLaunch(): boolean {
+  try {
+    return window.localStorage.getItem(CONFIRM_LAUNCH_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+interface PendingLaunch {
+  tempId: string;
+  request: string;
+  // Corps commun de /api/execute (conversation, repository, reprise) fixé au moment de l'envoi.
+  executePayload: Record<string, unknown>;
+}
 
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
@@ -55,6 +74,18 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // seulement si ce qu'on lui donne comme key change UNIQUEMENT à ces limites précises — d'où
   // ce compteur dédié plutôt que conversationId directement.
   const [conversationResetSignal, setConversationResetSignal] = useState(0);
+  // Aperçu avant lancement : la demande qualifiée attend « Lancer » (voir confirmLaunch). Un état (et non un ref) :
+  // Studio désactive « Relancer » tant qu'il existe.
+  const [pendingLaunch, setPendingLaunch] = useState<PendingLaunch | null>(null);
+  const [confirmBeforeLaunch, setConfirmBeforeLaunchState] = useState(readConfirmLaunch);
+  const setConfirmBeforeLaunch = useCallback((value: boolean) => {
+    setConfirmBeforeLaunchState(value);
+    try {
+      window.localStorage.setItem(CONFIRM_LAUNCH_KEY, value ? 'on' : 'off');
+    } catch {
+      // Stockage indisponible : le choix vaut pour cette session seulement.
+    }
+  }, []);
   // Choix du type de demande, modifiable avant chaque envoi (voir sendMessage) mais tenu
   // ici plutôt que localement dans ChatInput : startNewConversation/loadConversation ont
   // besoin de pouvoir le remettre à 'AUTO' à ces limites naturelles (nouvelle conversation,
@@ -327,6 +358,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // être reprise explicitement depuis le panneau Historique via loadConversation.
   const startNewConversation = () => {
     resumeFromRef.current = null;
+    setPendingLaunch(null);
     // Sans ça, une requête encore en vol pourrait se résoudre après coup et rattacher
     // ce nouveau fil (vide) au conversationId de l'ancienne requête via son propre
     // setConversationId(data.conversation_id) dans sendMessage.
@@ -356,6 +388,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
     // Annulé seulement en changeant RÉELLEMENT de conversation : annuler même en reprenant la
     // conversation déjà affichée romprait à tort son propre envoi en cours (déjà exclu ci-dessus).
     abortInFlightRequest();
+    setPendingLaunch(null);
     conversationGenerationRef.current += 1;
     // Idem `startNewConversation` : sans ce reset immédiat, la conversation qu'on quitte
     // afficherait encore brièvement la zone de saisie désactivée après son abandon.
@@ -403,6 +436,84 @@ export function useConversation(accessToken: string, apiUrl: string) {
       : null;
   }, []);
 
+  // Abandonne l'aperçu en attente : son tour est marqué annulé (rien n'a été lancé côté serveur).
+  const discardPendingLaunch = (reason: string) => {
+    const pending = pendingLaunch;
+    if (!pending) return;
+    setPendingLaunch(null);
+    setTurns((t) => t.map((turn) => (turn.id === pending.tempId
+      ? { ...turn, status: 'cancelled', launchPreview: undefined, result: reason, updatedAt: new Date().toISOString() }
+      : turn)));
+  };
+
+  const cancelLaunch = () => discardPendingLaunch('Lancement annulé : rien n\'a été exécuté.');
+
+  // « Lancer » depuis l'aperçu, avec le type et la taille éventuellement corrigés par l'utilisateur.
+  const confirmLaunch = async (choice: LaunchChoice) => {
+    const pending = pendingLaunch;
+    if (!pending) return;
+    setPendingLaunch(null);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const myGeneration = conversationGenerationRef.current;
+    const scope = choice.workflow === 'FEATURE' ? choice.scope : undefined;
+    setSending(true);
+    setError(null);
+    // createdAt repart de maintenant : la frise et le chrono comptent depuis le lancement, pas depuis l'attente.
+    setTurns((t) => t.map((turn) => (turn.id === pending.tempId
+      ? { ...turn, status: 'running', workflow: choice.workflow, scope, launchPreview: undefined, questions: undefined, createdAt: new Date().toISOString() }
+      : turn)));
+    try {
+      const data = await api.execute({
+        ...pending.executePayload,
+        user_request: pending.request,
+        target_workflow: choice.workflow,
+        scope,
+      }, controller.signal);
+      if (myGeneration !== conversationGenerationRef.current) return;
+      applyExecuteAccepted(pending.tempId, data);
+    } catch (err: unknown) {
+      reportSendError(err, pending.tempId, myGeneration);
+    } finally {
+      abortControllerRef.current = null;
+      setSending(false);
+    }
+  };
+
+  // Issue d'un envoi qui a échoué ou été annulé, partagée par sendMessage et confirmLaunch : marque le tour
+  // concerné « annulé » ou « en échec », sauf si la conversation affichée a changé entretemps.
+  const reportSendError = (err: unknown, tempId: string, myGeneration: number) => {
+    // Idem : une erreur (y compris une annulation) rattachée à une conversation abandonnée
+    // ne doit affecter ni son historique (de toute façon remplacé entretemps) ni, surtout,
+    // pendingClarification/error/conversationId de la conversation désormais affichée.
+    if (myGeneration !== conversationGenerationRef.current) return;
+    if (isAbortError(err)) {
+      // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
+      // réponse de clarification à la demande d'origine (désormais abandonnée).
+      setPendingClarification(null);
+      // Toujours marqué 'cancelled' sans réserve ici (jamais dismissedLocally, voir
+      // cancelSending) : ce catch n'est atteint que si l'appel await api.execute() (ou
+      // api.qualify()) ci-dessus a lui-même été rejeté par cet abort, ce qui signifie par
+      // construction qu'applyExecuteAccepted n'a PAS pu tourner — ce tour est donc encore sur
+      // son tempId (une string), jamais l'id réel renvoyé par /api/execute. dismissedLocally
+      // suppose justement un id réel déjà connu (voir cancelSending) pour que le sondage de
+      // progression puisse un jour reconstituer ce tour par cet id ; sans lui, `status` resterait
+      // "running" à jamais, sans AUCUN mécanisme capable de l'en faire sortir — bien pire que le
+      // risque, ici accepté, d'un 409 "exécution déjà en cours" si l'utilisateur renvoie un
+      // message avant que l'exécution éventuellement déjà lancée côté serveur ne soit terminée.
+      setTurns((t) => t.map((turn) => (turn.id === tempId
+        ? { ...turn, status: 'cancelled', result: "Annulé côté interface avant confirmation du serveur.", updatedAt: new Date().toISOString() }
+        : turn)));
+      return;
+    }
+    const shown = toDisplayedError(err, 'Une erreur est survenue.');
+    const message = shown.message;
+    setTurns((t) => t.map((turn) => (turn.id === tempId
+      ? { ...turn, status: 'failed', result: message, errorCode: shown.code, errorRetryable: shown.retryable, updatedAt: new Date().toISOString() }
+      : turn)));
+    setError(message);
+  };
+
   const sendMessage = async (text: string, repoTarget: RepoTarget) => {
     const tempId = `temp-${Date.now()}`;
     // Même normalisation que le backend (champ repository vide ou d'espaces = absent) : qualification et
@@ -411,6 +522,8 @@ export function useConversation(accessToken: string, apiUrl: string) {
     const repoName = repoTarget.name?.trim() ?? '';
     const resume = resumeFromRef.current;
     resumeFromRef.current = null;
+    // Un aperçu non confirmé est remplacé par cette nouvelle demande (le taper vaut abandonner l'ancienne).
+    if (pendingLaunch) discardPendingLaunch("Remplacée par une nouvelle demande avant son lancement.");
     const executePayload = {
       conversation_id: conversationId ?? undefined,
       resume_from_execution_id: resume && resume.userMessage.trim() === text.trim() ? resume.id : undefined,
@@ -549,6 +662,18 @@ export function useConversation(accessToken: string, apiUrl: string) {
       // changerait les étapes (donc le serveur refuserait de réutiliser celles déjà réussies).
       const resumed = executePayload.resume_from_execution_id !== undefined && resume?.scope;
       const scope = report.request_type === 'FEATURE' ? (resumed ? resume.scope : report.scope) : undefined;
+      // Aperçu avant lancement : la qualification peut se tromper (type, taille), et un lancement coûte plusieurs
+      // minutes de quota. Pas pour une reprise (« Relancer » : déjà confirmée une fois) ni si l'utilisateur a
+      // décoché la confirmation.
+      if (confirmBeforeLaunch && executePayload.resume_from_execution_id === undefined) {
+        const repoLabel = hasRepoTarget ? `${repoOwner}/${repoName}${repoTarget.branch?.trim() ? ` · ${repoTarget.branch.trim()}` : ''}` : null;
+        setPendingLaunch({ tempId, request: text, executePayload });
+        setTurns((t) => t.map((turn) => (turn.id === tempId
+          ? { ...turn, status: 'clarifying', workflow: report.request_type, agentSummary: report.summary, scope, launchPreview: { workflow: report.request_type, scope: scope === 'PETIT' ? 'PETIT' : 'GRAND', repoLabel } }
+          : turn)));
+        return;
+      }
+
       setTurns((t) => t.map((turn) => (turn.id === tempId ? { ...turn, workflow: report.request_type, agentSummary: report.summary, scope } : turn)));
 
       const data = await api.execute({
@@ -560,40 +685,23 @@ export function useConversation(accessToken: string, apiUrl: string) {
       if (myGeneration !== conversationGenerationRef.current) return;
       applyExecuteAccepted(tempId, data);
     } catch (err: unknown) {
-      // Idem : une erreur (y compris une annulation) rattachée à une conversation abandonnée
-      // ne doit affecter ni son historique (de toute façon remplacé entretemps) ni, surtout,
-      // pendingClarification/error/conversationId de la conversation désormais affichée.
-      if (myGeneration !== conversationGenerationRef.current) return;
-      if (isAbortError(err)) {
-        // Sans ce reset, un message suivant sans rapport serait à tort envoyé comme
-        // réponse de clarification à la demande d'origine (désormais abandonnée).
-        setPendingClarification(null);
-        // Toujours marqué 'cancelled' sans réserve ici (jamais dismissedLocally, voir
-        // cancelSending) : ce catch n'est atteint que si l'appel await api.execute() (ou
-        // api.qualify()) ci-dessus a lui-même été rejeté par cet abort, ce qui signifie par
-        // construction qu'applyExecuteAccepted n'a PAS pu tourner — ce tour est donc encore sur
-        // son tempId (une string), jamais l'id réel renvoyé par /api/execute. dismissedLocally
-        // suppose justement un id réel déjà connu (voir cancelSending) pour que le sondage de
-        // progression puisse un jour reconstituer ce tour par cet id ; sans lui, `status` resterait
-        // "running" à jamais, sans AUCUN mécanisme capable de l'en faire sortir — bien pire que le
-        // risque, ici accepté, d'un 409 "exécution déjà en cours" si l'utilisateur renvoie un
-        // message avant que l'exécution éventuellement déjà lancée côté serveur ne soit terminée.
-        setTurns((t) => t.map((turn) => (turn.id === tempId
-          ? { ...turn, status: 'cancelled', result: "Annulé côté interface avant confirmation du serveur.", updatedAt: new Date().toISOString() }
-          : turn)));
-        return;
-      }
-      const shown = toDisplayedError(err, 'Une erreur est survenue.');
-      const message = shown.message;
-      setTurns((t) => t.map((turn) => (turn.id === tempId
-        ? { ...turn, status: 'failed', result: message, errorCode: shown.code, errorRetryable: shown.retryable, updatedAt: new Date().toISOString() }
-        : turn)));
-      setError(message);
+      reportSendError(err, tempId, myGeneration);
     } finally {
       abortControllerRef.current = null;
       setSending(false);
     }
   };
 
-  return { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, conversationId, pendingClarification, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
+  // Références STABLES vers confirmLaunch/cancelLaunch (recréées à chaque rendu) : transmises à chaque ChatMessage
+  // (React.memo), elles ne doivent pas changer à chaque sondage de progression.
+  const confirmLaunchRef = useRef(confirmLaunch);
+  const cancelLaunchRef = useRef(cancelLaunch);
+  useEffect(() => {
+    confirmLaunchRef.current = confirmLaunch;
+    cancelLaunchRef.current = cancelLaunch;
+  });
+  const stableConfirmLaunch = useCallback((choice: LaunchChoice) => confirmLaunchRef.current(choice), []);
+  const stableCancelLaunch = useCallback(() => cancelLaunchRef.current(), []);
+
+  return { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, conversationId, pendingClarification, pendingLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, confirmLaunch: stableConfirmLaunch, cancelLaunch: stableCancelLaunch, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation };
 }
