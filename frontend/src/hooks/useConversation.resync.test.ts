@@ -18,7 +18,7 @@ beforeEach(() => {
     urls.push(url);
     const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }));
     if (url.endsWith('/messages')) return json([runningEntry]);
-    if (url.endsWith('/progress')) return json({ id: 7, status: 'success', current_step: null });
+    if (url.includes('/progress')) return json({ id: 7, status: 'success', current_step: null });
     if (url.endsWith('/api/executions/7')) return Promise.resolve(executionResponse());
     return json({}, 404);
   }));

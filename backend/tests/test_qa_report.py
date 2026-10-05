@@ -284,3 +284,8 @@ def test_dependency_files_are_never_out_of_plan():
     delivered = {"src/App.tsx", "package.json", "frontend/package-lock.json", "src/extra.ts"}
     notes = crew_guardrails._scope_notes(planned, delivered, set())
     assert len(notes) == 1 and "src/extra.ts" in notes[0] and "package" not in notes[0]
+
+
+def test_parse_criteria_ignores_lines_that_do_not_start_with_a_pipe():
+    text = "| Critère | Statut | Preuve |\n|---|---|---|\n| Panier | OK | `a.ts:1` |\nPrésence | KO | texte hors tableau"
+    assert [r["criterion"] for r in parse_criteria(text)] == ["Panier"]

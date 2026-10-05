@@ -49,7 +49,9 @@ export interface ConversationProgress {
   id: number | null;
   status: string | null;
   current_step: string | null;
+  // Seulement les agents au-delà des `known` déjà reçus (voir getConversationProgress) ; `completed_count` en donne le total.
   completed_agents?: Record<string, string>;
+  completed_count?: number;
   // Exécutions devant celle-ci tant qu'elle attend son créneau (étape « queued »), sinon null.
   queue_ahead?: number | null;
 }
@@ -112,8 +114,9 @@ export function apiClient(apiUrl: string, accessToken: string) {
       request(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
 
-    getConversationProgress: (conversationId: number) =>
-      request(`${apiUrl}/api/conversations/${conversationId}/progress`, { headers: authHeaders(accessToken) })
+    // `known` : nombre d'agents terminés déjà reçus, pour ne pas retransmettre leur texte à chaque sondage.
+    getConversationProgress: (conversationId: number, known = 0) =>
+      request(`${apiUrl}/api/conversations/${conversationId}/progress?known=${known}`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ConversationProgress>(res)),
 
     listRepoTargets: () =>

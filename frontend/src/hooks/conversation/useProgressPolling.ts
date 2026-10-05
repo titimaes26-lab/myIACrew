@@ -59,8 +59,12 @@ export function useProgressPolling({ turns, setTurns, setError, conversationId, 
   // Identifiants serveur des tours « running », relus par le sondage (qui ne voit pas `turns` : son effet ne dépend
   // que de booléens) pour ne resynchroniser QUE ces exécutions, pas toute la conversation.
   const runningIdsRef = useRef<number[]>([]);
+  // Nombre d'agents terminés déjà affichés pour le tour « running » : le sondage ne redemande que les suivants.
+  const knownAgentsRef = useRef(0);
   useEffect(() => {
     runningIdsRef.current = turns.flatMap((t) => (t.status === 'running' && typeof t.id === 'number' ? [t.id] : []));
+    const running = turns.find((t) => t.status === 'running');
+    knownAgentsRef.current = Object.keys(running?.completedAgents ?? {}).length;
   });
 
   useEffect(() => {
@@ -109,7 +113,7 @@ export function useProgressPolling({ turns, setTurns, setError, conversationId, 
       const myGeneration = conversationGenerationRef.current;
       const mySeq = ++nextSeq;
 
-      client.getConversationProgress(conversationId)
+      client.getConversationProgress(conversationId, knownAgentsRef.current)
         .then((progress) => {
           // Toute réponse (même périmée ci-dessous) prouve que la connexion fonctionne.
           if (stopped) return;

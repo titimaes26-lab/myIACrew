@@ -64,3 +64,14 @@ def test_comment_markers_inside_strings_are_kept_and_unterminated_comments_do_no
     from project_summary import _load_json
     assert _load_json(TSC_INIT)["compilerOptions"]["note"] == "http://exemple.com/*x*/"
     assert _load_json('{"a": 1 /* jamais fermé') is None
+
+
+def test_summary_ignores_empty_or_malformed_scripts_and_only_flags_pure_reference_tsconfigs():
+    for scripts in ({}, "build", ["build"]):
+        text = summarize_project(json.dumps({"name": "x", "scripts": scripts}))
+        assert "Scripts" not in text
+    plain = json.dumps({"name": "x"})
+    references = '"references": [{"path": "./tsconfig.app.json"}]'
+    assert "ne fait que référencer" in summarize_project(plain, "{" + references + "}")
+    assert "mode strict activé" in summarize_project(plain, '{"compilerOptions": {"strict": true}, ' + references + "}")
+    assert "mode strict non activé" in summarize_project(plain, "{}")

@@ -159,6 +159,14 @@ def test_the_memoized_cache_is_purged_and_callbacks_cleared_once_even_on_failure
     assert created and all(t.callback is None for t in created)
 
 
+def test_the_memoized_cache_is_purged_and_callbacks_cleared_after_a_success_too(harness):
+    created = []
+    result, error, _, _, crew, evictions = harness(_Script({}), spy=lambda fake: created.extend(fake.tasks))
+    assert error is None and result
+    assert evictions == [crew]
+    assert created and all(t.callback is None for t in created)
+
+
 def test_a_retry_that_replays_the_diagnostic_starts_with_a_fresh_guardrail_budget(harness):
     seen = []
 

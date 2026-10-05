@@ -122,3 +122,13 @@ def test_a_sweep_that_reads_the_row_after_another_sweep_freed_it_does_not_append
     session.expire_all()
     session.refresh(stale)
     assert stale.result.count(INTERRUPTED_MESSAGE) == 1
+
+
+def test_aware_keeps_its_own_offset_and_naive_dates_are_read_as_utc():
+    from datetime import datetime, timedelta, timezone
+
+    import orphans
+    plus_two = timezone(timedelta(hours=2))
+    aware = datetime(2026, 1, 1, 12, 0, tzinfo=plus_two)
+    assert orphans._aware(aware) == aware and orphans._aware(aware).utcoffset() == timedelta(hours=2)
+    assert orphans._aware(datetime(2026, 1, 1, 12, 0)).tzinfo == timezone.utc

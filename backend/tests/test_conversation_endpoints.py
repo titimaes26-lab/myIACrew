@@ -96,3 +96,66 @@ def test_repo_targets_are_capped(session, monkeypatch):
         _turn(session, conversation.id, index, owner="o", name=f"r{index}", base="main")
     monkeypatch.setattr(routes_conversations, "REPO_TARGETS_LIMIT", 2)
     assert [t["repo_name"] for t in _targets(session)] == ["r4", "r3"]
+
+
+def _running_turn(session, conversation_id, result, user="u1"):
+    entry = ExecutionHistory(
+        user_request="r", workflow="BUGFIX", status="running", user_id=user, conversation_id=conversation_id,
+        current_step="qa", result=result,
+    )
+    session.add(entry)
+    session.commit()
+    return entry
+
+
+AGENTS = "## Alpha\n\nun\n\n---\n\n## Bravo\n\ndeux\n\n---\n\n## Charlie\n\ntrois"
+
+
+def _progress(session, conversation_id, **params):
+    return routes_conversations.get_conversation_progress(conversation_id, session=session, user={"id": "u1"}, **params)
+
+
+def test_progress_returns_every_completed_agent_without_known(session):
+    conversation = _conversation(session)
+    _running_turn(session, conversation.id, AGENTS)
+    progress = _progress(session, conversation.id)
+    assert list(progress["completed_agents"]) == ["Alpha", "Bravo", "Charlie"] and progress["completed_count"] == 3
+
+
+def test_progress_skips_the_agents_the_client_already_has(session):
+    conversation = _conversation(session)
+    _running_turn(session, conversation.id, AGENTS)
+    progress = _progress(session, conversation.id, known=2)
+    assert list(progress["completed_agents"]) == ["Charlie"] and progress["completed_count"] == 3
+    assert progress["completed_agents"]["Charlie"].endswith("trois")
+
+
+def test_progress_with_known_at_or_above_the_total_returns_nothing_new(session):
+    conversation = _conversation(session)
+    _running_turn(session, conversation.id, AGENTS)
+    for known in (3, 10):
+        progress = _progress(session, conversation.id, known=known)
+        assert progress["completed_agents"] == {} and progress["completed_count"] == 3
+
+
+def test_progress_without_running_turn_has_a_zero_count(session):
+    conversation = _conversation(session)
+    assert _progress(session, conversation.id)["completed_count"] == 0
+
+
+def test_progress_rejects_a_negative_known_over_http(session):
+    from fastapi.testclient import TestClient
+
+    from auth import get_current_user
+    from database import get_session
+    from main import app
+
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_current_user] = lambda: {"id": "u1"}
+    try:
+        conversation = _conversation(session)
+        client = TestClient(app)
+        assert client.get(f"/api/conversations/{conversation.id}/progress?known=-1").status_code == 422
+        assert client.get(f"/api/conversations/{conversation.id}/progress?known=0").status_code == 200
+    finally:
+        app.dependency_overrides.clear()

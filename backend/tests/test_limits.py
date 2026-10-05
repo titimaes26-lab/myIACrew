@@ -123,3 +123,19 @@ def test_qualify_rate_raises_429(monkeypatch):
         check_qualify_rate("u9")
     assert err.value.status_code == 429 and err.value.code == ErrorCode.RATE_LIMITED
     check_qualify_rate(None)
+
+
+def test_the_default_running_limit_applies_when_none_is_given_and_an_explicit_one_wins(session):
+    _row(session, conversation_id=1)
+    with pytest.raises(AppError):
+        check_user_execution_quota(session, "u1", now=NOW, max_per_hour=100)          # défaut : MAX_RUNNING_PER_USER = 1
+    check_user_execution_quota(session, "u1", now=NOW, max_running=2, max_per_hour=100)
+
+
+def test_inactive_keys_are_purged_only_beyond_1024_tracked_keys():
+    limiter = SlidingWindowLimiter(1, window_seconds=60)
+    for index in range(1023):
+        limiter.allow(f"old-{index}", now=0)
+    assert limiter.allow("fresh-a", now=100) and len(limiter._hits) == 1024      # pile 1024 clés : pas de purge
+    assert limiter.allow("fresh-b", now=100)                                       # 1025 clés : les inactives sont purgées
+    assert set(limiter._hits) == {"fresh-a", "fresh-b"}

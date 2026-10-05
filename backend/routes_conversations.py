@@ -1,8 +1,8 @@
 """Points d'accès des conversations : création, liste, messages, progression en direct et dépôts récemment ciblés."""
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, col, func, select
 
 import execution_context
@@ -102,13 +102,16 @@ def _aware_utc(value: datetime) -> datetime:
 @router.get("/api/conversations/{conversation_id}/progress")
 def get_conversation_progress(
     conversation_id: int,
+    known: Annotated[int, Query(ge=0)] = 0,
     session: Session = Depends(get_session),
     user: dict = Depends(get_current_user),
 ):
     """Sondage léger de la progression pendant qu'une exécution est en cours.
 
     Retourne aussi les sections d'agents complétés jusqu'à présent, découpe du champ result,
-    pour affichage progressif des analyses d'agents au fur et à mesure de leur completion.
+    pour affichage progressif des analyses d'agents au fur et à mesure de leur completion. `known` : nombre d'agents déjà
+    reçus par le client ; seuls les suivants (l'ordre de complétion est append-only) sont renvoyés, `completed_count`
+    donnant le total. Le sondage, toutes les quelques secondes, ne retransmet ainsi pas tout le texte déjà affiché.
     """
     conversation = session.get(Conversation, conversation_id)
     if not conversation or conversation.user_id != user.get("id"):
@@ -128,17 +131,20 @@ def get_conversation_progress(
     )
     row = session.exec(statement).first()
     if row is None:
-        return {"id": None, "status": None, "current_step": None, "completed_agents": {}, "queue_ahead": None}
+        return {"id": None, "status": None, "current_step": None, "completed_agents": {}, "completed_count": 0, "queue_ahead": None}
 
     completed_agents = {}
     if row[3]:  # if result is not None
         completed_agents = execution_context.parse_completed_agents(row[3])
+    completed_count = len(completed_agents)
+    new_agents = dict(list(completed_agents.items())[known:])
 
     return {
         "id": row[0],
         "status": row[1],
         "current_step": row[2],
-        "completed_agents": completed_agents,
+        "completed_agents": new_agents,
+        "completed_count": completed_count,
         "queue_ahead": _queue_ahead(session, row[0], row[2], row[4]) if row[2] == execution_state.QUEUED_STEP else None,
     }
 
