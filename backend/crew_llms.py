@@ -57,11 +57,16 @@ def _timeout_params(seconds: float) -> dict:
     # additional_params, jamais utilisé : aucun délai n'était appliqué) : il faut le poser sur le client google-genai.
     return {"client_params": {"http_options": genai_types.HttpOptions(timeout=int(seconds * 1000))}}
 
+def _output_params(max_tokens: Optional[int]) -> dict:
+    # Plafond de SORTIE d'un appel. Le fournisseur Gemini natif de CrewAI ne lit que `max_output_tokens` pour sa configuration
+    # de génération (`max_tokens` n'est qu'un attribut : le plafond n'était pas appliqué) ; les deux sont donc posés.
+    return {"max_tokens": max_tokens, "max_output_tokens": max_tokens} if max_tokens else {}
+
 def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
     # max_tokens borne la SORTIE d'un appel (la génération domine la latence) ; absent, le plafond du fournisseur.
     return LLM(
-        model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, max_tokens=max_tokens or None,
-        **_timeout_params(request_timeout),
+        model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature,
+        **_output_params(max_tokens), **_timeout_params(request_timeout),
     )
 
 # Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
