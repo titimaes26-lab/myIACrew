@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.70 — Mise à jour le 2026-10-05
+> Version : 1.71 — Mise à jour le 2026-10-05
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.71 (10-05) : revue n°7 : les délais par appel LLM (45 s qualification, 90 s designer/architecte/développeur/QA, 120 s diagnostic, 25 s résumé) n'étaient pas appliqués : le fournisseur Gemini natif de CrewAI range `request_timeout` dans `additional_params` sans le lire (délai HTTP `None`). Ils sont désormais posés sur le client google-genai (`client_params` → `HttpOptions(timeout)`), vérifiés par `test_crew_llm_timeouts.py` (7 échecs sur l'ancien code) ; l'exception mypy de `crew_llms` est retirée (l'erreur était un vrai signal). Un appel figé s'arrête donc à son délai au lieu d'attendre le délai global d'exécution.
 > - 1.70 (10-05) : revue n°6 : la CI backend était rouge depuis l'extension de mypy (34 erreurs de typage CrewAI/SQLModel, pytest sauté) ; `qualification.py` typé par `cast`, exceptions mypy ciblées pour `crew_llms` et `crewquestion` (`mypy.ini`), `# type: ignore[misc]` sur deux `select()` de `routes_metrics.py` ; mypy repasse à zéro erreur en cache vierge. Le résultat de la CI doit désormais être lu après chaque push.
 > - 1.69 (10-05) : revue complète n°5 : une réponse Supabase 200 sans objet utilisateur (vide, non JSON, tableau) donne un 401 au lieu d'une 500 et n'est jamais mise en cache ; `raise … from` dans `auth.py` ; les filets best-effort qui échouaient en silence journalisent désormais (avertissement pour une exécution non marquée « failed », debug ailleurs ; les lectures de `/proc` et cgroup de `memory_monitor` restent silencieuses, leur absence étant normale).
 > - 1.68 (10-05) : revue du sondage incrémental : le frontend lit `completed_count` et ramène ses agents connus au total du serveur quand celui-ci en compte moins (résultat réécrit), pour que le `known` suivant reste cohérent.
@@ -634,7 +635,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (907 cas, 603 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (915 cas, 605 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont
@@ -678,7 +679,7 @@ périmètre).
   sortie, GitHub, mesures), sauf `database.py`, `logs.py` et `project_summary.py`. Pour `main.py`, `routes_*`,
   `execution_*` et les mixins du crew, les codes `arg-type`, `union-attr`, `operator` et `call-overload` sont désactivés (bruit
   des clés primaires `Optional[int]` de SQLModel) ; attribut inexistant, variable non annotée, affectation incompatible et retour
-  manquant y restent contrôlés. `crew_llms` et `crewquestion` ont leurs propres exceptions (`call-arg`, `arg-type`, `override`) pour les limites des stubs CrewAI. Les outils de développement sont épinglés (`requirements-dev.txt`, dont `types-PyYAML`) et alignés
+  manquant y restent contrôlés. `crewquestion` a ses propres exceptions (`call-arg`, `arg-type`, `override`) pour les limites des stubs CrewAI (méthodes `@task`). Les outils de développement sont épinglés (`requirements-dev.txt`, dont `types-PyYAML`) et alignés
   sur le `rev` de ruff du pré-commit, pour qu'une nouvelle version ne casse pas la CI sans changement de code.
 - **Tests frontend** (Vitest + Testing Library, `frontend/vitest.config.ts`, fichiers `*.test.ts(x)` à côté du code) : fonctions
   pures (échecs, tons, formats, parseurs), hooks (`useHistorySelection`, `useConnectionStatus`) et composants (`HistoryPanel` :

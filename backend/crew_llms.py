@@ -16,6 +16,7 @@ os.environ["LITELLM_NUM_RETRIES"] = "7"
 os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 
 from crewai import LLM  # noqa: E402
+from google.genai import types as genai_types  # noqa: E402
 from crewai.agent.planning_config import PlanningConfig  # noqa: E402
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
@@ -51,14 +52,21 @@ def _diagnostic_planning_config() -> PlanningConfig:
         max_step_iterations=_diagnostic_step_max_iterations(),
     )
 
+def _timeout_params(seconds: float) -> dict:
+    # Délai d'UN appel HTTP au fournisseur. Le fournisseur Gemini natif de CrewAI ne lit pas `request_timeout` (rangé dans
+    # additional_params, jamais utilisé : aucun délai n'était appliqué) : il faut le poser sur le client google-genai.
+    return {"client_params": {"http_options": genai_types.HttpOptions(timeout=int(seconds * 1000))}}
+
 def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
     # max_tokens borne la SORTIE d'un appel (la génération domine la latence) ; absent, le plafond du fournisseur.
-    extra = {"max_tokens": max_tokens} if max_tokens else {}
-    return LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, request_timeout=request_timeout, **extra)
+    return LLM(
+        model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature, max_tokens=max_tokens or None,
+        **_timeout_params(request_timeout),
+    )
 
 # Une température par nature de travail, au lieu d'un 0.7 unique : classer, recopier ou
 # vérifier demande de la constance ; seule la conception fonctionnelle gagne à rester créative.
-# request_timeout borne UN appel LLM (pas toute la tâche, qui peut en enchaîner max_iter) : un
+# Le délai (_timeout_params) borne UN appel LLM (pas toute la tâche, qui peut en enchaîner max_iter) : un
 # timeout unique de 120s pour tous les agents faisait attendre aussi longtemps un appel de
 # classification JSON (qualification) qu'une génération de fichiers complets (diagnostic) avant
 # de considérer l'appel bloqué et de déclencher le retry litellm — au détriment de la détection
@@ -96,4 +104,4 @@ qa_llm = _make_llm(0.2, request_timeout=90)               # appels d'outils + ra
 # échéant, la justification des choix (voir _build_summary_prompt), une génération
 # légèrement plus longue qui reprenait la marge de cette valeur sans que celle-ci ait
 # été ajustée en conséquence.
-summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, request_timeout=25)
+summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, **_timeout_params(25))
