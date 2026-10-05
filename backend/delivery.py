@@ -134,7 +134,7 @@ def build_pull_request_body(
 
 def extract_user_request(final_prompt: str) -> str:
     """Texte de la demande seul, sans l'enveloppe « Demande initiale / Type d'exécution /
-    Précisions apportées » construite par main.py, précisions comprises si elles existent."""
+    Précisions apportées » construite par routes_execute.py, précisions comprises si elles existent."""
     text = final_prompt or ""
     request = re.search(r"Demande initiale\s*:\s*(.*?)\n\s*Type d'exécution", text, re.DOTALL)
     clarifications = re.search(r"Précisions apportées\s*:\s*(.*)$", text, re.DOTALL)

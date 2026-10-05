@@ -8,8 +8,8 @@ export interface CrewResultSection {
   durationSeconds?: number | null;
 }
 
-// Marqueur écrit par le backend (_persist_completed_agent/_format_crew_result, voir
-// backend/main.py et backend/crewquestion.py) juste après le heading "## AgentName" de
+// Marqueur écrit par le backend (persist_completed_agent/_format_crew_result, voir
+// backend/execution_persistence.py et backend/crew_workflow.py) juste après le heading "## AgentName" de
 // chaque section, quand la durée d'exécution de l'agent est connue. Pas ancré en début de
 // chaîne : selon l'origine de la section (résultat final déjà découpé par toSection, ou
 // valeur brute de turn.completedAgents qui commence encore par "## AgentName\n\n", voir
@@ -33,7 +33,7 @@ export function extractAgentDuration(raw: string): { durationSeconds: number | n
 // donc rattaché au contenu de la section en cours, sans le fragmenter à tort.
 // Garder cette liste synchronisée avec les champs `role:` de backend/agentsquestion.yaml.
 // "Agent" couvre le fallback `agent_name = getattr(task_output, "agent", None) or "Agent"`
-// de _format_crew_result (backend/crewquestion.py) si task_output.agent est un jour absent.
+// de _format_crew_result (backend/crew_workflow.py) si task_output.agent est un jour absent.
 const KNOWN_AGENT_ROLES = [
   'Senior Product Owner / Specialist en Qualification',
   'Lead Product / Game Designer',
@@ -44,7 +44,7 @@ const KNOWN_AGENT_ROLES = [
   'Agent',
 ];
 
-// Doit rester identique à SUMMARY_SENTINEL (backend/crewquestion.py). Contrairement aux
+// Doit rester identique à SUMMARY_SENTINEL (backend/crew_summary.py). Contrairement aux
 // frontières entre agents, le résumé de synthèse n'utilise pas un titre "## <rôle>" (un
 // simple "## Résumé" pourrait apparaître naturellement dans le rapport d'un agent, ex:
 // sa propre sous-section de conclusion) mais ce marqueur, qu'aucun agent n'a normalement

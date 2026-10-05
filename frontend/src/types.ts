@@ -1,6 +1,6 @@
 export interface QualificationReport {
   summary: string;
-  // Justification rédigée AVANT le verdict (voir AnalysisReport, backend/crewquestion.py).
+  // Justification rédigée AVANT le verdict (voir AnalysisReport, backend/qualification.py).
   reasoning?: string;
   alternative_type?: QualificationReport['request_type'] | null;
   request_type: 'ANALYSE_ONLY' | 'BUGFIX' | 'FEATURE' | 'DESIGN_AND_DEV';

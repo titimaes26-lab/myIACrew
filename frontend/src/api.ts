@@ -1,7 +1,7 @@
 import type { AgentRunView, BulkDeleteResult, ExecutionSortKey, ExecutionsPage, ExecutionHistoryEntry, HistoryListEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
 
 // /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
-// fond côté backend, voir _execute_crew_and_persist dans main.py) : ce corps de réponse ne
+// fond côté backend, voir execution.execute_crew_and_persist) : ce corps de réponse ne
 // contient donc plus jamais le résultat final, seulement de quoi rattacher ce tour à son id réel
 // en base. Le résultat proprement dit n'arrive que via le sondage de progression déjà existant
 // (useConversation.ts), qui détecte la fin de l'exécution en base indépendamment de cette

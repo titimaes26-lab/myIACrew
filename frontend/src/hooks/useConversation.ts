@@ -77,7 +77,7 @@ export function useConversation(accessToken: string, apiUrl: string) {
   // de tout tour encore "running" via `dismissedLocally` (voir sa définition dans types.ts) plutôt
   // que via `status` dans CE cas : l'exécution continue réellement côté serveur (son résultat sera
   // de toute façon persisté en base), et /api/execute refuserait de toute façon un nouveau message
-  // tant qu'elle n'est pas terminée (garde de concurrence par conversation, backend/main.py) —
+  // tant qu'elle n'est pas terminée (garde de concurrence par conversation, backend/routes_execute.py) —
   // repasser `status` à 'cancelled' libérerait donc à tort la zone de saisie pour un envoi voué à
   // échouer avec un 409 "exécution déjà en cours".
   //

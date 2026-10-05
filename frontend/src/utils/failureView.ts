@@ -103,7 +103,7 @@ export function parseInline(line: string): InlinePart[] {
   return parts;
 }
 
-// --- Échec de livraison GitHub (code DELIVERY_FAILED, voir backend/main.py::_delivery_failure_message) -----------
+// --- Échec de livraison GitHub (code DELIVERY_FAILED, voir backend/execution_outcomes.py::delivery_failure_message) -----------
 
 const DELIVERY_REPORT_MARKER = "--- Rapport de l'agent (non vérifié sur GitHub) ---";
 const DELIVERY_REASON_PREFIX = /^Un repository GitHub cible était configuré mais la vérification après coup a échoué\s*:\s*/;

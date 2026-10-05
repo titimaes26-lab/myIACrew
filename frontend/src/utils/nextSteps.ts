@@ -1,5 +1,5 @@
 // Prochaines étapes proposées par le résumé : les puces du bloc « ### À faire ensuite » (voir
-// _build_summary_prompt, backend/crewquestion.py). Chacune devient un bouton qui préremplit la zone de saisie.
+// _build_summary_prompt, backend/crew_summary.py). Chacune devient un bouton qui préremplit la zone de saisie.
 const NEXT_STEPS_TITLE = /^#{2,4}\s*À faire ensuite\s*$/i;
 const ANY_TITLE = /^#{1,6}\s+\S/;
 const BULLET = /^\s*(?:[-*•]|\d{1,2}[.)])\s+(.*\S)\s*$/;

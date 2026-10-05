@@ -35,8 +35,8 @@ interface StepIndicatorProps {
 export default function StepIndicator({ workflow, scope, since, currentStepKey, queueAhead, reusedSteps }: StepIndicatorProps) {
   const steps = workflowSteps(workflow, scope);
   // Signal réel distinct des vraies étapes du workflow (jamais une clé de WORKFLOW_STEPS, voir
-  // constants/workflowSteps.ts) : persisté côté backend (_execute_crew_and_persist, main.py) tant
-  // que cette exécution attend son tour derrière _execution_semaphore (une seule exécution de crew
+  // constants/workflowSteps.ts) : persisté côté backend (execution.execute_crew_and_persist) tant
+  // que cette exécution attend son tour derrière execution_state.execution_semaphore (une seule exécution de crew
   // à la fois par défaut, toutes conversations confondues — voir sa définition). Sans ce
   // signal dédié, l'estimation par temps ci-dessous ferait défiler puis "terminer" toutes les
   // étapes en quelques dizaines de secondes alors qu'aucune n'a même commencé, l'exécution étant
@@ -55,7 +55,7 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
   // Distingue "jamais eu de signal réel pour ce tour" (retombe sur l'estimation par temps,
   // seul mode possible tant que /api/execute n'a pas résolu pour le tout premier message d'une
   // conversation) de "en avait un, mais plus maintenant" (le backend efface current_step
-  // pendant une pause avant une nouvelle tentative sur limite de quota — voir crewquestion.py) :
+  // pendant une pause avant une nouvelle tentative sur limite de quota — voir crew_run.py) :
   // le second cas ne doit PAS retomber sur l'estimation par temps, qui laisserait croire à tort
   // à une progression "normale" alors que l'exécution est en réalité à l'arrêt, en pause.
   const [hadRealProgress, setHadRealProgress] = useState(hasRealProgress);
@@ -86,7 +86,7 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
   }, [steps.length, since, hasRealProgress, hadRealProgress, isQueued]);
 
   // Pendant une pause, retryDelay recommence réellement à la toute première étape (voir
-  // crewquestion.py : selected_tasks est entièrement reconstruit à chaque nouvelle tentative) —
+  // crew_run.py : les tâches restantes sont recalculées à chaque nouvelle tentative) —
   // afficher 0 ici est donc FIDÈLE à ce qui va se passer, pas une régression à masquer.
   // isQueued : -1 (aucune étape "courante"), pour que toutes s'affichent comme pas encore
   // commencées (⏳) — fidèle elle aussi, puisque le crew n'a justement pas encore été instancié.
@@ -165,7 +165,7 @@ export default function StepIndicator({ workflow, scope, since, currentStepKey, 
             // Générique plutôt que "après une limite de quota atteinte" : ce message peut
             // aussi, brièvement, correspondre à un échec définitif (non lié au quota) qui n'a
             // pas encore fini d'être enregistré côté serveur — pas seulement à une pause avant
-            // une nouvelle tentative sur limite de quota (voir crewquestion.py, qui efface
+            // une nouvelle tentative sur limite de quota (voir crew_run.py, qui efface
             // current_step sur TOUTE exception, retentée ou non).
             ? `En pause — nouvelle tentative éventuelle en cours. Si l'exécution reprend, ce sera depuis ${reused.size > 0 ? 'la première étape non reprise' : 'la toute première étape'}.`
             : isQueued

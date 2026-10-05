@@ -83,7 +83,7 @@ class ExecutionHistory(SQLModel, table=True):
     status: str = Field(default="running")  # running | success | failed
     # Clé de l'étape CrewAI actuellement en cours (ex: 'design', 'architecture', 'development',
     # 'qa' — voir WORKFLOW_STEPS côté frontend), mise à jour par on_step_change pendant
-    # l'exécution (voir crewquestion.run_dynamic_crew et main.py). Persisté en base (pas juste
+    # l'exécution (voir crew_run.CrewRun et execution_state.persist_current_step). Persisté en base (pas juste
     # gardé en mémoire) pour que la progression survive à un rechargement de page ou à un
     # redémarrage du serveur pendant qu'une exécution est en cours. Remis à None dès que status
     # quitte "running" (succès OU échec) : plus rien n'est alors réellement en cours, y compris
@@ -97,7 +97,7 @@ class ExecutionHistory(SQLModel, table=True):
     repo_name: Optional[str] = None
     base_branch: Optional[str] = None
     work_branch: Optional[str] = None
-    # Coût/performance de cette exécution (voir track_execution_metrics dans crewquestion.py).
+    # Coût/performance de cette exécution (voir metrics_collect.track_execution_metrics).
     api_calls_count: Optional[int] = None
     rate_limit_hits: Optional[int] = None
     total_wait_time_seconds: Optional[float] = None

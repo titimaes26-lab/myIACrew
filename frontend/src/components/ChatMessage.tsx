@@ -46,7 +46,7 @@ interface ChatMessageProps {
   // rien d'autre que masquer le bouton "Relancer", jamais une erreur.
   onRetry?: (turn: ChatTurn) => void;
   // Désactive "Relancer" pendant qu'un autre envoi est déjà en cours (une seule exécution à la
-  // fois par conversation, imposée côté serveur — voir backend/main.py), MAIS AUSSI tant qu'une
+  // fois par conversation, imposée côté serveur — voir backend/routes_execute.py), MAIS AUSSI tant qu'une
   // clarification est en attente de réponse : "Relancer" préremplit la zone de saisie avec le
   // texte d'UN AUTRE tour, qui serait alors envoyé comme réponse à cette clarification-là plutôt
   // que comme la nouvelle demande affichée (sendMessage route tout texte tapé pendant qu'une

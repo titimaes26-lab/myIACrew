@@ -2,7 +2,7 @@
 lisible, au lieu de `str(exc)` brut ou d'un `except Exception` muet.
 
 Deux usages :
-- côté API : `AppError` (levée par un endpoint) et les gestionnaires d'exceptions de main.py, qui
+- côté API : `AppError` (levée par un endpoint) et les gestionnaires d'exceptions de error_handlers.py, qui
   renvoient toujours `{"detail": message, "code": CODE, "retryable": bool}` (`detail` reste la
   clé historique lue par le frontend) ;
 - côté exécution du crew : `classify_exception` range un échec dans un code, persisté sur
@@ -34,7 +34,7 @@ class ErrorCode:
 
 
 # Source unique des « erreurs transitoires » du fournisseur LLM (utilisée aussi par les retries de
-# crewquestion.py) : une nouvelle formulation à reconnaître ne se corrige qu'ici.
+# crew_retry.py) : une nouvelle formulation à reconnaître ne se corrige qu'ici.
 QUOTA_MARKERS = ("429", "resource_exhausted", "rate limit", "quota")
 UNAVAILABLE_MARKERS = ("503", "unavailable", "high demand", "overloaded")
 GUARDRAIL_MARKERS = ("guardrail", "garde-fou")
@@ -76,7 +76,7 @@ class DeliveryError(RuntimeError):
 
 
 class ExecutionTimeoutError(RuntimeError):
-    """Le crew a dépassé la durée maximale d'une exécution (EXECUTION_TIMEOUT_S, voir main.py).
+    """Le crew a dépassé la durée maximale d'une exécution (EXECUTION_TIMEOUT_S, voir execution.py).
     `quota_wait_seconds` : part de ce temps passée à attendre le quota du modèle (pauses du limiteur, backoff) ; quand elle
     est importante, la cause réelle est la saturation du quota, pas la taille de la demande."""
 
@@ -124,7 +124,7 @@ def error_body(message: str, code: str, retryable: bool = False, **extra) -> dic
 
 def _matches(markers, text: str) -> bool:
     # Mots entiers (\b) : « 429 » ne doit pas reconnaître « page_4290.tsx », ni « unavailable » le
-    # nom d'une classe. Les retries de crewquestion.py gardent, eux, la recherche par sous-chaîne.
+    # nom d'une classe. Les retries de crew_retry.py gardent, eux, la recherche par sous-chaîne.
     return any(re.search(rf"\b{re.escape(marker)}\b", text) for marker in markers)
 
 

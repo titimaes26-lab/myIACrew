@@ -28,7 +28,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   // elle-même envoyé (sending resterait alors false). Sans bloquer la saisie dans ce cas
   // aussi, un second message pourrait être envoyé pendant que /api/qualify tourne encore
   // pour lui — avant que le contrôle de concurrence d'une-exécution-à-la-fois de
-  // /api/execute (backend/main.py, HTTP 409) ne puisse s'appliquer — créant temporairement
+  // /api/execute (backend/routes_execute.py, HTTP 409) ne puisse s'appliquer — créant temporairement
   // DEUX tours locaux "running" à la fois. Le sondage de progression de useConversation.ts
   // ne sait alors pas auquel des deux rattacher l'étape reçue (il n'y en a normalement
   // jamais qu'un), et lui appliquerait à tort l'étape de l'AUTRE exécution.
