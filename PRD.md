@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.64 — Mise à jour le 2026-10-04
+> Version : 1.65 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -60,6 +60,7 @@
 
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
+> - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
 ---
 
 ## 1. Synthèse & Vision
@@ -323,7 +324,9 @@ déclarer un fichier valide « tronqué » ; non observé sur les corpus mesuré
   un lancement est journalisé dès que sa ligne d'historique est acceptée, même si le démarrage échoue ensuite ;
   `MAX_USER_QUALIFY_PER_MINUTE` (20), fenêtre glissante en mémoire par process.
 - **Boucle d'événements libre** : les points d'accès qui n'attendent ni GitHub ni le LLM (historique, conversations, progression,
-  tableau de bord, suppression) sont des fonctions synchrones, exécutées par FastAPI dans son pool de threads ; un calcul de
+  tableau de bord, suppression) sont des fonctions synchrones, exécutées par FastAPI dans son pool de threads ; `/api/execute`, lui,
+  reste asynchrone (il attend GitHub) mais exécute tout son accès base (`_load_conversation`, `_register_execution`) par
+  `asyncio.to_thread` ; un calcul de
   tableau de bord sur 20 000 exécutions ne gèle plus le sondage de progression ni l'authentification. Le moteur SQL vérifie chaque
   connexion avant usage (`pool_pre_ping`) et les recycle après 30 minutes. Sa réserve de connexions est réglable (`DB_POOL_SIZE`
   10, `DB_MAX_OVERFLOW` 10, `DB_POOL_TIMEOUT` 30 s par défaut, hors SQLite). Le balayage des exécutions orphelines libère chaque
@@ -626,7 +629,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (856 cas, 562 fonctions, `backend/tests/` plus `backend/test_progressive_agents.py`) rangée
+- **Tests** : suite backend `pytest` (866 cas, 570 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont

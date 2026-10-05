@@ -1,6 +1,8 @@
 """Points d'accès de lancement : qualification du besoin (étape 1) et exécution du workflow (étape 2)."""
 import asyncio
 import uuid
+from dataclasses import dataclass
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -91,55 +93,34 @@ def _ensure_conversation_idle(session: Session, conversation_id: int) -> str:
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
     return conversation_context
 
-@router.post("/api/execute")
-async def execute_workflow(
-    data: WorkflowExecutionInput,
-    session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
-):
-    """Étape 2 : Lancement dynamique des agents & enregistrement BDD"""
-    memory_monitor.log_memory("début /api/execute")
-    final_prompt = (
-        f"Demande initiale : {data.user_request}\n"
-        f"Type d'exécution : {data.target_workflow}\n"
-        f"Précisions apportées : {data.clarifications if data.clarifications else 'Aucune.'}"
-    )
+def _load_conversation(session: Session, data: WorkflowExecutionInput, user_id) -> Optional[Conversation]:
+    """Conversation visée par la demande (None pour un premier message) ; 404 si elle n'est pas à l'utilisateur.
+    Synchrone : exécutée hors de la boucle d'événements (voir execute_workflow)."""
+    if data.conversation_id is None:
+        return None
+    conversation = session.get(Conversation, data.conversation_id)
+    if not conversation or conversation.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Conversation introuvable.")
+    return conversation
 
-    has_repo_target = bool(data.repo_owner and data.repo_name)
-    # ANALYSE_ONLY ne comprend que design_task/architecture_task, en lecture seule (voir
-    # crew_run.CrewRun) : jamais de branche/commit/PR à vérifier pour ce
-    # workflow. Calculé une seule fois et réutilisé aux deux points qui en ont besoin plus bas
-    # (capture du SHA de référence avant le crew, vérification après coup) plutôt que dupliqué,
-    # pour qu'ils ne puissent pas diverger silencieusement si l'un est modifié sans l'autre.
-    should_verify_github_delivery = has_repo_target and data.target_workflow != "ANALYSE_ONLY"
 
-    conversation = None
-    if data.conversation_id is not None:
-        conversation = session.get(Conversation, data.conversation_id)
-        if not conversation or conversation.user_id != user.get("id"):
-            raise HTTPException(status_code=404, detail="Conversation introuvable.")
+@dataclass
+class _RegisteredExecution:
+    db_entry_id: int
+    conversation_id: int
+    work_branch: str
+    normalized_base_branch: Optional[str]
+    conversation_context: str
+    resume_outputs: dict[str, str]
 
-    # Contrôle préalable GitHub : une faute (repository, droits, branche de base) se découvre ICI, avant
-    # toute ligne en base et tout appel LLM, au lieu de la fin d'une exécution de plusieurs minutes.
-    if should_verify_github_delivery:
-        try:
-            # Borné dans le temps : PyGithub peut sinon attendre longtemps (délai par défaut et
-            # nouvelles tentatives) pendant que la requête de lancement reste suspendue.
-            await asyncio.wait_for(
-                asyncio.to_thread(check_github_access, data.repo_owner, data.repo_name, data.base_branch or "main"),
-                timeout=_GITHUB_PRECHECK_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            raise AppError(
-                503, ErrorCode.GITHUB_UNAVAILABLE,
-                "GitHub met trop de temps à répondre : réessayez dans quelques instants.", True,
-            )
-        except GitHubAccessProblem as problem:
-            status_code, code, retryable = _GITHUB_ACCESS_ERRORS.get(
-                problem.kind, (500, ErrorCode.INTERNAL_ERROR, False)
-            )
-            raise AppError(status_code, code, problem.message, retryable)
 
+def _register_execution(
+    session: Session, data: WorkflowExecutionInput, user_id, conversation: Optional[Conversation], has_repo_target: bool,
+) -> _RegisteredExecution:
+    """Tout l'accès base du lancement : conflit de conversation, plafonds par utilisateur, conversation, reprise, branche
+    de travail, ligne « running » et journal de lancement. Synchrone, exécutée par asyncio.to_thread : une dizaine
+    d'allers-retours vers la base ne doivent pas bloquer la boucle (donc le sondage des autres utilisateurs).
+    `execution_state.active_execution_ids` n'y est lu que par appartenance (`in`), sûr depuis un autre thread."""
     # Conversation existante : son conflit (double clic, deux onglets) est testé AVANT les plafonds, pour garder le message
     # précis « déjà en cours pour cette conversation ». Rien n'est écrit à ce stade.
     conversation_context = _ensure_conversation_idle(session, conversation.id) if conversation is not None else ""
@@ -147,11 +128,11 @@ async def execute_workflow(
     # Plafonds par utilisateur (exécutions simultanées, exécutions par heure) : un compte ne sature pas les autres.
     # AVANT toute écriture : un refus ne laisse pas de conversation vide. Quelques lectures légères en base (balayage
     # compris), comme les autres accès à `session` de ce point d'accès.
-    check_user_execution_quota(session, user.get("id"), execution_state.active_execution_ids)
+    check_user_execution_quota(session, user_id, execution_state.active_execution_ids)
 
     if conversation is None:
         conversation = Conversation(
-            user_id=user.get("id"),
+            user_id=user_id,
             title=data.user_request.strip()[:80] or "Nouvelle conversation",
         )
         session.add(conversation)
@@ -159,7 +140,7 @@ async def execute_workflow(
         session.refresh(conversation)
 
     # Reprise d'une exécution en échec (étapes déjà réussies réutilisées) ; {} si rien n'est reprenable.
-    resume_outputs = execution_resume.resumable_outputs(session, data, user.get("id"), conversation.id)
+    resume_outputs = execution_resume.resumable_outputs(session, data, user_id, conversation.id)
 
     # Normalisé une seule fois : utilisé à la fois pour comparer aux tours précédents et
     # pour ce qui est stocké sur ce tour, afin que les deux restent cohérents (sinon un
@@ -188,7 +169,7 @@ async def execute_workflow(
         workflow=data.target_workflow,
         clarifications=data.clarifications,
         status="running",
-        user_id=user.get("id"),
+        user_id=user_id,
         conversation_id=conversation.id,
         repo_owner=data.repo_owner if has_repo_target else None,
         repo_name=data.repo_name if has_repo_target else None,
@@ -207,7 +188,66 @@ async def execute_workflow(
         session.rollback()
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_MESSAGE)
     session.refresh(db_entry)
-    record_execution_launch(session, user.get("id"))
+    record_execution_launch(session, user_id)
+    return _RegisteredExecution(
+        db_entry_id=db_entry.id, conversation_id=conversation.id, work_branch=work_branch,
+        normalized_base_branch=normalized_base_branch, conversation_context=conversation_context,
+        resume_outputs=resume_outputs,
+    )
+
+
+async def _precheck_github_access(data: WorkflowExecutionInput) -> None:
+    """Contrôle préalable GitHub : une faute (repository, droits, branche de base) se découvre ICI, avant toute ligne en
+    base et tout appel LLM, au lieu de la fin d'une exécution de plusieurs minutes."""
+    try:
+        # Borné dans le temps : PyGithub peut sinon attendre longtemps (délai par défaut et
+        # nouvelles tentatives) pendant que la requête de lancement reste suspendue.
+        await asyncio.wait_for(
+            asyncio.to_thread(check_github_access, data.repo_owner, data.repo_name, data.base_branch or "main"),
+            timeout=_GITHUB_PRECHECK_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise AppError(
+            503, ErrorCode.GITHUB_UNAVAILABLE,
+            "GitHub met trop de temps à répondre : réessayez dans quelques instants.", True,
+        )
+    except GitHubAccessProblem as problem:
+        status_code, code, retryable = _GITHUB_ACCESS_ERRORS.get(
+            problem.kind, (500, ErrorCode.INTERNAL_ERROR, False)
+        )
+        raise AppError(status_code, code, problem.message, retryable)
+
+
+@router.post("/api/execute")
+async def execute_workflow(
+    data: WorkflowExecutionInput,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """Étape 2 : Lancement dynamique des agents & enregistrement BDD"""
+    memory_monitor.log_memory("début /api/execute")
+    final_prompt = (
+        f"Demande initiale : {data.user_request}\n"
+        f"Type d'exécution : {data.target_workflow}\n"
+        f"Précisions apportées : {data.clarifications if data.clarifications else 'Aucune.'}"
+    )
+
+    has_repo_target = bool(data.repo_owner and data.repo_name)
+    # ANALYSE_ONLY ne comprend que design_task/architecture_task, en lecture seule (voir
+    # crew_run.CrewRun) : jamais de branche/commit/PR à vérifier pour ce
+    # workflow. Calculé une seule fois et réutilisé aux deux points qui en ont besoin plus bas
+    # (capture du SHA de référence avant le crew, vérification après coup) plutôt que dupliqué,
+    # pour qu'ils ne puissent pas diverger silencieusement si l'un est modifié sans l'autre.
+    should_verify_github_delivery = has_repo_target and data.target_workflow != "ANALYSE_ONLY"
+
+    conversation = await asyncio.to_thread(_load_conversation, session, data, user.get("id"))
+
+    if should_verify_github_delivery:
+        await _precheck_github_access(data)
+
+    registered = await asyncio.to_thread(
+        _register_execution, session, data, user.get("id"), conversation, has_repo_target
+    )
 
     # Compromis de mémoïsation CrewAI (cache module-level sans éviction native, purgé activement
     # par run_dynamic_crew) : voir la docstring de execution.execute_crew_and_persist, qui construit
@@ -225,13 +265,14 @@ async def execute_workflow(
     # execution_state.background_tasks (voir sa définition) retient une référence forte le temps de l'exécution,
     # pour ne pas risquer que le garbage collector ne l'interrompe en cours de route.
     task = asyncio.create_task(execution.execute_crew_and_persist(
-        db_entry.id, conversation.id, data, has_repo_target, should_verify_github_delivery,
-        work_branch, normalized_base_branch, final_prompt, conversation_context, resume_outputs,
+        registered.db_entry_id, registered.conversation_id, data, has_repo_target, should_verify_github_delivery,
+        registered.work_branch, registered.normalized_base_branch, final_prompt, registered.conversation_context,
+        registered.resume_outputs,
     ))
-    execution_state.track_execution_task(task, db_entry.id)
+    execution_state.track_execution_task(task, registered.db_entry_id)
 
     return {
-        "status": "running", "id": db_entry.id, "conversation_id": conversation.id,
+        "status": "running", "id": registered.db_entry_id, "conversation_id": registered.conversation_id,
         # Étapes réutilisées d'une exécution précédente (vide hors reprise) : l'interface l'indique.
-        "resumed_steps": list(resume_outputs),
+        "resumed_steps": list(registered.resume_outputs),
     }
