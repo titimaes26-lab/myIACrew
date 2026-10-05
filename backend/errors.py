@@ -12,6 +12,8 @@ import asyncio
 import re
 from typing import NamedTuple, Optional
 
+from logs import get_logger
+
 
 class ErrorCode:
     QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
@@ -159,8 +161,8 @@ def _classify_single(exc: BaseException) -> ErrorInfo:
         from github_snapshot import GitHubVerificationUnavailable
         if isinstance(exc, GitHubVerificationUnavailable):
             return ErrorInfo(ErrorCode.GITHUB_UNAVAILABLE, True, _USER_MESSAGES[ErrorCode.GITHUB_UNAVAILABLE])
-    except Exception:
-        pass
+    except Exception as e:
+        get_logger("errors").debug(f"classification GitHub indisponible : {type(e).__name__}: {e}")
     if isinstance(exc, ExecutionTimeoutError):
         message = _QUOTA_TIMEOUT_MESSAGE if exc.quota_wait_seconds > 0 and exc.quota_dominant else _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT]
         return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, message)

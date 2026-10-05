@@ -197,8 +197,8 @@ def flush_events(timeout: float = 5.0) -> None:
     try:
         from crewai.events.event_bus import crewai_event_bus
         crewai_event_bus.flush(timeout=timeout)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"vidage des événements CrewAI impossible : {type(e).__name__}: {e}")
 
 # --- Lignes persistées --------------------------------------------------------------------------
 def build_agent_run_rows(

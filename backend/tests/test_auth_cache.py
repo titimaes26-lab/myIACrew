@@ -231,3 +231,18 @@ def test_a_waiting_request_that_is_itself_cancelled_does_not_disturb_the_validat
     user, waiter = asyncio.run(scenario())
     assert user["id"] == "u1" and waiter.cancelled() and auth._inflight == {}
 
+
+
+@pytest.mark.parametrize("body", [[], "texte", 42, None])
+def test_a_200_without_a_user_object_is_a_401_and_is_never_cached(monkeypatch, body):
+    def handler(request):
+        return httpx.Response(200, content=b"" if body is None else json.dumps(body).encode())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(auth, "_get_http_client", lambda: client)
+    token = _jwt(time.time() + 3600)
+    for _ in range(2):
+        with pytest.raises(HTTPException) as error:
+            _call(token)
+        assert error.value.status_code == 401
+    assert auth.cached_user(token) is None

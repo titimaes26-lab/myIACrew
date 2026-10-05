@@ -122,8 +122,8 @@ def _announce(wait: float, on_wait: Optional[Callable[[float], None]]) -> None:
     if wait > 0 and on_wait is not None:
         try:
             on_wait(wait)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"callback d'attente en échec : {type(e).__name__}: {e}")
 
 
 def _note_error(error: BaseException) -> None:

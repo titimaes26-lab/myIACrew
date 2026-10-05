@@ -135,15 +135,15 @@ def _lookup_pull_request(owner: str, repo: str, branch: str, base_branch: str, s
     try:
         matched_pr = _find_delivered_pull_request(owner, repo, branch, base_branch, sha_after)
         confirmed = True
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"recherche de la pull request (essai 1) en échec : {type(e).__name__}: {e}")
     if matched_pr is None:
         time.sleep(2)
         try:
             matched_pr = _find_delivered_pull_request(owner, repo, branch, base_branch, sha_after)
             confirmed = True
-        except Exception:
-            pass          # `confirmed` garde la valeur du premier essai
+        except Exception as e:     # `confirmed` garde la valeur du premier essai
+            log.debug(f"recherche de la pull request (essai 2) en échec : {type(e).__name__}: {e}")
     return matched_pr, confirmed
 
 

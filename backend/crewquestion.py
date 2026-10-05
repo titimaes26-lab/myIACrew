@@ -209,8 +209,8 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
                 report = qualification._coerce_analysis_report(json.loads(match.group(0)))
                 if report is not None:
                     return qualification.QualificationResult(**qualification._enforce_confidence_threshold(report).model_dump())
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"sortie de qualification inexploitable : {type(e).__name__}: {e}")
 
         # Qualification impossible : on demande plutôt que de lancer au hasard le workflow le
         # plus long (DESIGN_AND_DEV, 5 agents) sur une catégorie que rien ne justifie.

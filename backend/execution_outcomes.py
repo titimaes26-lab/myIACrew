@@ -220,7 +220,7 @@ def mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
                 db_entry.updated_at = datetime.now(timezone.utc)
                 session.add(db_entry)
                 session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"échec de démarrage non enregistré pour execution_id={db_entry_id} : {type(e).__name__}: {e}")
     finally:
         execution_persistence.cleanup_persisted_agents(db_entry_id)

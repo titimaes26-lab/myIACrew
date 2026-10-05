@@ -197,5 +197,5 @@ def fail_execution(execution_id: int, message: str) -> None:
                 entry.updated_at = datetime.now(timezone.utc)
                 fail_session.add(entry)
                 fail_session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"exécution {execution_id} non marquée « failed » : {type(e).__name__}: {e}")

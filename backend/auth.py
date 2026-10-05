@@ -209,8 +209,8 @@ async def _validate_with_supabase(token: str) -> dict:
             f"{SUPABASE_URL}/auth/v1/user",
             headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
         )
-    except httpx.HTTPError:
-        raise _supabase_unavailable()
+    except httpx.HTTPError as exc:
+        raise _supabase_unavailable() from exc
     except RuntimeError:
         # Ne cible QUE le cas précis d'un client déjà fermé (ex: une requête concurrente
         # arrivée juste après que close_http_client() a fermé ce client, avant que la
@@ -225,12 +225,17 @@ async def _validate_with_supabase(token: str) -> dict:
         # d'être maquillée en 503 pointant à tort vers Supabase.
         if not client.is_closed:
             raise
-        raise _supabase_unavailable()
+        raise _supabase_unavailable() from None
 
     if response.status_code != 200:
         raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
 
-    user = response.json()
-    if isinstance(user, dict):
-        cache_user(token, user)
+    try:
+        user = response.json()
+    except ValueError:
+        user = None
+    if not isinstance(user, dict):
+        # 200 sans objet utilisateur (corps vide, non JSON, tableau) : jamais un « utilisateur » exploitable.
+        raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
+    cache_user(token, user)
     return user
