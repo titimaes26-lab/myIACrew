@@ -69,18 +69,23 @@ def verify_github_delivery(
     (détecter l'absence totale de branche/PR, le cas très majoritairement observé) reste couvert.
 
     """
-    # Réutilise github_snapshot.get_branch_head_sha (plutôt que de refaire ici github_client._get_repo + get_branch + gestion du
-    # 404) pour ne pas avoir deux implémentations de la même logique de classification d'erreur
-    # susceptibles de diverger silencieusement si l'une est retouchée sans l'autre.
-    #
-    # Une seule tentative avant de conclure à un échec de LIVRAISON serait trop sévère ici : cette
-    # vérification arrive juste après la rafale d'appels github_* du Développeur (jusqu'à 8, sur
-    # le même GITHUB_TOKEN partagé) — le moment le plus probable pour heurter un rate-limit
-    # secondaire transitoire côté GitHub. Sans ce réessai, une exécution qui a RÉELLEMENT réussi
-    # (branche, commits et PR bien présents) pourrait être marquée à tort en échec à cause d'un
-    # simple aléa réseau survenu APRÈS coup, pendant cette seule vérification — inutile d'infliger
-    # à l'utilisateur un nouveau lancement de crew (coûteux, plusieurs minutes) pour un problème
-    # qui n'existe déjà plus quelques secondes après.
+    sha_after, issue = _resolve_branch_head(owner, repo, branch)
+    if sha_after is None:                              # toujours accompagné d'un problème à rapporter
+        return None, issue
+    matched_pr, pr_check_confirmed = _lookup_pull_request(owner, repo, branch, base_branch, sha_after)
+    if matched_pr is not None:
+        return DeliveredPullRequest(matched_pr.html_url, matched_pr.merged_at is not None), None
+    return None, _missing_pull_request_issue(owner, repo, branch, base_branch, sha_before, sha_after, pr_check_confirmed)
+
+
+def _resolve_branch_head(owner: str, repo: str, branch: str) -> tuple[str | None, DeliveryIssue | None]:
+    """(SHA de tête de la branche, None) ou (None, problème). Réutilise github_snapshot.get_branch_head_sha plutôt que
+    de refaire sa classification d'erreurs.
+
+    Une seule tentative serait trop sévère : cette vérification arrive juste après la rafale d'appels github_* du
+    Développeur (jusqu'à 8, sur le même GITHUB_TOKEN partagé), le moment le plus probable pour heurter un rate-limit
+    secondaire transitoire. Sans le réessai, une exécution qui a RÉELLEMENT réussi pourrait être marquée en échec à
+    cause d'un simple aléa réseau survenu après coup — et coûter un nouveau lancement de crew pour rien."""
     try:
         sha_after = github_snapshot.get_branch_head_sha(owner, repo, branch)
     except github_snapshot.GitHubVerificationUnavailable:
@@ -89,102 +94,74 @@ def verify_github_delivery(
             sha_after = github_snapshot.get_branch_head_sha(owner, repo, branch)
         except github_snapshot.GitHubVerificationUnavailable as e:
             return None, DeliveryIssue(f"impossible de vérifier la branche '{branch}' ({e}).", True)
-
     if sha_after is None:
         return None, DeliveryIssue(
             f"aucune branche '{branch}' n'existe sur {owner}/{repo} : aucune modification n'a "
             "été poussée sur GitHub malgré le repository cible configuré.",
             True,
         )
+    return sha_after, None
 
-    # Vérifié AVANT de statuer sur "nouveau commit ou pas" (voir la docstring) : une PR OUVERTE ou
-    # DÉJÀ MERGÉE à jour (head.sha == sha_after, pas juste totalCount > 0 — sur un work_branch
-    # réutilisé, une PR d'un tour précédent matcherait aussi head/base sans refléter LE commit
-    # actuel) démontre que le commit ACTUEL de la branche est bien proposé/accepté sur GitHub, que
-    # ce commit date de cette exécution ou d'une précédente. state="all" (pas seulement "open")
-    # reste nécessaire pour repérer une PR déjà mergée, mais exclut explicitement une PR FERMÉE
-    # SANS fusion (rejetée) : GitHub fige alors son head.sha au moment de la fermeture, donc un
-    # commit identique à celui d'une PR rejetée ne doit surtout pas compter comme "livré" — ce
-    # serait au contraire le signe qu'une proposition a été explicitement refusée sur ce commit.
-    # pr_check_confirmed : distingue "on a réellement listé les PR et aucune ne correspond" de "la
-    # liste elle-même a échoué (except ci-dessous), donc on ne SAIT PAS s'il en existe une" — sans
-    # cette distinction, les deux messages d'échec plus bas affirmeraient à tort qu'aucune PR ne
-    # correspond, alors que ce second cas signifie seulement que la vérification n'a pas pu se
-    # faire (ex: rate-limit transitoire juste après la rafale d'appels github_* du Développeur).
-    def _find_matching_pr():
-        """None si aucune PR ne correspond, sinon l'objet PullRequest trouvé (utilisé aussi bien
-        pour la confirmation booléenne que pour son .html_url, voir DeliveredPullRequest)."""
-        gh_repo = github_client._get_repo(owner, repo)
-        pulls = gh_repo.get_pulls(state="all", head=f"{owner}:{branch}", base=base_branch)
-        # merged_at (déjà présent dans la réponse de get_pulls) plutôt que p.merged : cette
-        # dernière propriété PyGithub se complète paresseusement par un appel réseau SUPPLÉMENTAIRE
-        # si elle n'est pas déjà dans la charge utile listée, inutile alors qu'on a déjà l'info.
-        for p in pulls:
-            if p.head.sha == sha_after and (p.state == "open" or p.merged_at is not None):
-                return p
-        return None
 
-    # pr_check_confirmed distingue "on a réellement listé les PR et aucune ne correspond" de "la
-    # liste elle-même a échoué (deux tentatives), donc on ne SAIT PAS s'il en existe une" — sans
-    # cette distinction, les messages d'échec plus bas affirmeraient à tort qu'aucune PR ne
-    # correspond. Réessayé une fois (même raisonnement que github_snapshot.get_branch_head_sha, symétrique
-    # depuis que le succès peut désormais dépendre de CET appel, pas seulement de github_snapshot.get_branch_head_sha) :
-    # cette vérification arrive juste après la rafale d'appels github_* du Développeur, le moment le plus probable pour heurter un rate-limit secondaire transitoire côté GitHub.
-    #
-    # Le second essai n'est PAS conditionné à une exception (contrairement à github_snapshot.get_branch_head_sha) : get_pulls() est un endpoint de LISTE, avec un délai de cohérence éventuelle
-    # connu côté GitHub (une PR tout juste créée — a fortiori déjà fusionnée, comme sur un repo
-    # avec auto-merge activé — peut mettre quelques secondes à apparaître dans ses résultats,
-    # alors qu'elle existe déjà bel et bien et serait immédiatement visible via un accès direct
-    # par numéro). Un premier essai qui répond SANS exception mais ne trouve rien peut donc
-    # simplement être arrivé trop tôt, pas confirmer une absence réelle — vécu en pratique : une
-    # PR créée ET mergée en ~10s a échappé au premier essai.
-    # pr_check_confirmed démarre à False et n'est mis à True QUE par un essai qui aboutit sans
-    # exception (peu importe lequel des deux, et jamais redescendu à False ensuite) : un essai
-    # réussi qui confirme déjà l'absence de PR (matched=False mais SANS exception) est une
-    # réponse définitive à part entière, que le second essai (déclenché quand même, voir plus
-    # bas) ne doit PAS pouvoir invalider s'il échoue lui-même sur un aléa transitoire — sinon une
-    # absence de PR déjà confirmée au 1er essai basculerait à tort en "non vérifiée" (et le
-    # message d'erreur orienterait à tort l'utilisateur vers GITHUB_TOKEN, voir execution_outcomes.py,
-    # likely_access_problem) simplement parce que ce second essai, purement optionnel à ce
-    # stade, a lui-même heurté un souci réseau.
-    pr_check_confirmed = False
+def _find_delivered_pull_request(owner: str, repo: str, branch: str, base_branch: str, sha_after: str):
+    """None si aucune PR ne correspond, sinon la PullRequest trouvée (aussi utilisée pour son `html_url`).
+
+    Une PR OUVERTE ou DÉJÀ MERGÉE à jour (`head.sha == sha_after`, pas juste « il y en a une » : sur un work_branch
+    réutilisé, une PR d'un tour précédent matcherait aussi head/base sans refléter LE commit actuel) démontre que le
+    commit actuel est proposé/accepté sur GitHub. `state="all"` est nécessaire pour repérer une PR déjà mergée, mais une
+    PR FERMÉE SANS fusion (rejetée) est exclue : GitHub fige alors son `head.sha`, et un commit identique à celui d'une
+    PR rejetée ne doit surtout pas compter comme « livré ». `merged_at` (déjà dans la réponse de get_pulls) plutôt que
+    `p.merged`, que PyGithub complète par un appel réseau supplémentaire."""
+    gh_repo = github_client._get_repo(owner, repo)
+    pulls = gh_repo.get_pulls(state="all", head=f"{owner}:{branch}", base=base_branch)
+    for p in pulls:
+        if p.head.sha == sha_after and (p.state == "open" or p.merged_at is not None):
+            return p
+    return None
+
+
+def _lookup_pull_request(owner: str, repo: str, branch: str, base_branch: str, sha_after: str):
+    """(PR trouvée ou None, la recherche a-t-elle abouti ?).
+
+    `confirmed` distingue « on a réellement listé les PR et aucune ne correspond » de « la liste elle-même a échoué,
+    donc on ne SAIT PAS » : il n'est mis à True que par un essai sans exception et jamais redescendu ensuite, de sorte
+    qu'une absence déjà confirmée au premier essai ne puisse pas être invalidée par l'échec du second.
+
+    Le second essai n'est PAS conditionné à une exception (contrairement à `_resolve_branch_head`) : get_pulls() est un
+    endpoint de LISTE à cohérence éventuelle (une PR créée et mergée en ~10 s a déjà échappé au premier essai), donc un
+    premier essai sans exception qui ne trouve rien peut simplement être arrivé trop tôt."""
+    confirmed = False
     matched_pr = None
     try:
-        matched_pr = _find_matching_pr()
-        pr_check_confirmed = True
+        matched_pr = _find_delivered_pull_request(owner, repo, branch, base_branch, sha_after)
+        confirmed = True
     except Exception:
         pass
     if matched_pr is None:
         time.sleep(2)
         try:
-            matched_pr = _find_matching_pr()
-            pr_check_confirmed = True
+            matched_pr = _find_delivered_pull_request(owner, repo, branch, base_branch, sha_after)
+            confirmed = True
         except Exception:
-            # Ne pas réinitialiser pr_check_confirmed à False ici : s'il valait déjà True (1er
-            # essai réussi), cette confirmation reste valable malgré l'échec de CE second essai.
-            # S'il valait encore False (1er essai déjà en échec), il reste False, comme avant —
-            # deux échecs persistants sur la LISTE des PR restent traités prudemment comme "PR
-            # non confirmée" plutôt que de risquer un faux positif.
-            pass
-    if matched_pr is not None:
-        return DeliveredPullRequest(matched_pr.html_url, matched_pr.merged_at is not None), None
+            pass          # `confirmed` garde la valeur du premier essai
+    return matched_pr, confirmed
 
-    # Phrase UNIQUE, réutilisée dans les deux DeliveryIssue ci-dessous plutôt que reformulée deux
-    # fois séparément : les deux messages ne peuvent alors plus décrire pr_check_confirmed de
-    # façon incohérente si l'un est retouché sans l'autre. Mentionne base_branch (comme avant ce
-    # réordonnancement) : indique à l'utilisateur vers quelle branche une PR était attendue, utile
-    # si une PR existe mais cible la mauvaise base.
+
+def _missing_pull_request_issue(
+    owner: str, repo: str, branch: str, base_branch: str, sha_before: str | None, sha_after: str, pr_check_confirmed: bool,
+) -> DeliveryIssue:
+    """Problème à rapporter quand aucune PR à jour n'a été trouvée. `likely_access_problem` (donc le conseil
+    GITHUB_TOKEN d'execution_outcomes.py) vaut True seulement quand la recherche de PR n'a pas pu aboutir."""
+    # Phrase UNIQUE pour les deux messages : ils ne peuvent plus décrire `pr_check_confirmed` de façon incohérente ;
+    # elle mentionne base_branch (vers quelle branche une PR était attendue, utile si elle cible la mauvaise base).
     pr_status_phrase = (
         f"aucune Pull Request à jour vers '{base_branch}' n'a été trouvée pour ce commit"
         if pr_check_confirmed
         else "la présence d'une Pull Request n'a pas pu être vérifiée (erreur transitoire de l'API GitHub)"
     )
-
     if sha_before is not None and sha_after == sha_before:
-        # La conclusion "aucun changement n'a été livré" n'est justifiée que si pr_status_phrase
-        # l'a réellement confirmé (pr_check_confirmed) : sinon, on ne SAIT PAS s'il en existe une,
-        # l'affirmer à tort orienterait à tort l'utilisateur vers "rien n'a été fait" alors qu'une
-        # PR valide peut très bien exister sans qu'on ait pu la voir cette fois-ci.
+        # « aucun changement livré » n'est justifié que si l'absence de PR est confirmée : sinon une PR valide peut
+        # exister sans qu'on ait pu la voir cette fois-ci.
         conclusion = (
             "aucun changement n'a été livré pendant cette exécution, ni lors d'une précédente "
             "sur cette même branche"
@@ -192,24 +169,19 @@ def verify_github_delivery(
             else "il est possible qu'aucun changement n'ait été livré, mais la vérification n'a "
             "pas pu le confirmer avec certitude"
         )
-        return None, DeliveryIssue(
+        return DeliveryIssue(
             f"la branche '{branch}' existe sur {owner}/{repo} mais pointe toujours sur le même "
             f"commit qu'avant le lancement de cette exécution, et {pr_status_phrase} : {conclusion}.",
-            # not pr_check_confirmed : la vérification de PR a échoué deux fois de suite (API
-            # injoignable), un vrai souci de connectivité/permissions — le conseil GITHUB_TOKEN
-            # d'execution_outcomes.py est alors pertinent, contrairement au cas "confirmé absente" (False).
             not pr_check_confirmed,
         )
-
-    # sha_before is not None à ce stade garantit sha_after != sha_before (le cas égal est déjà
-    # sorti par l'early return ci-dessus) : un vrai nouveau commit est donc confirmé. Si
-    # sha_before est None (branche neuve avant cette exécution, ou repère indisponible — voir la
-    # docstring), on ne peut rien affirmer de plus que "la branche existe".
+    # sha_before non None garantit sha_after != sha_before (cas égal sorti ci-dessus) : un vrai nouveau commit est
+    # confirmé. Si sha_before est None (branche neuve, ou repère indisponible), on ne peut affirmer que « la branche existe ».
     commit_note = " (nouveaux commits confirmés)" if sha_before is not None else ""
-    return None, DeliveryIssue(
+    return DeliveryIssue(
         f"la branche '{branch}' existe bien sur {owner}/{repo}{commit_note} mais {pr_status_phrase}.",
         not pr_check_confirmed,
     )
+
 
 class PartialDelivery(NamedTuple):
     """Ce qui existe RÉELLEMENT sur GitHub après une exécution en échec (voir

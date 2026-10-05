@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.65 — Mise à jour le 2026-10-04
+> Version : 1.66 — Mise à jour le 2026-10-04
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.66 (10-05) : revue complète n°3 : lecteur de délimiteurs JS/TS refait en lecteur par états (`delimiter_scan.py`, complexité 35 → sous 12, comparé à l'ancien sur 24 000 variantes de fichiers : 0 différence) ; enveloppe morte supprimée ; `verify_github_delivery` (179 lignes) découpé en phases (`_resolve_branch_head`, `_lookup_pull_request`, `_missing_pull_request_issue`) avec 18 tests de caractérisation (9 mutations sur 12 survivaient avant ; les tests passent aussi sur l'ancienne version).
 ---
 
 ## 1. Synthèse & Vision
@@ -409,7 +410,7 @@ déclarer un fichier valide « tronqué » ; non observé sur les corpus mesuré
 | Orchestration agents | Agents et tâches CrewAI, déroulement d'une exécution, guardrails, retry | `backend/crewquestion.py` (agents et tâches), `crew_run.py` (`CrewRun` : reprise, retry résumable, échec attribué à une étape), `crew_tools.py` et `crew_checks.py` (outils et guardrails propres à une exécution, mixins de `AppDevelopmentCrew`, état déclaré dans `crew_state.py`), `crew_guardrails.py` (contrôles des specs, du plan, du verdict QA), `crew_workflow.py` (étapes, reprise, résultat formaté), `crew_retry.py`, `crew_llms.py`, `crew_summary.py`, `crew_result.py`, `crew_workspace.py`, `crew_cache.py`, `conversation_context.py`, `qualification.py`, `agentsquestion.yaml`, `tasksquestion.yaml` |
 | Contrôles de qualité (purs) | Lecture de la sortie de l'Analyste, livraison (commit/PR), rapport QA | `backend/analyst_output.py` (contrôle d'une sortie, rapport de livraison), `analyst_blocks.py` (balises de fichiers), `analyst_edits.py` (modifications ciblées), `analyst_imports.py`, `analyst_placeholders.py`, `delivery.py`, `qa_report.py` |
 | Mesure de performance | Collecte par agent (événements CrewAI), agrégats (percentiles, moyennes, tendance) | `backend/metrics_collect.py`, `metrics_report.py`, `metrics_roles.py` |
-| Outils agents et GitHub | Actions concrètes : lecture disque, lecture/écriture GitHub, vérification de syntaxe, livraison | `backend/tools.py`, `github_client.py` (client, cache de lecture), `github_read.py`, `github_write.py`, `github_batch.py` (lot en un commit), `github_edit.py`, `github_edit_failures.py`, `github_guards.py` (branche protégée, portée d'écriture, fichiers sensibles), `github_snapshot.py`, `github_delivery.py`, `github_pull_request.py`, `github_access.py` |
+| Outils agents et GitHub | Actions concrètes : lecture disque, lecture/écriture GitHub, vérification de syntaxe, livraison | `backend/tools.py`, `delimiter_scan.py` (équilibre des délimiteurs JS/TS), `github_client.py` (client, cache de lecture), `github_read.py`, `github_write.py`, `github_batch.py` (lot en un commit), `github_edit.py`, `github_edit_failures.py`, `github_guards.py` (branche protégée, portée d'écriture, fichiers sensibles), `github_snapshot.py`, `github_delivery.py`, `github_pull_request.py`, `github_access.py` |
 | Persistance | Modèles et accès à la base de données | `backend/database.py` |
 
 ### 3.2 Flux de données
@@ -629,7 +630,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (866 cas, 570 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (888 cas, 587 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont
