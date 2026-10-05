@@ -2,22 +2,27 @@ import type { ConversationProgress } from '../../api';
 import type { ChatTurn, ExecutionHistoryEntry } from '../../types';
 import { historyEntryToTurn } from './turnMapping';
 
+// Agents déjà connus, ramenés au total annoncé par le serveur quand celui-ci en compte moins (résultat réécrit) : sinon le
+// `known` envoyé au sondage suivant dépasserait ce que le serveur possède et plus aucun nouvel agent n'arriverait.
+function knownAgents(local: Record<string, string> | undefined, serverCount: number | undefined): Record<string, string> {
+  const entries = Object.entries(local ?? {});
+  return serverCount !== undefined && serverCount < entries.length ? Object.fromEntries(entries.slice(0, serverCount)) : (local ?? {});
+}
+
 // Applique la progression sondée (étape courante, position dans la file, agents terminés) aux tours « running ».
 export function applyProgress(turns: ChatTurn[], progress: ConversationProgress): ChatTurn[] {
   return turns.map((turn) => {
+    const kept = knownAgents(turn.completedAgents, progress.completed_count);
     const hasUpdate = turn.currentStep !== progress.current_step ||
                       (turn.queueAhead ?? null) !== (progress.queue_ahead ?? null) ||
-                      Object.keys(progress.completed_agents || {}).length > 0;
+                      Object.keys(progress.completed_agents || {}).length > 0 ||
+                      Object.keys(kept).length !== Object.keys(turn.completedAgents ?? {}).length;
     if (turn.status === 'running' && hasUpdate) {
-      const newCompletedAgents = {
-        ...(turn.completedAgents || {}),
-        ...(progress.completed_agents || {}),
-      };
       return {
         ...turn,
         currentStep: progress.current_step,
         queueAhead: progress.queue_ahead ?? null,
-        completedAgents: newCompletedAgents,
+        completedAgents: { ...kept, ...(progress.completed_agents || {}) },
       };
     }
     return turn;

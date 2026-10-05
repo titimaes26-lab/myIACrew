@@ -18,6 +18,20 @@ describe('applyProgress', () => {
     expect(updated.completedAgents).toEqual({ Architecte: '## Architecte', Analyste: '## Analyste' });
   });
 
+  it('ramène les agents connus au total annoncé par le serveur quand il en compte moins', () => {
+    const local = { Architecte: '## Architecte', Analyste: '## Analyste', Testeur: '## Testeur' };
+    const [updated] = applyProgress([turn({ currentStep: 'diagnostic', completedAgents: local })], progress({ completed_count: 1 }));
+    expect(updated.completedAgents).toEqual({ Architecte: '## Architecte' });
+  });
+
+  it('garde les agents connus quand le total du serveur est cohérent ou absent', () => {
+    const local = { Architecte: '## Architecte', Analyste: '## Analyste' };
+    const base = turn({ currentStep: 'diagnostic', completedAgents: local });
+    for (const extra of [{ completed_count: 2 }, { completed_count: 5 }, {}]) {
+      expect(applyProgress([base], progress(extra))[0]).toBe(base);
+    }
+  });
+
   it('laisse intacts (même objet) les tours sans changement et les tours terminés', () => {
     const unchanged = turn({ currentStep: 'diagnostic', queueAhead: null });
     const done = turn({ id: 8, status: 'success' });
