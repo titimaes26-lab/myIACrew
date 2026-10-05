@@ -4,7 +4,8 @@ import os
 
 import pytest
 
-from tools import _scan_delimiters, check_syntax_content
+from delimiter_scan import scan_delimiters
+from tools import check_syntax_content
 
 BLOCKING = "ERREUR_SYNTAXE"
 
@@ -43,6 +44,9 @@ def test_a_file_cut_at_the_end_is_blocked_for_every_script_extension(content, pa
     "const j = <p>L'exécution continue, n'y touche pas.</p>;\n",   # apostrophes d'un texte JSX
     "const a = <p>d'un côté\net l'autre</p>;\n",
     "const x = a < b ? 1 : 2;\n",
+    "/* a * { b */\nconst c = 1;\n",                       # une étoile ne ferme pas un commentaire bloc
+    "const r = /[/{]/;\nconst s = 1;\n",                     # « / » et « { » dans une classe de regex
+    'const a = "x" / 3 + (1 / 2);\n',                        # division après une chaîne, pas une regex
     'const a = <div>{cond && <p className="alpha\n  beta">texte</p>}</div>;\n',        # attribut JSX sur plusieurs lignes
     "const a = <p title='alpha\n  beta'>{x}</p>;\n",
     'const a = <p className="alpha\n  beta" onClick={() => { go(); }}>x</p>;\n',
@@ -63,9 +67,9 @@ def test_unknown_extensions_are_not_checked():
 
 
 def test_the_scan_reports_truncation_only_for_a_cut_signature():
-    assert _scan_delimiters("const a = (1 + 2") == (["'(' jamais refermé."], False)      # parenthèse seule : indice
-    assert _scan_delimiters("const a = {")[1] is True
-    assert _scan_delimiters("const a = 1;\n") == ([], False)
+    assert scan_delimiters("const a = (1 + 2") == (["'(' jamais refermé."], False)      # parenthèse seule : indice
+    assert scan_delimiters("const a = {")[1] is True
+    assert scan_delimiters("const a = 1;\n") == ([], False)
 
 
 def test_every_script_file_of_the_frontend_passes():
@@ -77,3 +81,9 @@ def test_every_script_file_of_the_frontend_passes():
         with open(path, encoding="utf-8") as handle:
             result = check_syntax_content(handle.read(), path)
         assert not result.startswith(BLOCKING), f"{path} : {result}"
+
+
+def test_the_scan_stops_after_five_unexpected_closers_and_reports_their_line():
+    issues, truncated = scan_delimiters(")" * 10)
+    assert len(issues) == 5 and not truncated
+    assert scan_delimiters("a\nb\n)")[0] == ["')' inattendu ligne 3 (aucune ouverture correspondante)."]
