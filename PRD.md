@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.69 — Mise à jour le 2026-10-05
+> Version : 1.70 — Mise à jour le 2026-10-05
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.70 (10-05) : revue n°6 : la CI backend était rouge depuis l'extension de mypy (34 erreurs de typage CrewAI/SQLModel, pytest sauté) ; `qualification.py` typé par `cast`, exceptions mypy ciblées pour `crew_llms` et `crewquestion` (`mypy.ini`), `# type: ignore[misc]` sur deux `select()` de `routes_metrics.py` ; mypy repasse à zéro erreur en cache vierge. Le résultat de la CI doit désormais être lu après chaque push.
 > - 1.69 (10-05) : revue complète n°5 : une réponse Supabase 200 sans objet utilisateur (vide, non JSON, tableau) donne un 401 au lieu d'une 500 et n'est jamais mise en cache ; `raise … from` dans `auth.py` ; les filets best-effort qui échouaient en silence journalisent désormais (avertissement pour une exécution non marquée « failed », debug ailleurs ; les lectures de `/proc` et cgroup de `memory_monitor` restent silencieuses, leur absence étant normale).
 > - 1.68 (10-05) : revue du sondage incrémental : le frontend lit `completed_count` et ramène ses agents connus au total du serveur quand celui-ci en compte moins (résultat réécrit), pour que le `known` suivant reste cohérent.
 > - 1.67 (10-05) : revue complète n°4 : le sondage de progression (toutes les 3 s) ne retransmet plus le texte des agents déjà affichés (`GET …/progress?known=<n>` : seuls les agents suivants, plus `completed_count` ; sans `known`, comportement inchangé ; la colonne `result` reste lue côté base) ; les 8 mutants survivants (sur 97) tués par de nouveaux tests (bornes du quota dominant, limites d'exécution, purge du limiteur, résumé de projet, fuseaux des orphelines, tableau QA, nettoyage des callbacks après succès).
@@ -677,7 +678,7 @@ périmètre).
   sortie, GitHub, mesures), sauf `database.py`, `logs.py` et `project_summary.py`. Pour `main.py`, `routes_*`,
   `execution_*` et les mixins du crew, les codes `arg-type`, `union-attr`, `operator` et `call-overload` sont désactivés (bruit
   des clés primaires `Optional[int]` de SQLModel) ; attribut inexistant, variable non annotée, affectation incompatible et retour
-  manquant y restent contrôlés. Les outils de développement sont épinglés (`requirements-dev.txt`, dont `types-PyYAML`) et alignés
+  manquant y restent contrôlés. `crew_llms` et `crewquestion` ont leurs propres exceptions (`call-arg`, `arg-type`, `override`) pour les limites des stubs CrewAI. Les outils de développement sont épinglés (`requirements-dev.txt`, dont `types-PyYAML`) et alignés
   sur le `rev` de ruff du pré-commit, pour qu'une nouvelle version ne casse pas la CI sans changement de code.
 - **Tests frontend** (Vitest + Testing Library, `frontend/vitest.config.ts`, fichiers `*.test.ts(x)` à côté du code) : fonctions
   pures (échecs, tons, formats, parseurs), hooks (`useHistorySelection`, `useConnectionStatus`) et composants (`HistoryPanel` :

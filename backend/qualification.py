@@ -1,5 +1,5 @@
 """Qualification du besoin (étape 1) : types de demande, rapport d'analyse, seuil de confiance, prompt et lecture du JSON."""
-from typing import Any, List, Literal, Optional, get_args
+from typing import Any, List, Literal, Optional, cast, get_args
 
 from pydantic import BaseModel, Field
 
@@ -159,8 +159,8 @@ def _coerce_analysis_report(data: Any) -> Optional[AnalysisReport]:
     return AnalysisReport(
         summary=str(data.get("summary") or "Analyse effectuée."),
         reasoning=str(data.get("reasoning") or ""),
-        alternative_type=alternative if alternative in _REQUEST_TYPES else None,
-        request_type=request_type,
+        alternative_type=cast(Optional[RequestType], alternative if alternative in _REQUEST_TYPES else None),
+        request_type=cast(RequestType, request_type),   # validé par _REQUEST_TYPES plus haut
         # Tout sauf « PETIT » explicite (absent, illisible) = GRAND : le parcours complet est le choix sûr.
         scope="PETIT" if str(data.get("scope", "")).strip().upper() == "PETIT" else "GRAND",
         confidence=min(max(confidence, 0.0), 1.0),
