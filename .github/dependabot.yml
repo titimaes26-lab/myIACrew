@@ -11,6 +11,11 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # typescript-eslint n'accepte pas encore TypeScript 7 (peer « typescript < 6.1.0 ») : `npm ci` échoue. À retirer
+      # quand une version de typescript-eslint déclare TypeScript 7 compatible.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule:
