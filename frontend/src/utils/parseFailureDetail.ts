@@ -5,8 +5,8 @@ export interface FailureDetail {
   message: string;
 }
 
-// Reconnaît le format produit par main.py::execute_workflow pour un CrewStepError
-// (backend/crewquestion.py) : "Échec à l'étape N/M (Rôle) : message d'origine".
+// Reconnaît le format produit par execution_outcomes.py::failure_detail pour un CrewStepError
+// (backend/crew_workflow.py) : "Échec à l'étape N/M (Rôle) : message d'origine".
 // Les échecs antérieurs à cette fonctionnalité, ou survenant hors de run_dynamic_crew,
 // ne matchent pas et sont affichés tels quels par l'appelant.
 const FAILURE_PATTERN = /^Échec à l'étape (\d+)\/(\d+) \(([^)]+)\)\s*:\s*([\s\S]*)$/;

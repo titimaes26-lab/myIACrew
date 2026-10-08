@@ -1,18 +1,59 @@
-import type { ExecutionHistoryEntry, QualificationReport, RepoTargetSuggestion } from './types';
+import type { AgentRunView, BulkDeleteResult, ExecutionSortKey, ExecutionsPage, ExecutionHistoryEntry, HistoryListEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
 
-interface ExecuteResponse {
+// /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
+// fond côté backend, voir execution.execute_crew_and_persist) : ce corps de réponse ne
+// contient donc plus jamais le résultat final, seulement de quoi rattacher ce tour à son id réel
+// en base. Le résultat proprement dit n'arrive que via le sondage de progression déjà existant
+// (useConversation.ts), qui détecte la fin de l'exécution en base indépendamment de cette
+// requête d'origine — nécessaire pour que le résultat reste consultable même si la connexion à
+// cette requête est coupée entretemps (écran verrouillé, onglet fermé).
+export interface ExecuteAcceptedResponse {
   status: string;
   id: number;
   conversation_id: number;
-  workflow: string;
-  result: string;
-  api_calls_count?: number | null;
-  rate_limit_hits?: number | null;
-  total_wait_time_seconds?: number | null;
+  // Étapes réutilisées d'une exécution en échec reprise (vide hors reprise).
+  resumed_steps?: string[];
 }
 
+// code/retryable viennent du backend (voir backend/errors.py) ; NETWORK_ERROR est produit ici quand
+// le serveur est injoignable (aucune réponse HTTP).
 export class ApiError extends Error {
-  conversationId?: number;
+  readonly status: number | null;
+  readonly code: string | null;
+  readonly retryable: boolean;
+
+  constructor(message: string, options: { status?: number | null; code?: string | null; retryable?: boolean } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = options.status ?? null;
+    this.code = options.code ?? null;
+    this.retryable = options.retryable ?? false;
+  }
+}
+
+// fetch qui transforme un échec réseau (TypeError « Failed to fetch ») en ApiError lisible ;
+// une annulation (AbortError) est relancée telle quelle : ce n'est pas une erreur à afficher.
+async function request(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    throw new ApiError('Impossible de joindre le serveur. Vérifiez votre connexion puis réessayez.', {
+      code: 'NETWORK_ERROR',
+      retryable: true,
+    });
+  }
+}
+
+export interface ConversationProgress {
+  id: number | null;
+  status: string | null;
+  current_step: string | null;
+  // Seulement les agents au-delà des `known` déjà reçus (voir getConversationProgress) ; `completed_count` en donne le total.
+  completed_agents?: Record<string, string>;
+  completed_count?: number;
+  // Exécutions devant celle-ci tant qu'elle attend son créneau (étape « queued »), sinon null.
+  queue_ahead?: number | null;
 }
 
 function authHeaders(accessToken: string): HeadersInit {
@@ -22,46 +63,102 @@ function authHeaders(accessToken: string): HeadersInit {
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    const err = new ApiError(errData.detail || `Erreur serveur (${res.status})`);
-    const conversationIdHeader = res.headers.get('X-Conversation-Id');
-    if (conversationIdHeader) err.conversationId = Number(conversationIdHeader);
-    throw err;
+    throw new ApiError(typeof errData.detail === 'string' && errData.detail ? errData.detail : `Erreur serveur (${res.status})`, {
+      status: res.status,
+      code: typeof errData.code === 'string' ? errData.code : null,
+      retryable: errData.retryable === true,
+    });
   }
   return res.json();
 }
 
 export function apiClient(apiUrl: string, accessToken: string) {
   return {
-    qualify: (user_request: string, signal?: AbortSignal) =>
-      fetch(`${apiUrl}/api/qualify`, {
+    // conversation_id : permet à qualification_agent de tenir compte des tours précédents
+    // (ex: "corrige ça" juste après une FEATURE doit être qualifié BUGFIX, pas DESIGN_AND_DEV).
+    // has_repo_target : sans repository cible, une demande de BUGFIX/FEATURE déclenche une question sur le repo.
+    qualify: (user_request: string, conversation_id: number | null, has_repo_target: boolean, signal?: AbortSignal) =>
+      request(`${apiUrl}/api/qualify`, {
         method: 'POST',
         headers: authHeaders(accessToken),
-        body: JSON.stringify({ user_request }),
+        body: JSON.stringify({ user_request, conversation_id: conversation_id ?? undefined, has_repo_target }),
         signal,
       }).then((res) => parseJsonOrThrow<QualificationReport>(res)),
 
     execute: (payload: Record<string, unknown>, signal?: AbortSignal) =>
-      fetch(`${apiUrl}/api/execute`, {
+      request(`${apiUrl}/api/execute`, {
         method: 'POST',
         headers: authHeaders(accessToken),
         body: JSON.stringify(payload),
         signal,
-      }).then((res) => parseJsonOrThrow<ExecuteResponse>(res)),
+      }).then((res) => parseJsonOrThrow<ExecuteAcceptedResponse>(res)),
 
     listHistory: () =>
-      fetch(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
-        .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
+      request(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
+        .then((res) => parseJsonOrThrow<HistoryListEntry[]>(res)),
+
+    // Une exécution avec son résultat complet ; null si elle n'existe plus (ou n'est pas à cet utilisateur).
+    getExecution: (executionId: number) =>
+      request(`${apiUrl}/api/executions/${executionId}`, { headers: authHeaders(accessToken) })
+        .then(async (res) => {
+          // Seul le 404 de l'application (code NOT_FOUND) prouve que la ligne n'existe plus : un 404 du
+          // proxy ou de l'hébergeur (redéploiement en cours) est une panne passagère, pas une suppression.
+          if (res.status === 404) {
+            const body = await res.clone().json().catch(() => null);
+            if (body && body.code === 'NOT_FOUND') return null;
+          }
+          return parseJsonOrThrow<ExecutionHistoryEntry>(res);
+        }),
 
     getConversationMessages: (conversationId: number) =>
-      fetch(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
 
+    // `known` : nombre d'agents terminés déjà reçus, pour ne pas retransmettre leur texte à chaque sondage.
+    getConversationProgress: (conversationId: number, known = 0) =>
+      request(`${apiUrl}/api/conversations/${conversationId}/progress?known=${known}`, { headers: authHeaders(accessToken) })
+        .then((res) => parseJsonOrThrow<ConversationProgress>(res)),
+
     listRepoTargets: () =>
-      fetch(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<RepoTargetSuggestion[]>(res)),
 
+    getMetricsSummary: (days: number, workflow: MetricsWorkflowFilter, signal?: AbortSignal) => {
+      // Décalage du navigateur à l'est d'UTC : les jours du graphique quotidien sont des jours LOCAUX.
+      const tzOffset = -new Date().getTimezoneOffset();
+      const query = new URLSearchParams({ days: String(days), tz_offset: String(tzOffset) });
+      if (workflow !== 'ALL') query.set('workflow', workflow);
+      return request(`${apiUrl}/api/metrics/summary?${query}`, { headers: authHeaders(accessToken), signal })
+        .then((res) => parseJsonOrThrow<MetricsSummary>(res));
+    },
+
+    getMetricsExecutions: (
+      query: { days: number; workflow: MetricsWorkflowFilter; status: 'all' | 'success' | 'failed'; sort: ExecutionSortKey;
+        order: 'asc' | 'desc'; limit: number; offset: number },
+      signal?: AbortSignal,
+    ) => {
+      const params = new URLSearchParams({
+        days: String(query.days), sort: query.sort, order: query.order, limit: String(query.limit), offset: String(query.offset),
+      });
+      if (query.workflow !== 'ALL') params.set('workflow', query.workflow);
+      if (query.status !== 'all') params.set('status', query.status);
+      return request(`${apiUrl}/api/metrics/executions?${params}`, { headers: authHeaders(accessToken), signal })
+        .then((res) => parseJsonOrThrow<ExecutionsPage>(res));
+    },
+
+    getExecutionAgentRuns: (executionId: number, signal?: AbortSignal) =>
+      request(`${apiUrl}/api/executions/${executionId}/agent-runs`, { headers: authHeaders(accessToken), signal })
+        .then((res) => parseJsonOrThrow<AgentRunView[]>(res)),
+
     deleteHistoryEntry: (id: number) =>
-      fetch(`${apiUrl}/api/history/${id}`, { method: 'DELETE', headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/history/${id}`, { method: 'DELETE', headers: authHeaders(accessToken) })
         .then((res) => parseJsonOrThrow<{ status: string; id: number }>(res)),
+
+    deleteHistoryEntries: (ids: number[]) =>
+      request(`${apiUrl}/api/history/bulk-delete`, {
+        method: 'POST',
+        headers: authHeaders(accessToken),
+        body: JSON.stringify({ ids }),
+      }).then((res) => parseJsonOrThrow<BulkDeleteResult>(res)),
   };
 }

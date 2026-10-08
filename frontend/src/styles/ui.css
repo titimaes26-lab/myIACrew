@@ -1,0 +1,106 @@
+/* Composants de base : Button, Card, Badge, Alert, champs de formulaire. Les états :hover, :active,
+   :disabled et :focus-visible vivent ici (impossibles à exprimer en style en ligne). */
+
+/* --- Button --- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: var(--font-sm);
+  line-height: 1.3;
+  color: var(--fg);
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
+}
+.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--fg-subtle); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+/* Après :hover (même poids) : un bouton bascule ouvert garde son apparence « pressé » au survol. */
+.btn[aria-pressed="true"],
+.btn[aria-pressed="true"]:hover:not(:disabled) { background: var(--info-soft); border-color: var(--info-line); color: var(--info-fg); }
+
+.btn--primary { color: var(--primary-fg); background: var(--primary); border-color: transparent; font-weight: 600; }
+.btn--primary:hover:not(:disabled) { background: var(--primary-hover); border-color: transparent; }
+.btn--danger { color: var(--danger-fg); background: var(--danger-soft); border-color: var(--danger-line); }
+.btn--danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger-fg); }
+.btn--info { color: var(--info-fg); background: var(--info-soft); border-color: var(--info-line); }
+.btn--info:hover:not(:disabled) { background: var(--info-soft); border-color: var(--info-fg); }
+.btn--ghost { color: var(--fg-muted); background: transparent; }
+.btn--ghost:hover:not(:disabled) { background: var(--surface-3); }
+.btn--sm { padding: 4px 10px; font-size: var(--font-xs); }
+.btn--chip { padding: 4px 10px; font-size: var(--font-xs); border-radius: 999px; }
+.btn--block { padding-inline: 20px; font-weight: 600; }
+
+/* --- Card --- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 15px;
+}
+
+/* --- Badge --- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--info-fg);
+  background: var(--info-soft);
+}
+.badge--success { color: var(--success-fg); background: var(--success-soft); }
+.badge--danger { color: var(--danger-fg); background: var(--danger-soft); }
+.badge--warning { color: var(--warning-fg); background: var(--warning-soft); }
+
+/* --- Alert --- */
+.alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  font-size: var(--font-md);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-sm);
+  color: var(--danger-fg);
+  background: var(--danger-soft);
+}
+.alert--warning { color: var(--warning-fg); background: var(--warning-soft); border-color: var(--warning-line); }
+
+/* --- Champs --- */
+.field {
+  padding: 8px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  transition: border-color var(--transition);
+}
+.field::placeholder { color: var(--fg-subtle); }
+.field:hover:not(:disabled) { border-color: var(--fg-subtle); }
+.field:disabled { opacity: 0.6; cursor: not-allowed; }
+.field--sm { padding: 4px 8px; font-size: var(--font-sm); }
+.field--accent,
+.field--accent:hover:not(:disabled) { color: var(--primary-text); background: var(--primary-soft); border-color: var(--primary); font-weight: 600; }
+select.field { cursor: pointer; }
+select.field:disabled { cursor: not-allowed; }
+
+.muted { color: var(--fg-muted); }
+.text-sm { font-size: var(--font-sm); }
+
+@media (prefers-reduced-motion: reduce) {
+  .btn, .field { transition: none; }
+  .btn:active:not(:disabled) { transform: none; }
+}

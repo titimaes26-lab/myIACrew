@@ -1,0 +1,12 @@
+# Contrôles volontairement modestes au départ : erreurs réelles (imports et variables inutilisés, noms
+# indéfinis, erreurs de syntaxe) plus quelques pièges classiques. Les règles de style (longueur de ligne,
+# formatage) ne sont pas activées : elles réécriraient tout l'historique sans corriger de bug.
+target-version = "py311"
+extend-exclude = ["workspace"]
+
+[lint]
+select = ["F", "E4", "E7", "E9", "B006"]
+
+[lint.per-file-ignores]
+"crewquestion.py" = ["E402"]   # load_dotenv() et la config d'environnement doivent précéder l'import de crewai
+"tests/*" = ["E402"]   # sys.path.insert avant les imports du projet

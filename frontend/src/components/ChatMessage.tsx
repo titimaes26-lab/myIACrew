@@ -1,14 +1,16 @@
-import { lazy, memo, Suspense, useMemo } from 'react';
-import type { ChatTurn } from '../types';
+import { memo, useMemo } from 'react';
+import type { ChatTurn, LaunchControls } from '../types';
 import StepIndicator from './StepIndicator';
-import { parseCrewResult } from '../utils/parseCrewResult';
+import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
-import { formatDuration, formatTime } from '../utils/formatDuration';
-import { agentIcon } from '../constants/agentIcons';
-
-// Chargé à la demande : react-syntax-highlighter (Prism + grammaires) ne doit entrer
-// dans le bundle que si un résultat d'agent est effectivement affiché.
-const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
+import { isTransientFailure } from '../utils/failureView';
+import FailureBlock from './FailureBlock';
+import { stepShortLabelForKey } from '../constants/workflowSteps';
+import { elapsedSeconds, formatDuration, formatTime } from '../utils/formatDuration';
+import ResultSections from './ResultSections';
+import LaunchPreview from './LaunchPreview';
+import Button from './ui/Button';
+import ExecutionBreakdown from './metrics/ExecutionBreakdown';
 
 const STATUS_LABEL: Record<ChatTurn['status'], string> = {
   clarifying: '❓ Précisions nécessaires',
@@ -38,92 +40,140 @@ function formatMetrics(turn: ChatTurn): string | null {
   return parts.join(' · ');
 }
 
-function ChatMessage({ turn }: { turn: ChatTurn }) {
+interface ChatMessageProps {
+  turn: ChatTurn;
+  // Optionnel : absent (HistoryPanel n'affiche pas de ChatMessage) ou non fourni ne change
+  // rien d'autre que masquer le bouton "Relancer", jamais une erreur.
+  onRetry?: (turn: ChatTurn) => void;
+  // Désactive "Relancer" pendant qu'un autre envoi est déjà en cours (une seule exécution à la
+  // fois par conversation, imposée côté serveur — voir backend/routes_execute.py), MAIS AUSSI tant qu'une
+  // clarification est en attente de réponse : "Relancer" préremplit la zone de saisie avec le
+  // texte d'UN AUTRE tour, qui serait alors envoyé comme réponse à cette clarification-là plutôt
+  // que comme la nouvelle demande affichée (sendMessage route tout texte tapé pendant qu'une
+  // clarification est en attente vers cette clarification, quel que soit son contenu réel — voir
+  // Studio.tsx).
+  retryDisabled: boolean;
+  // Actions de l'aperçu avant lancement ; absentes, l'aperçu n'est tout simplement pas affiché.
+  launch?: LaunchControls;
+  // Clic sur une prochaine étape du résumé : préremplit la zone de saisie (jamais d'envoi automatique).
+  onSuggest?: (text: string) => void;
+}
+
+function ChatMessage({ turn, onRetry, retryDisabled, launch, onSuggest }: ChatMessageProps) {
   const duration = turn.updatedAt ? formatDuration(turn.createdAt, turn.updatedAt) : null;
   const failure = turn.status === 'failed' && turn.result ? parseFailureDetail(turn.result) : null;
   const metricsLabel = formatMetrics(turn);
+  // Pendant l'exécution, la frise (StepIndicator) montre déjà les étapes reprises : la note ne sert qu'après.
+  const resumedLabel = turn.resumedSteps?.length && turn.status !== 'running'
+    ? turn.resumedSteps.map(stepShortLabelForKey).join(', ')
+    : null;
   // Calculé une seule fois et réutilisé pour le useMemo ci-dessous ET le rendu JSX plus
   // bas, plutôt que dupliqué aux deux endroits : sinon les deux pourraient diverger si
   // l'un est modifié sans l'autre (ex: JSX étendu à un autre statut sans mettre à jour
   // la condition du useMemo), laissant `sections` vide pour un cas que le JSX affiche.
   const isSuccess = Boolean(turn.result) && turn.status === 'success';
+  const isRunningWithAgents = turn.status === 'running' && turn.completedAgents && Object.keys(turn.completedAgents).length > 0;
+
   // Le parsing par regex du résultat complet (qui peut contenir du code source entier sur
   // un workflow FEATURE/DESIGN_AND_DEV) ne doit être refait que si turn.result change, pas
   // à chaque rendu de ce composant.
-  const sections = useMemo(() => (isSuccess ? parseCrewResult(turn.result!) : []), [isSuccess, turn.result]);
+  // Affiche aussi les agents complétés progressivement pendant l'exécution (isRunningWithAgents).
+  const sections = useMemo(() => {
+    const allSections: ReturnType<typeof parseCrewResult> = [];
+
+    // Ajouter les agents progressivement reçus
+    if (turn.completedAgents) {
+      Object.entries(turn.completedAgents).forEach(([agentName, rawContent]) => {
+        const { durationSeconds, content } = extractAgentDuration(rawContent);
+        allSections.push({ agentName, content, durationSeconds });
+      });
+    }
+
+    // Ajouter les sections finales du résultat complet (si succès)
+    if (isSuccess && turn.result) {
+      const finalSections = parseCrewResult(turn.result);
+      // Fusionner en évitant les doublons (certains agents peuvent être dans completedAgents ET dans result)
+      finalSections.forEach((section) => {
+        if (!allSections.some((s) => s.agentName === section.agentName)) {
+          allSections.push(section);
+        }
+      });
+    }
+
+    return allSections;
+  }, [isSuccess, turn.result, turn.completedAgents]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
-      <div style={{ alignSelf: 'flex-end', maxWidth: '80%', backgroundColor: '#0070f3', color: '#fff', padding: '10px 14px', borderRadius: '12px 12px 2px 12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {turn.userMessage}
-      </div>
-      <div style={{ alignSelf: 'flex-start', maxWidth: '90%', backgroundColor: '#f8f9fa', border: '1px solid #e1e4e8', borderRadius: '2px 12px 12px 12px', padding: '12px 14px' }}>
-        <div style={{ fontSize: '13px', color: '#666', marginBottom: '6px' }}>
-          {STATUS_LABEL[turn.status]}
+    <div className="turn">
+      <div className="bubble bubble--user">{turn.userMessage}</div>
+      <div className="bubble bubble--agent">
+        <div className="turn-meta" role="status" aria-live="polite">
+          {/* dismissedLocally (voir sa définition dans types.ts) : affiché comme "Annulé" bien
+              que turn.status reste 'running' en interne (le sondage de progression continue) —
+              purement pour ne pas afficher "En cours..." indéfiniment à l'utilisateur après son
+              clic sur "Annuler". */}
+          {turn.status === 'running' && turn.dismissedLocally
+            ? '🚫 Annulé'
+            // L'aperçu avant lancement réutilise le statut « clarifying » : il ne demande aucune précision, il attend un « Lancer ».
+            : turn.launchPreview ? '🚀 En attente de confirmation' : STATUS_LABEL[turn.status]}
           {turn.workflow ? ` · ${turn.workflow}` : ''}
           {` · ${formatTime(turn.createdAt)}`}
           {duration ? ` · ${duration}` : ''}
           {metricsLabel ? ` · ${metricsLabel}` : ''}
         </div>
 
-        {turn.agentSummary && <p style={{ margin: '0 0 8px 0' }}>{turn.agentSummary}</p>}
+        {resumedLabel && (
+          <p className="note note--xs">
+            ↻ Reprise : {resumedLabel} déjà réussie{turn.resumedSteps && turn.resumedSteps.length > 1 ? 's' : ''} lors de la tentative précédente, réutilisée{turn.resumedSteps && turn.resumedSteps.length > 1 ? 's' : ''}.
+          </p>
+        )}
+
+        {typeof turn.id === 'number' && (turn.status === 'success' || turn.status === 'failed') && (
+          <ExecutionBreakdown executionId={turn.id} totalSeconds={turn.updatedAt ? elapsedSeconds(turn.createdAt, turn.updatedAt) : null} />
+        )}
+
+        {turn.agentSummary && <p className="paragraph">{turn.agentSummary}</p>}
+
+        {turn.launchPreview && launch && <LaunchPreview preview={turn.launchPreview} controls={launch} />}
 
         {turn.questions && turn.questions.length > 0 && (
-          <ul style={{ margin: '0 0 8px 0', paddingLeft: '20px' }}>
+          <ul className="question-list">
             {turn.questions.map((q, i) => (
-              <li key={i} style={{ marginBottom: '4px' }}>{q}</li>
+              <li key={i}>{q}</li>
             ))}
           </ul>
         )}
 
-        {turn.status === 'running' && (
-          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} since={turn.createdAt} />
+        {turn.status === 'running' && !turn.dismissedLocally && (
+          <StepIndicator key={turn.workflow ?? 'pending'} workflow={turn.workflow} scope={turn.scope} since={turn.createdAt} currentStepKey={turn.currentStep} queueAhead={turn.queueAhead} reusedSteps={turn.resumedSteps} />
         )}
 
-        {turn.result && turn.status === 'failed' && failure && (
-          <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '10px 12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#991b1b', marginBottom: '6px' }}>
-              <span>{agentIcon(failure.agentRole)}</span>
-              <span>
-                Échec à l'étape {failure.stepIndex}/{failure.totalSteps} — {failure.agentRole}
-              </span>
-            </div>
-            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace', color: '#7f1d1d' }}>
-              {failure.message}
-            </pre>
-          </div>
+        {turn.status === 'running' && turn.dismissedLocally && (
+          <p className="note">
+            Annulé côté interface. L'exécution continue côté serveur : le résultat, une fois prêt,
+            sera visible dans l'historique de cette conversation.
+          </p>
         )}
 
-        {turn.result && turn.status === 'failed' && !failure && (
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: '13px', margin: 0, fontFamily: 'monospace' }}>
-            {turn.result}
-          </pre>
+        {turn.status === 'failed' && <FailureBlock turn={turn} detail={failure} />}
+
+        {turn.status === 'failed' && onRetry && (
+          <Button
+            variant={isTransientFailure(turn.errorRetryable, turn.errorCode) ? 'primary' : 'danger'}
+            size="sm"
+            className="retry-btn"
+            onClick={() => onRetry(turn)}
+            disabled={retryDisabled}
+          >
+            🔁 Relancer cette demande
+          </Button>
         )}
 
         {turn.result && turn.status === 'cancelled' && (
-          <p style={{ margin: 0, fontSize: '13px', color: '#666', fontStyle: 'italic' }}>{turn.result}</p>
+          <p className="note">{turn.result}</p>
         )}
 
-        {isSuccess && (
-          <Suspense fallback={<p style={{ margin: 0, fontSize: '13px', color: '#666' }}>Chargement du résultat...</p>}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {sections.map((section, i) => (
-                <div
-                  key={i}
-                  style={{ backgroundColor: '#fff', border: '1px solid #e1e4e8', borderRadius: '8px', padding: '10px 12px' }}
-                >
-                  {section.agentName && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600, color: '#444', marginBottom: '6px' }}>
-                      <span>{agentIcon(section.agentName)}</span>
-                      <span>{section.agentName}</span>
-                    </div>
-                  )}
-                  <MarkdownRenderer content={section.content} />
-                </div>
-              ))}
-            </div>
-          </Suspense>
-        )}
+        {(isSuccess || isRunningWithAgents) && <ResultSections sections={sections} onSuggest={onSuggest} />}
       </div>
     </div>
   );

@@ -1,0 +1,16 @@
+# Contrôles rapides avant chaque commit (même base que la CI) : `pip install pre-commit && pre-commit install`.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff
+        files: ^backend/
+        args: [--config, backend/ruff.toml]
+  - repo: local
+    hooks:
+      - id: frontend-lint-types
+        name: frontend (eslint + tsc)
+        entry: bash -c 'cd frontend && npm run lint && npm run typecheck'
+        language: system
+        files: ^frontend/src/
+        pass_filenames: false

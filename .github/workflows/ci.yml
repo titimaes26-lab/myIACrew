@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main, test]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    # 3.12 : la version de la production (backend/.python-version) ; 3.11 : minimum accepté (asyncio.timeout).
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-dev.txt
+            backend/requirements.txt
+            backend/requirements.lock
+      - run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Types (mypy)
+        run: mypy
+      - name: Tests (pytest)
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      # Valeurs factices : le client Supabase exige ces variables à l'import, aucun appel réseau n'est fait.
+      VITE_SUPABASE_URL: http://localhost
+      VITE_SUPABASE_ANON_KEY: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Lint (eslint)
+        run: npm run lint
+      - name: Types (tsc)
+        run: npm run typecheck
+      - name: Tests (vitest)
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  # Veille des failles connues dans les dépendances figées. Informatif (n'empêche pas de fusionner) : une faille sans
+  # correctif publié (ex. dépendance indirecte bornée par CrewAI) rendrait sinon la CI rouge en permanence. À lire à
+  # chaque exécution, et à traiter en régénérant backend/requirements.lock quand un correctif existe.
+  audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Failles connues du verrou Python (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit --no-deps --disable-pip -r backend/requirements.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Failles connues des dépendances npm de production
+        working-directory: frontend
+        run: npm audit --omit=dev

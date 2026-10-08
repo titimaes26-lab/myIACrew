@@ -1,26 +1,7 @@
-qualification_task:
-  description: >
-    Analyse la demande utilisateur suivante :
-    ---
-    {user_request}
-    ---
-    
-    Consignes strictes :
-    1. Détermine la catégorie exacte parmi : ANALYSE_ONLY, BUGFIX, FEATURE, DESIGN_AND_DEV.
-    2. Ne tente jamais d'exécuter des vérifications de fichiers sur le disque.
-    3. Si la demande concerne un dysfonctionnement (ex: écran blanc, erreur de démarrage), choisis BUGFIX.
-  expected_output: >
-    Un rapport structuré contenant la catégorie choisie (ANALYSE_ONLY, BUGFIX, FEATURE ou DESIGN_AND_DEV) 
-    et une justification courte.
-  agent: qualification_agent
-
 design_task:
   description: >
     Sur la base de la demande ({user_request}), commence par déterminer s'il s'agit d'un jeu
-    ou d'une application/logiciel classique, puis définis les spécifications fonctionnelles
-    adaptées : pour un jeu, les mécaniques, les règles, les entités nécessaires et le flux
-    utilisateur ; pour une application, les fonctionnalités, les règles métier, les entités
-    de données et les parcours utilisateur.
+    ou d'une application/logiciel classique, puis applique le gabarit correspondant (ci-dessous).
 
     Contexte de la conversation (tours précédents de cet utilisateur, à prendre en compte
     si la demande actuelle s'appuie dessus, ex: "ajoute aussi Y") :
@@ -32,49 +13,120 @@ design_task:
     (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour t'appuyer sur le code existant
     avant de rédiger les specs.
 
+    Avec un repository cible, commence par UN `github_list_directory` à la racine puis, s'il existe,
+    lis le README ou le PRD : note ce qui existe déjà et ce qui manque par rapport à la demande,
+    plutôt que de spécifier comme si le projet partait de zéro.
+
+    Raisonne dans cet ordre, sans sauter d'étape :
+    1. Besoin réel : reformule en 2-3 phrases le problème que la demande cherche à résoudre.
+    2. Utilisateurs / joueurs : qui utilise quoi, dans quel but.
+    3. Fonctionnalités, classées MoSCoW, chacune sur UNE ligne au format "- F1 [Must] titre court" :
+       identifiants stables F1, F2, F3... (jamais renumérotés). Le "Must" forme le MVP à livrer
+       d'abord : 5 fonctionnalités "Must" AU PLUS, assez petites pour être codées en une seule passe.
+       3 "Should" et 3 "Could" au plus, une ligne chacun. Chaque "Won't" tient en une ligne avec sa
+       raison. Une fonctionnalité "Must" de trop est à rétrograder en "Should", pas à garder.
+    4. Règles et cas limites : valeurs extrêmes, états vides, erreurs, conditions de victoire/défaite
+       pour un jeu, validations pour une application.
+    5. Critères d'acceptation TESTABLES pour chaque fonctionnalité "Must" : 3 AU PLUS par fonctionnalité,
+       identifiés AC-F1-1, AC-F1-2... (le numéro de la fonctionnalité puis un rang), au format
+       "Étant donné ... / Quand ... / Alors ..." : la QA s'en servira pour juger la livraison.
+       Aucun terme vague (rapide, fluide, intuitif, simple, convivial, joli, moderne) sans seuil
+       mesurable : écris "s'affiche en moins de 1 seconde", pas "s'affiche rapidement".
+    6. Exigences non fonctionnelles : accessibilité, responsive, performance, persistance (sauvegarde,
+       données conservées ou non). Une ligne par point pertinent pour cette demande ; écris
+       "non spécifié" plutôt que d'inventer.
+    7. Composants d'interface requis : une ligne par composant au format
+       "- NomDuComposant (F1) : états : vide, chargement, erreur, succès" (garde les états utiles,
+       et rattache chaque composant à au moins une fonctionnalité).
+    Tout point que la demande ne tranche pas va dans une section "Hypothèses retenues" (ce que tu as
+    supposé et pourquoi), jamais comblé en silence.
+
+    Gabarit pour un JEU : ajoute à la section "Règles et cas limites" la boucle de gameplay en
+    quelques étapes, les ressources et l'économie avec leurs valeurs de départ chiffrées et leurs
+    bornes, la progression, les conditions de victoire et de défaite, et ce qui est équilibré par
+    quel paramètre.
+    Gabarit pour une APPLICATION : ajoute les parcours utilisateur de bout en bout, les entités de
+    données avec leurs champs et validations, les règles métier, et les états ou permissions qui
+    changent ce que l'utilisateur voit.
+
+    Termine par une section "Contrôle" qui répond OUI ou NON, une ligne chacune : chaque fonctionnalité
+    "Must" a-t-elle au moins un critère AC ? Un terme vague est-il resté sans seuil mesurable ?
+    Chaque composant d'interface renvoie-t-il à une fonctionnalité ? Corrige avant de répondre si une
+    réponse est NON. Garde la spécification complète sous environ 1200 mots, titres de section en
+    "##" (pas de "###" par fonctionnalité).
+
     Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
     d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
     auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
     ne s'est produit. Si tu inclus un exemple de code illustratif, indique explicitement qu'il s'agit
     d'un exemple non exécuté.
   expected_output: >
-    Un document de spécifications clair détaillant, selon le cas, les mécaniques de jeu ou les
-    fonctionnalités applicatives, ainsi que les composants d'interface requis.
+    Un document de spécifications avec, dans cet ordre, des titres "##" : "Besoin", "Utilisateurs",
+    "Existant" (si un repository est fourni), "Fonctionnalités (MoSCoW)" (lignes "- F1 [Must] ..."),
+    "Règles et cas limites", "Critères d'acceptation" (AC-F1-1... au format Étant donné / Quand /
+    Alors, pour chaque fonctionnalité Must), "Exigences non fonctionnelles", "Composants d'interface",
+    "Hypothèses retenues" et "Contrôle" (réponses OUI/NON).
   agent: product_designer_agent
 
 architecture_task:
   description: >
+    Workflows DESIGN_AND_DEV et ANALYSE_ONLY : le document de spécifications de la tâche précédente est
+    dans ton contexte. Workflow FEATURE : cette tâche est la PREMIÈRE du crew, base-toi directement sur
+    la demande ci-dessous. Définis la structure des fichiers du projet React/Vite, la hiérarchie des
+    composants, les props et la gestion d'état.
+
+    Lecture du repository (owner, repo et branche : « Contexte repository », plus bas) avec
+    `github_read_file` et `github_list_directory`. Si un APERÇU DU REPOSITORY figure plus bas, ne relis PAS
+    ces fichiers : au plus 2 lectures de plus, pour un fichier précis qu'il ne couvre pas. Sans aperçu :
+    4 lectures AU PLUS, dans cet ordre : racine, `package.json`, `tsconfig.json` (s'il existe), `src`.
+    Sans repository : aucune lecture, toute dépendance proposée est à ajouter.
+    Si un PLAN DU TOUR PRÉCÉDENT figure plus bas, pars de lui, mais il peut être périmé : confronte-le à
+    l'aperçu et à la demande. Garde TOUTES les sections et leur format ; ne détaille que ce que CETTE
+    demande change (Cible, Décisions, Contrats et Fichiers concernent ses seuls fichiers), le reste : "inchangé".
+
+    Raisonne dans cet ordre :
+    1. Existant : arborescence et composants RÉELLEMENT lus (ou "projet vide / aucun repository"), et
+       conventions en place (nommage, état, CSS, tests, TypeScript strict) que tu REPRENDS.
+    2. Cible : ce qui change (ajouts, modifications, suppressions), en évolution ciblée plutôt qu'en refonte.
+    3. Décisions : par choix structurant, une ligne "Décision : ... | Alternative écartée : ... | Pourquoi : ...".
+    4. Dépendances à ajouter : une ligne "paquet : raison" par paquet absent de `package.json`, sinon "aucune".
+       Ne propose jamais un paquet déjà couvert par une dépendance installée.
+    5. Contrats d'interface : une ligne par fichier de code, "chemin : exports avec signatures TypeScript"
+       (props, paramètres, retours), signatures seules : ni corps, ni commentaire, ni exemple d'usage.
+    6. Fichiers à créer ou modifier : une ligne "- CRÉER|MODIFIER <chemin> : <rôle en une phrase>" par fichier.
+    7. Couverture : tableau "Exigence | Fichier(s)". Identifiants des specs (F1, AC-F1-1...) s'il y en a,
+       sinon (FEATURE) 2 à 5 exigences E1, E2... tirées de la demande. Chaque exigence a au moins un fichier,
+       aucun fichier n'est orphelin ; signale tout écart.
+    8. Risques : 2 à 3 risques techniques, chacun avec sa parade en une ligne.
+    Environ 1000 mots HORS section "Contrats d'interface", titres de section en "##". Fichiers assez
+    petits pour être réécrits EN ENTIER : composant UI d'environ 200 lignes au plus, logique 300 au plus.
+
+    Lecture seule : n'invente JAMAIS de commit, branche, Pull Request, numéro de PR, URL ou SHA (rien de tout
+    cela n'a eu lieu). Un exemple de code illustratif est signalé comme non exécuté, sans donnée GitHub factice.
+
+    === Données de cette demande ===
     Demande initiale de l'utilisateur :
     ---
     {user_request}
     ---
-    Pour un workflow DESIGN_AND_DEV ou ANALYSE_ONLY, tu reçois aussi le document de spécifications
-    (Game Design ou spécifications applicatives) produit par la tâche précédente, disponible dans
-    ton contexte. Pour un workflow FEATURE en revanche, cette tâche est la PREMIÈRE du crew (aucune
-    tâche de conception avant) : base-toi alors directement sur la demande ci-dessus, faute de quoi
-    tu ne saurais pas ce qui doit être construit.
-    Définis la structure des fichiers du projet React/Vite.
-    Spécifie la hiérarchie des composants, les props et la gestion d'état.
 
     Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
 
     Contexte repository :
     {repo_instructions}
-    Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
-    (owner={repo_owner}, repo={repo_name}, branch={base_branch}) pour analyser l'arborescence réelle du projet.
 
-    Tu n'as accès à aucun outil d'écriture GitHub dans cette tâche (lecture seule). N'invente JAMAIS
-    d'action GitHub réalisée (commit, branche créée, Pull Request ouverte) ni d'identifiants qui
-    auraient l'air réels (numéro de PR, URL github.com/.../pull/N, SHA de commit) : rien de tout cela
-    ne s'est produit. Si tu inclus un exemple de code illustratif (ex: un hook simulant un appel API),
-    indique explicitement qu'il s'agit d'un exemple non exécuté et n'y fais figurer aucune donnée
-    GitHub factice qui pourrait passer pour réelle.
+    Aperçu du repository (vide si aucun) :
+    {repo_snapshot}
+
+    Plan du tour précédent (vide si aucun) :
+    {previous_plan}
   expected_output: >
-    L'arborescence complète du projet et l'interface TypeScript des principaux composants.
+    Des titres "##" dans cet ordre : "Existant", "Cible", "Décisions", "Dépendances à ajouter",
+    "Contrats d'interface", "Fichiers à créer ou modifier", "Couverture", "Risques".
   agent: architect_agent
 
-development_task:
+diagnostic_task:
   description: >
     Demande initiale de l'utilisateur :
     ---
@@ -82,75 +134,205 @@ development_task:
     ---
     Base-toi sur cette demande (et, le cas échéant, sur les documents de spécifications/architecture
     produits par les tâches précédentes de ce workflow, disponibles dans ton contexte). Un workflow
-    BUGFIX ne comprend que cette tâche et la QA, sans tâche de conception/architecture avant : sans
-    la demande rappelée ci-dessus, tu n'aurais aucune information sur ce qui a été demandé, le
-    contexte de conversation plus bas ne couvrant que les tours PRÉCÉDENTS, jamais la demande en
-    cours.
+    BUGFIX ne comprend que cette tâche, le Développeur et la QA, sans tâche de conception/architecture
+    avant : sans la demande rappelée ci-dessus, tu n'aurais aucune information sur ce qui a été
+    demandé, le contexte de conversation plus bas ne couvrant que les tours PRÉCÉDENTS, jamais la
+    demande en cours.
 
-    Génère le code source complet ou apporte les corrections nécessaires sur les fichiers existants.
+    Méthode de raisonnement (obligatoire) :
+    1. Hypothèses : AVANT toute lecture, liste 2 à 3 hypothèses de cause (ou, pour une
+       fonctionnalité, les points d'intégration possibles), classées de la plus à la moins probable.
+       Si l'Architecte a fourni une section "Fichiers à créer ou modifier", pars de cette liste.
+    2. Lectures ciblées : choisis les lectures qui départagent le mieux ces hypothèses (pas celles
+       qui confirment seulement la première).
+    3. Conclusion : retiens une hypothèse et écris une section "Traçabilité" : symptôme décrit →
+       cause identifiée (fichier et fonction/ligne) → changement apporté. Pour une fonctionnalité :
+       besoin → fichiers touchés → comportement obtenu.
+       Ajoute à "Traçabilité" deux lignes : "Ce qui infirmerait cette cause" (le constat qui prouverait
+       que tu t'es trompé) et "Vérification manuelle" (les étapes pour reproduire le problème puis
+       constater la correction, que la QA pourra suivre).
+
+    Détermine la cause réelle du bug (ou ce que la fonctionnalité demandée nécessite), puis rédige le
+    CODE SOURCE COMPLET des fichiers à créer ou modifier. Ce code sera committé TEL QUEL par la tâche
+    suivante (le Développeur), qui n'a lui-même AUCUN outil de lecture ni de raisonnement sur son
+    contenu — c'est un pur exécutant GitHub. Si tu laisses un extrait incomplet, une section "..." ou
+    une note "à compléter", elle sera committée ainsi sur GitHub sans que personne ne la complète.
+    Chaque fichier de ta sortie doit donc être entier et directement utilisable.
+
     Si la demande ci-dessus décrit spécifiquement un écran blanc ou une erreur de démarrage, ta
     correction doit porter sur le point d'entrée (`index.html`) et le point de montage React
-    (`src/main.tsx`) : lis-les avant de fournir ton correctif (voir plus bas comment lire un fichier
-    existant selon qu'un repository cible est fourni ou non — une seule et même procédure, pas
-    d'appel d'outil distinct à faire ici).
+    (`src/main.tsx`) : lis-les avant de fournir ton correctif.
     Pour tout autre BUGFIX, NE PRÉSUME JAMAIS qu'il s'agit d'un écran blanc simplement parce que la
     catégorie du workflow est "BUGFIX" : diagnostique la cause réelle à partir de ce que la demande
     ci-dessus décrit précisément (ex: un calcul faux, une validation de formulaire qui échoue, un
     comportement incorrect signalé par l'utilisateur), en lisant le code concerné.
+    Ce diagnostic doit rester raisonnable, avec un budget de lecture proportionnel au travail : UNE
+    lecture par fichier à MODIFIER (la liste "Fichiers à créer ou modifier" de l'Architecte, s'il y en
+    a une) plus 2 lectures de contexte, soit 5 lectures AU PLUS (`github_read_file` ou
+    `read_a_files_content`), avant de conclure et de rédiger le code. Si après ce budget la cause
+    exacte reste incertaine, corrige la cause la PLUS PROBABLE à partir de ce que tu as déjà lu
+    plutôt que de continuer à investiguer : un correctif imparfait mais rédigé vaut toujours mieux
+    qu'une analyse jamais conclue, qui laisserait la tâche suivante sans rien à committer.
 
-    Avant d'écrire quoi que ce soit, énonce dans ta sortie finale (avant le code) la liste des
-    fichiers que tu comptes créer ou modifier et une justification d'une ligne pour chacun : ce
-    plan doit rester visible pour que la QA et l'utilisateur puissent suivre ton raisonnement,
-    pas seulement constater le résultat final.
-
-    Contexte de la conversation (tours précédents de cet utilisateur, notamment la
-    branche de travail éventuellement déjà utilisée) :
+    Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
-    Ce contexte est un RÉSUMÉ potentiellement imprécis ou incomplet rédigé à un tour précédent,
-    pas une preuve de l'état réel du code. Si un repository cible est fourni et que ce résumé
-    mentionne une branche de travail déjà utilisée, relis l'état RÉEL des fichiers concernés avec
-    `github_read_file` (branch={work_branch}) avant de t'appuyer dessus : ne présume jamais qu'un
-    fichier existe, a tel contenu, ou qu'une action a réussi uniquement parce que le résumé
-    l'affirme.
+    Ce contexte est un RÉSUMÉ potentiellement imprécis ou incomplet rédigé à un tour précédent, pas
+    une preuve de l'état réel du code : ne présume jamais qu'un fichier existe, a tel contenu, ou
+    qu'une action a réussi uniquement parce que ce résumé l'affirme. Pour savoir SUR QUELLE BRANCHE
+    lire, fie-toi exclusivement à ce que dit "Contexte repository" ci-dessous (calculé de façon
+    fiable par le système, pas résumé par un LLM), jamais à ce résumé de conversation.
 
     Contexte repository :
     {repo_instructions}
-    Si un repository GitHub cible est fourni (owner={repo_owner}, repo={repo_name}), applique STRICTEMENT
-    cette procédure au lieu d'écrire sur le disque local :
-    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch}
-       (un seul appel pour toute cette tâche, y compris pour toute lecture diagnostique d'un fichier
-       existant à l'étape 2).
-    2. Pour un nouveau fichier, lis d'abord le contexte utile avec `github_read_file`
-       (branch={base_branch}) puis crée-le avec `github_write_file` (branch={work_branch}).
-       Pour lire un fichier déjà existant (diagnostic d'un bug, ou avant une correction ciblée),
-       utilise `github_read_file` sur {work_branch} — jamais {base_branch}, qui ne refléterait pas
-       un correctif déjà commité à un tour précédent sur cette même branche de travail réutilisée.
-       Pour une correction ciblée sur un fichier déjà existant et volumineux, préfère
-       `github_edit_file` (extrait exact à remplacer) à `github_write_file` : c'est plus
-       rapide et ça évite de faire disparaître du contenu en régénérant tout le fichier. Si
-       `github_edit_file` t'indique explicitement un ÉCHEC RÉPÉTÉ sur ce même fichier,
-       n'insiste pas avec une nouvelle tentative : bascule sur `github_write_file` avec son
-       contenu complet déjà corrigé, plutôt que de risquer d'épuiser ton budget d'appels
-       d'outils sur un seul fichier sans jamais committer de correctif. Toujours un
-       commit_message clair.
-    3. Avant de committer un fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx, vérifie sa syntaxe
-       avec `check_syntax` (vérification statique, sans exécution) et corrige tout problème
-       signalé avant de continuer.
-    4. Une fois toutes les modifications commitées, appelle `github_open_pull_request`
-       (branch={work_branch}, base_branch={base_branch}) avec un titre et une description résumant les changements.
-    Ne modifie jamais directement la branche {base_branch}.
+    Si un repository GitHub cible est fourni, utilise `github_read_file` et `github_list_directory`
+    (owner={repo_owner}, repo={repo_name}) pour lire le code existant pertinent, sur la branche que
+    "Contexte repository" ci-dessus indique (jamais une autre : lire {work_branch} alors qu'il
+    n'existe pas encore produirait une erreur inutile ; lire {base_branch} alors que {work_branch}
+    existe déjà ignorerait un correctif commité à un tour précédent sur cette même branche). Tu n'as
+    accès à aucun outil d'écriture GitHub : ce n'est pas ton rôle de committer, seulement de produire
+    le code — n'invente JAMAIS d'action GitHub réalisée (commit, branche créée, Pull Request ouverte)
+    ni d'identifiants qui auraient l'air réels, rien de tout cela ne s'est produit à ce stade.
     Sans repository cible (travail sur disque local), utilise `read_a_files_content` pour toute
-    lecture, y compris diagnostique.
+    lecture.
+    Si un APERÇU DU REPOSITORY figure en fin de tâche (lu par le système avant ton travail : racine,
+    dépendances, conventions, `src`), ne le relis pas : tes lectures portent sur les fichiers à modifier.
 
-    Si tu approches de la limite d'appels d'outils disponibles avant d'avoir terminé tous les
-    fichiers prévus dans ton plan, priorise la livraison d'un sous-ensemble cohérent et
-    fonctionnel (jamais un fichier à moitié écrit ni une branche sans commit) plutôt que de tout
-    laisser incomplet, et indique EXPLICITEMENT dans ton rapport final la liste des éléments du
-    plan qui n'ont pas pu être réalisés.
+    Correctif MINIMAL : change uniquement ce que la cause ou la fonctionnalité exige ; ne reformate
+    pas, ne renomme pas, ne réordonne pas et ne réécris pas du code qui n'est pas concerné (un petit
+    changement se relit et se teste mieux).
+
+    Énonce d'abord la liste des fichiers que tu comptes créer ou modifier et une justification d'une
+    ligne pour chacun, puis livre CHAQUE fichier entre deux balises, chacune SEULE sur sa ligne :
+    d'abord la ligne "<<<FICHIER: chemin/relatif.ext>>>", puis un bloc de code contenant
+    l'intégralité de son contenu — pas un extrait, pas un résumé —, puis la ligne
+    "<<<FIN_FICHIER>>>". Exemple pour src/App.tsx : une ligne "<<<FICHIER: src/App.tsx>>>", une
+    ligne "```tsx", tout le code, une ligne "```", une ligne "<<<FIN_FICHIER>>>".
+    Ces balises sont lues AUTOMATIQUEMENT (en Python) pour committer les fichiers : seul ce qui est
+    entre elles est committé, et un fichier sans sa balise de fin est considéré comme tronqué et
+    n'est pas committé. N'utilise ces balises QUE pour le contenu FINAL et complet d'un fichier :
+    pour citer du code existant (diagnostic, traçabilité, auto-revue), écris un bloc de code
+    normal, sans balises.
+    Pour modifier un fichier EXISTANT que tu as lu (surtout s'il dépasse environ 150 lignes) sans le
+    réécrire en entier, utilise à la place un bloc de modification : une ligne
+    "<<<MODIFICATION: chemin/relatif.ext>>>", puis un ou plusieurs blocs, chacun composé d'une ligne
+    "<<<<<<< CHERCHER", du texte EXACT à remplacer (copié de ta lecture, indentation comprise, sans
+    balise de code), d'une ligne "=======", du nouveau texte, d'une ligne ">>>>>>> REMPLACER", et enfin
+    une ligne "<<<FIN_MODIFICATION>>>". Chaque texte cherché doit apparaître UNE SEULE fois dans le
+    fichier : ajoute des lignes de contexte autour si besoin. Les blocs s'appliquent dans l'ordre, et le
+    système les applique lui-même au fichier d'origine : le fichier committé sera le fichier complet
+    ainsi modifié. Un fichier n'est jamais livré à la fois en "FICHIER" et en "MODIFICATION". Un
+    NOUVEAU fichier, ou un petit fichier, reste en "FICHIER" avec son contenu complet.
+    Un contrôle automatique refuse ta réponse si un fichier contient un commentaire de raccourci
+    ("// ...", "// ... reste", "reste du code inchangé", "code existant") : tu devras alors la
+    refaire.
+
+    Tout import relatif vise un fichier que tu livres ou un fichier existant que tu as vu, et tout import
+    nommé correspond à un export réel : un contrôle automatique le vérifie et refuse ta réponse sinon.
+
+    Avant de rendre ta réponse, fais une AUTO-REVUE de chaque fichier et termine par une section
+    "Auto-revue" d'une ligne par fichier : imports tous présents et utilisés, exports réellement
+    consommés, types cohérents entre fichiers, fichier complet de la première à la dernière ligne.
+    ATTENTION pour un fichier déjà volumineux dont tu ne changes qu'une petite partie : la tâche
+    suivante n'a AUCUN moyen de vérifier ou compléter ce que tu écris ici — ni de lire le fichier
+    original, ni d'appliquer une modification partielle — elle committe tel quel, intégralement,
+    exactement ce que tu lui fournis. Pour un fichier volumineux dont tu ne changes qu'une partie,
+    utilise un bloc "MODIFICATION" (rien à recopier en entier). Si ce fichier ne peut être livré ni par un
+    bloc de modification ni EN ENTIER sans risque de troncature, NE LE METS PAS entre balises : committer une version coupée (donc
+    corrompue, sans que personne ne s'en aperçoive avant la QA) est PIRE que ne rien committer pour
+    ce fichier précis. Liste-le à la place, dans ton plan, comme élément NON réalisé avec la raison
+    ("fichier trop volumineux pour être rédigé en entier dans le budget disponible").
+
+    Aperçu du repository (lu par le système avant ton travail ; vide si aucun) :
+    {repo_snapshot}
   expected_output: >
-    D'abord le plan (liste des fichiers prévus et leur justification), puis le code source complet
-    des fichiers créés ou modifiés, la liste explicite de tout élément du plan resté incomplet le
-    cas échéant, et si un repository cible était fourni, l'URL de la Pull Request créée.
+    Les hypothèses classées, la section "Traçabilité" (avec "Ce qui infirmerait cette cause" et
+    "Vérification manuelle"), le plan (liste des fichiers prévus et leur
+    justification, avec un signalement explicite "NON réalisé" pour tout fichier où le contenu
+    complet n'a pas pu être fourni sans risque de troncature), puis chaque fichier entre une ligne
+    "<<<FICHIER: chemin/du/fichier>>>" et une ligne "<<<FIN_FICHIER>>>", avec son code source COMPLET et
+    directement utilisable (ou, pour modifier un fichier existant, un bloc "<<<MODIFICATION: chemin>>>"
+    avec ses blocs CHERCHER / REMPLACER), et enfin la section "Auto-revue".
+  agent: diagnostic_agent
+
+development_task:
+  description: >
+    L'Analyste Diagnostic Technique (tâche précédente, disponible dans ton contexte) a déjà déterminé
+    la cause du problème et rédigé le code source complet, fichier par fichier, de ce qu'il faut
+    créer ou modifier. Ce N'EST PAS ton rôle de le revérifier, le redériver ou le questionner —
+    utilise-le TEL QUEL, fichier par fichier. Ta seule responsabilité est de le committer fidèlement
+    selon la procédure ci-dessous : tu n'as toi-même aucun outil de lecture, tu ne peux donc de toute
+    façon pas le réanalyser.
+
+    Contexte repository :
+    {repo_instructions}
+    Si un repository GitHub cible est fourni (owner={repo_owner}, repo={repo_name}), applique
+    STRICTEMENT cette procédure au lieu d'écrire sur le disque local :
+    1. Appelle `github_create_branch` avec new_branch={work_branch} et base_branch={base_branch} (un
+       seul appel, idempotent : si la branche existe déjà, l'outil te le confirme sans erreur, tu
+       peux l'utiliser directement).
+    2. Appelle `github_commit_analyst_files` (un seul argument : commit_message, au format « type: résumé » avec type feat, fix, refactor ou chore et 72 caractères au plus ; le repository
+       et la branche {work_branch} sont fixés par l'exécution) : il committe EN UN SEUL APPEL tous
+       les fichiers de l'Analyste, extraits
+       automatiquement de sa réponse — tu n'as RIEN à recopier, donc aucun risque de troncature. Sa
+       réponse liste les fichiers committés (et les éventuels REJETÉS) : c'est ta source de vérité
+       pour ton rapport. Ne passe aux outils ci-dessous QUE si cet outil indique qu'aucun fichier
+       n'a pu être extrait alors que l'Analyste a bien fourni du code.
+       Repli uniquement : DÈS QUE PLUS DE 2-3 FICHIERS doivent être créés ou intégralement réécrits, utilise
+       `github_write_files` : il committe TOUS ces fichiers EN UN SEUL appel d'outil, quel que soit
+       leur nombre — c'est TA PRIORITÉ ABSOLUE, avant tout `check_syntax`. Un lot jamais committé (0
+       fichier réellement présent sur GitHub) est bien pire qu'un lot committé avec une imperfection
+       mineure que la QA détectera ensuite. Pour un fichier isolé (1-2 fichiers seulement),
+       `github_write_file` reste suffisant. Tu n'as PAS accès à `github_edit_file` (aucune édition
+       partielle) : l'Analyste t'a fourni le contenu COMPLET de chaque fichier, écris-le tel quel,
+       intégralement, avec `github_write_file`/`github_write_files` — jamais un extrait.
+       Depuis peu, `github_write_file` et `github_write_files` valident eux-mêmes le contenu
+       Python/JSON/YAML (vérification exacte) AVANT tout commit, pour détecter une troncature du
+       contenu que l'Analyste t'a fourni. JS/TS/JSX/TSX n'est PAS vérifié automatiquement (leur
+       heuristique de vérification a des faux positifs connus sur le texte JSX) — pour ces
+       extensions, ce contrôle reste uniquement celui que tu effectues toi-même à l'étape 3 si tu
+       as du budget restant. `github_write_file` refuse le commit d'un fichier Python/JSON/YAML
+       invalide et te renvoie l'erreur sans rien écrire sur GitHub. `github_write_files` committe
+       uniquement les fichiers qui passent et liste les autres dans une section "REJETÉS" de sa
+       réponse (ou refuse tout le lot si AUCUN ne passe). Dans les deux cas, NE RETENTE JAMAIS le
+       même appel avec un contenu identique pour un fichier rejeté : tu n'as aucun moyen de le
+       corriger (pas d'outil de lecture). Traite chaque fichier REJETÉ exactement comme un fichier
+       que ton budget d'appels ne t'aurait pas permis de committer : liste-le EXPLICITEMENT dans
+       ton rapport final comme non livré, avec la raison donnée par l'outil.
+    3. S'il te reste du budget après le commit, vérifie avec `check_syntax` les fichiers qui te
+       semblent les plus à risque. En cas de problème, recommitte le fichier concerné en entier
+       avec `github_write_file` (jamais un extrait) — mais NE retarde jamais l'étape 2 pour ça :
+       qa_task (la tâche suivante) revérifie de toute façon après coup.
+    4. Une fois toutes les modifications commitées, appelle `github_open_delivery_pull_request` avec
+       un `title` court au même format conventionnel (ex: « fix: corrige le calcul de la remise ») et un
+       `summary` de 1 à 3 phrases (reprends le plan de l'Analyste). L'outil génère lui-même le reste de
+       la description (fichiers livrés et non livrés, traçabilité, vérification manuelle), ouvre la
+       Pull Request en brouillon si la livraison est partielle, et met à jour celle qui existe déjà pour
+       la branche {work_branch} vers {base_branch} au lieu d'en créer une seconde.
+    Ne modifie jamais directement la branche {base_branch}.
+    Sans repository cible (travail local), appelle aussi `github_commit_analyst_files` : il écrit
+    alors les fichiers de l'Analyste dans l'espace de travail local de la conversation. C'est
+    le SEUL moyen d'écrire en local : si l'outil n'a rien pu extraire, indique-le dans ton rapport.
+
+    Réaction aux réponses des outils (ne jamais improviser autre chose) :
+    - "OK" : passe à l'étape suivante.
+    - "INFO : la branche ... existe déjà" : continue avec cette branche.
+    - "INFO : aucune Pull Request créée ..." : note-le dans ton rapport avec la raison, sans réessayer.
+    - Fichier REJETÉ ou "ERREUR : écriture refusée" : ne retente pas, note-le comme non livré avec
+      la raison exacte, passe au suivant.
+    - Erreur réseau/GitHub transitoire ou "non fast-forward" : retente UNE seule fois, avec un
+      commit_message légèrement différent (un appel strictement identique serait refusé).
+    - Toute autre erreur : note-la telle quelle dans ton rapport et continue avec le reste.
+
+    Si tu approches de la limite d'appels d'outils disponibles avant d'avoir committé tous les
+    fichiers fournis par l'Analyste, priorise un sous-ensemble cohérent et fonctionnel (jamais un
+    fichier à moitié écrit ni une branche sans commit) plutôt que de tout laisser incomplet, et
+    indique EXPLICITEMENT dans ton rapport final la liste des fichiers non committés.
+  expected_output: >
+    Un rapport au format fixe : "Plan d'exécution" (fichiers attendus d'après l'Analyste),
+    "Committés" (un chemin par ligne), "Non livrés" (chemin : raison exacte, ou "aucun"), "Pull
+    Request" (URL recopiée EXACTEMENT telle que renvoyée par l'outil, ou la raison de son absence ; n'invente
+    jamais une URL). Un contrôle automatique ajoute ensuite à ton rapport ce que les outils ont réellement
+    constaté.
   agent: developer_agent
 
 qa_task:
@@ -160,41 +342,80 @@ qa_task:
     {user_request}
     ---
 
-    Revois le code produit par le Développeur.
-    Pour chaque fichier .py/.json/.yaml/.ts/.tsx/.js/.jsx créé ou modifié, appelle l'outil
-    `check_syntax` sur son contenu (vérification statique, sans exécution) avant de conclure :
-    ne te contente pas d'une relecture visuelle pour juger de la validité syntaxique. Récupère ce
-    contenu avec `github_read_file` sur la branche de travail ({work_branch}) si un repository
-    cible est fourni (jamais depuis le disque local dans ce cas, puisque le Développeur n'y a rien
-    écrit), ou avec `read_a_files_content` sinon.
-    Vérifie aussi les importations manquantes et les incohérences de montage React.
-    Dans ton rapport, distingue clairement ce que tu as vérifié avec `check_syntax` (et son
-    résultat exact) de ce que tu n'as évalué qu'en lisant le code : n'affirme jamais une
-    absence de bug que tu n'as pas réellement vérifiée avec l'outil.
+    PREMIÈRE ACTION : appelle `qa_verify_delivered_files` (sans argument : il inspecte la branche
+    {work_branch}, ou l'espace de travail local sans repository cible). En UN appel, il vérifie
+    pour CHAQUE fichier de l'Analyste sa présence réelle, l'identité exacte (diff) avec la version
+    de l'Analyste et check_syntax — ce qui couvre les vérifications 1 et 2 ci-dessous pour ces
+    fichiers sans relecture. Ne relis ensuite individuellement (github_read_file) QUE les fichiers
+    nécessaires pour juger la conformité fonctionnelle ou ceux que cet outil n'a pas couverts. Le rapport
+    de l'outil contient aussi une section "Périmètre" (fichiers livrés hors du plan de l'Architecte, ou
+    prévus mais jamais livrés) et une section "Cohérence des imports" (import sans cible, export
+    manquant) : reprends-les dans ta conclusion, un import incohérent étant un problème BLOQUANT.
 
-    Ne fais JAMAIS confiance au rapport du Développeur sur la seule foi de ses affirmations.
-    Pour chaque fichier qu'il prétend avoir créé ou modifié (voir son plan et sa liste de
-    fichiers dans son rapport), confirme sa présence ET son contenu réels : si un repository
-    cible est fourni, avec `github_read_file` sur la branche de travail ({work_branch}) — utilise
-    `github_list_directory` seulement pour repérer les fichiers présents, jamais pour juger de
-    leur contenu, qu'il ne renvoie pas ; sinon (travail sur disque local), avec
-    `read_a_files_content`. Un fichier annoncé mais absent, ou dont le contenu diverge de ce qui
-    est décrit, est un problème BLOQUANT à signaler explicitement, pas un détail mineur. Si un
-    repository cible est fourni,
-    tu n'as pas d'outil pour vérifier toi-même qu'une Pull Request a réellement été ouverte :
-    dis-le clairement dans ton rapport plutôt que de confirmer une affirmation que tu ne peux pas
-    contrôler. Si le Développeur a lui-même signalé, dans son rapport, des éléments de son plan
-    restés incomplets, reflète-le explicitement dans ta conclusion : ne recommande jamais la mise
-    en production d'un travail
-    que le Développeur a lui-même qualifié d'incomplet.
+    Revois le code produit par le Développeur (le plan et le contenu complet rédigés par
+    l'Analyste, committés tels quels par le Développeur — voir leurs rapports respectifs). Ne
+    fais JAMAIS confiance à ces rapports sur la seule foi de leurs affirmations : pour chaque
+    fichier annoncé comme créé ou modifié, récupère son contenu RÉEL en UNE SEULE lecture — avec
+    `github_read_file` sur la branche de travail ({work_branch}) si un repository cible est
+    fourni (jamais depuis le disque local dans ce cas, puisque le Développeur n'y a rien écrit),
+    ou avec `read_a_files_content` sinon — et réutilise ce même contenu pour les DEUX
+    vérifications suivantes, SANS le relire une seconde fois :
+    1. Présence et contenu réels : le fichier existe-t-il, et son contenu correspond-il à ce que
+       l'Analyste a rédigé et que le Développeur prétend avoir committé ? Un fichier annoncé mais
+       absent, ou dont le contenu diverge de ce qui est décrit (par exemple si le Développeur a
+       committé un contenu différent de celui rédigé par l'Analyste), est un problème BLOQUANT à
+       signaler explicitement, pas un détail mineur.
+    2. Syntaxe (extensions .py/.json/.yaml/.ts/.tsx/.js/.jsx uniquement) : appelle `check_syntax`
+       sur ce même contenu (vérification statique, sans exécution) — ne te contente jamais d'une
+       relecture visuelle pour juger de la validité syntaxique. Vérifie aussi les importations
+       manquantes et les incohérences de montage React. Dans ton rapport, distingue clairement ce
+       que tu as vérifié avec `check_syntax` (et son résultat exact) de ce que tu n'as évalué
+       qu'en lisant le code : n'affirme jamais une absence de bug que tu n'as pas réellement
+       vérifiée avec l'outil.
 
-    Au-delà de la syntaxe et de la véracité des affirmations du Développeur, compare aussi le
-    résultat livré à la demande initiale rappelée en haut de cette tâche : un code syntaxiquement
-    valide et fidèlement décrit par le Développeur peut quand même ne PAS répondre à ce que
-    l'utilisateur a réellement demandé (ex: un correctif qui traite un symptôme différent du bug
-    décrit, une fonctionnalité qui ne couvre qu'une partie de ce qui était demandé). Si tu identifies
-    un tel écart, signale-le explicitement dans ta conclusion, même si tout le reste (syntaxe,
-    fichiers réellement présents) est correct.
+    Sur un TRÈS GROS lot de fichiers (le Développeur peut désormais en committer des dizaines en
+    un seul appel via `github_write_files`, voir development_task), lire et vérifier CHACUN de
+    cette façon peut dépasser ton propre budget d'appels d'outils : dans ce cas, commence par
+    `github_list_directory` (peu coûteux, un seul appel) pour au moins confirmer que les fichiers
+    annoncés sont bien présents, puis approfondis (lecture + `check_syntax`) sur autant de
+    fichiers que ton budget le permet en priorisant les plus à risque (logique complexe, fichiers
+    de configuration structurants comme `package.json`/`tsconfig.json`) plutôt que de t'arrêter à
+    mi-chemin sans jamais conclure — liste EXPLICITEMENT dans ton rapport les fichiers que tu
+    n'as pas pu vérifier, faute de budget restant. Ordre de priorité imposé : 1) configuration
+    (`package.json`, `tsconfig.json`, `vite.config.*`), 2) point d'entrée (`index.html`,
+    `src/main.tsx`), 3) logique métier, 4) composants d'interface.
+
+    Si un repository cible est fourni, tu n'as pas d'outil pour vérifier toi-même qu'une Pull
+    Request a réellement été ouverte : dis-le clairement dans ton rapport plutôt que de confirmer
+    une affirmation que tu ne peux pas contrôler. Si le Développeur a lui-même signalé, dans son
+    rapport, des fichiers non committés, reflète-le explicitement dans ta conclusion : ne
+    recommande jamais la mise en production d'un travail que le Développeur a lui-même qualifié
+    d'incomplet.
+
+    Au-delà de la syntaxe et de la véracité de ces rapports, compare aussi le résultat livré à la
+    demande initiale rappelée en haut de cette tâche : un code syntaxiquement valide et fidèlement
+    committé peut quand même ne PAS répondre à ce que l'utilisateur a réellement demandé (ex: un
+    correctif qui traite un symptôme différent du bug décrit, une fonctionnalité qui ne couvre
+    qu'une partie de ce qui était demandé). Si tu identifies un tel écart, signale-le explicitement
+    dans ta conclusion, même si tout le reste (syntaxe, fichiers réellement présents) est correct.
+    Pour ce jugement, pars des "Critères d'acceptation" du Designer s'ils figurent dans ton
+    contexte ; sinon, reformule d'abord toi-même 2 à 5 critères vérifiables à partir de la demande.
+    Évalue chacun : OK, KO ou NON VÉRIFIABLE, avec la preuve. Colonne "Preuve" : pour un KO, la
+    localisation EXACTE au format `chemin/fichier.ext:ligne` ; pour un NON VÉRIFIABLE, la RAISON précise
+    (ex: aucun environnement d'exécution) ET un test manuel concret que l'utilisateur peut faire (étapes
+    courtes). Colonne "Correctif suggéré" : obligatoire pour un KO, une phrase actionnable (quoi changer
+    et où). Ne range pas dans NON VÉRIFIABLE ce que tu pouvais vérifier avec un outil.
+
+    Règle de verdict (appliquée aussi par un contrôle automatique, qui réécrit tout verdict trop
+    indulgent) : NO_GO si un critère est KO, si un problème bloquant est listé, ou si aucun fichier de
+    l'Analyste n'a été committé ; GO_AVEC_RESERVES si des fichiers sont non livrés ou si un critère reste
+    NON VÉRIFIABLE ; GO uniquement si tout le reste est OK. Tu peux être plus sévère, jamais plus
+    indulgent.
+
+    Étiquette CHAQUE affirmation de ton rapport : [vérifié outil] si elle repose sur un résultat
+    d'outil (qa_verify_delivered_files, check_syntax, github_read_file), [lecture] si elle repose
+    seulement sur ta lecture du code ou des rapports. Ne présente jamais une [lecture] comme une
+    preuve.
 
     Contexte de la conversation (tours précédents de cet utilisateur) :
     {conversation_context}
@@ -202,8 +423,11 @@ qa_task:
     Contexte repository :
     {repo_instructions}
   expected_output: >
-    Un rapport de validation QA listant, pour chaque fichier vérifié, le résultat exact de
-    `check_syntax` ET la confirmation (ou l'infirmation) de ce que le Développeur prétend avoir
-    fait, une évaluation de la correspondance entre le résultat livré et la demande initiale, puis
-    une conclusion sur la mise en production ou une liste de correctifs mineurs.
+    Un rapport de validation QA au format fixe : "Fichiers vérifiés" (pour chacun : présence,
+    identité avec l'Analyste, résultat exact de check_syntax, chaque point étiqueté [vérifié outil]
+    ou [lecture]), "Critères d'acceptation" (tableau Critère | Statut OK/KO/NON VÉRIFIABLE |
+    Preuve (fichier:ligne pour un KO, raison et test manuel pour un NON VÉRIFIABLE) | Correctif suggéré),
+    "Problèmes bloquants", "Problèmes mineurs", "Fichiers non vérifiés", puis une
+    dernière ligne exactement au format "Verdict : GO", "Verdict : GO_AVEC_RESERVES" ou
+    "Verdict : NO_GO".
   agent: qa_agent

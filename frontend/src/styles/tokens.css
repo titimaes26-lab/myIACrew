@@ -1,0 +1,97 @@
+/* Jetons de design de l'application (clair par défaut, sombre selon l'OS). Toute couleur d'interface
+   vient d'ici : aucun composant n'écrit de couleur en dur. Les noms sémantiques (surface, line, fg,
+   primary, danger…) décrivent un RÔLE, pas une teinte, pour que le thème sombre ne change que les valeurs.
+   Le tableau de bord garde ses jetons --viz-* propres (graphiques validés clair/sombre, metrics.css). */
+:root {
+  --surface: #ffffff;
+  --surface-2: #f8f9fa;
+  --surface-3: #f3f4f6;
+  --line: #e1e4e8;
+  --line-strong: #cdd2d9;
+  --fg: #1f2328;
+  --fg-muted: #656d76;
+  --fg-subtle: #8c959f;
+
+  --primary: #0070f3;
+  --primary-hover: #005fd1;
+  --primary-fg: #ffffff;
+  --primary-soft: #eff6ff;
+  --primary-line: #93c5fd;
+  --primary-text: #0058c9;
+
+  --danger-soft: #fef2f2;
+  --danger-line: #fca5a5;
+  --danger-fg: #991b1b;
+  --danger-fg-strong: #7f1d1d;
+
+  --success-soft: #d1fae5;
+  --success-line: #6ee7b7;
+  --success-fg: #065f46;
+  --success-text: #15803d;
+  --on-success: #ffffff;
+
+  --warning-soft: #fffbeb;
+  --warning-line: #fcd34d;
+  --warning-fg: #92400e;
+
+  --info-soft: #e0f2fe;
+  --info-line: #7dd3fc;
+  --info-fg: #075985;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-md: 14px;
+  --transition: 120ms ease;
+
+  /* Anciens noms d'index.css : alias des jetons ci-dessus (chargé APRÈS index.css, donc prioritaire),
+     pour qu'il n'existe qu'UNE palette — corps du texte, titres, bordures, anneau de focus. */
+  --text: var(--fg-muted);
+  --text-h: var(--fg);
+  --bg: var(--surface);
+  --border: var(--line);
+  --code-bg: var(--surface-3);
+  --accent: var(--primary);
+  --accent-bg: var(--primary-soft);
+  --accent-border: var(--primary-line);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1b1c22;
+    --surface-2: #20212a;
+    --surface-3: #282a35;
+    --line: #2e303a;
+    --line-strong: #3d404d;
+    --fg: #e6e8ee;
+    --fg-muted: #9aa1ad;
+    --fg-subtle: #7b8291;
+
+    --primary: #2f74e0;
+    --primary-hover: #4a88ea;
+    --primary-fg: #ffffff;
+    --primary-soft: rgba(59, 140, 255, 0.14);
+    --primary-line: rgba(96, 165, 250, 0.5);
+    --primary-text: #8ab8ff;
+
+    --danger-soft: rgba(248, 113, 113, 0.12);
+    --danger-line: rgba(248, 113, 113, 0.45);
+    --danger-fg: #fca5a5;
+    --danger-fg-strong: #fecaca;
+
+    --success-soft: rgba(52, 211, 153, 0.14);
+    --success-line: rgba(52, 211, 153, 0.4);
+    --success-fg: #6ee7b7;
+    --success-text: #4ade80;
+    --on-success: #052e1a;
+
+    --warning-soft: rgba(251, 191, 36, 0.12);
+    --warning-line: rgba(251, 191, 36, 0.4);
+    --warning-fg: #fcd34d;
+
+    --info-soft: rgba(56, 189, 248, 0.12);
+    --info-line: rgba(56, 189, 248, 0.4);
+    --info-fg: #7dd3fc;
+  }
+}
