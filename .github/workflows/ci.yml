@@ -49,7 +49,7 @@ jobs:
       VITE_SUPABASE_ANON_KEY: ci
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -79,7 +79,7 @@ jobs:
         run: |
           pip install pip-audit
           pip-audit --no-deps --disable-pip -r backend/requirements.lock
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: Failles connues des dépendances npm de production
