@@ -25,8 +25,12 @@ import functools
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from logs import get_logger
 
@@ -134,3 +138,28 @@ def summary_model() -> str:
     """Modèle du résumé final (« gemini/<modèle> »), ou celui de `GEMINI_MODEL` quand il est défini."""
     forced = os.getenv("GEMINI_MODEL", "").strip()
     return forced if forced else f"gemini/{SUMMARY_MODEL}"
+
+
+@functools.lru_cache(maxsize=1)
+def _agent_by_role() -> dict[str, str]:
+    """{rôle normalisé -> nom d'agent} lu dans agentsquestion.yaml : le rôle est ce que CrewAI donne à chaque sortie de tâche."""
+    try:
+        config = yaml.safe_load((Path(__file__).resolve().parent / "agentsquestion.yaml").read_text(encoding="utf-8"))
+        return {
+            _normalize_role(config[name]["role"]): name
+            for name in AGENT_MODELS if isinstance(config.get(name), dict) and config[name].get("role")
+        }
+    except Exception as e:
+        log.warning(f"rôles des agents illisibles (le modèle ne sera pas indiqué dans les rapports) : {type(e).__name__}: {e}")
+        return {}
+
+
+def _normalize_role(role: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (role or "").strip()).lower()
+
+
+def model_for_role(role: Optional[str]) -> Optional[str]:
+    """Identifiant du modèle (sans préfixe, par exemple « gemini-3.8-flash ») que l'agent de ce rôle CrewAI utilise, ou None si
+    le rôle n'est pas celui d'un agent connu. Source du modèle affiché dans le rapport de chaque agent."""
+    agent = _agent_by_role().get(_normalize_role(role))
+    return model_key(model_for_agent(agent)) if agent else None

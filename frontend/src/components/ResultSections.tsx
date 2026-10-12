@@ -11,6 +11,9 @@ const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
 const sectionTitle = (section: CrewResultSection) => section.agentName ?? 'Résultat';
 
+// Texte copié d'une section : le modèle utilisé en tête (il n'apparaît pas dans le contenu, seulement dans le bandeau).
+const withModel = (section: CrewResultSection) => (section.model ? `*Modèle : ${section.model}*\n\n${section.content}` : section.content);
+
 // Résultat d'une exécution, une section repliable par agent. Au-delà d'une section : un sommaire (un clic ouvre et
 // amène à la section), « Tout déplier / replier » et « Copier tout » ; chaque section se copie seule.
 // <details> reste non contrôlé (nativement accessible au clavier) : la barre agit sur son attribut `open` ; seule la
@@ -26,7 +29,7 @@ export default function ResultSections({ sections, onSuggest }: { sections: Crew
     details.open = true;
     details.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
   };
-  const everything = sections.map((section) => `## ${sectionTitle(section)}\n\n${section.content}`).join('\n\n---\n\n');
+  const everything = sections.map((section) => `## ${sectionTitle(section)}\n\n${withModel(section)}`).join('\n\n---\n\n');
 
   return (
     <ResultBoundary>
@@ -55,12 +58,12 @@ export default function ResultSections({ sections, onSuggest }: { sections: Crew
                 <span>{sectionTitle(section)}</span>
               </div>
               {section.agentName && (
-                <AgentSummary agentName={section.agentName} content={section.content} durationSeconds={section.durationSeconds} />
+                <AgentSummary agentName={section.agentName} content={section.content} durationSeconds={section.durationSeconds} model={section.model} />
               )}
             </summary>
             <div className="section-details__body">
               <div className="section-details__actions">
-                <CopyButton text={section.content} subject={sectionTitle(section)} />
+                <CopyButton text={withModel(section)} subject={sectionTitle(section)} />
               </div>
               <MarkdownRenderer content={section.content} />
               {onSuggest && section.agentName === 'Résumé' && <NextSteps content={section.content} onSuggest={onSuggest} />}

@@ -8,7 +8,7 @@ import database
 import execution_state
 from metrics_collect import build_agent_run_rows
 from metrics_roles import step_for_role
-from crew_workflow import AGENT_SECTION_SEPARATOR, MAX_AGENT_NAME_LENGTH, MAX_AGENT_OUTPUT_SIZE, RESUMABLE_STEPS
+from crew_workflow import AGENT_SECTION_SEPARATOR, MAX_AGENT_NAME_LENGTH, MAX_AGENT_OUTPUT_SIZE, RESUMABLE_STEPS, format_agent_section
 from database import AgentRun, ExecutionCheckpoint, ExecutionHistory
 from logs import get_logger
 
@@ -103,10 +103,7 @@ def persist_completed_agent(
             entry = agent_session.get(ExecutionHistory, execution_id)
             if entry is not None:
                 # Format identique à crew_workflow._format_crew_result : sections séparées par AGENT_SECTION_SEPARATOR
-                if duration_seconds is not None:
-                    agent_section = f"## {agent_name}\n<!--agent-duration:{duration_seconds:.2f}-->\n\n{agent_output}"
-                else:
-                    agent_section = f"## {agent_name}\n\n{agent_output}"
+                agent_section = format_agent_section(agent_name, agent_output, duration_seconds)
                 output_size = len(agent_output)
 
                 # UPDATE SQL atomique au lieu de read-modify-write en Python

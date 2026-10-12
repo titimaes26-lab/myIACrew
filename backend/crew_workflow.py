@@ -1,6 +1,8 @@
 """Parcours d'une exécution : étapes de chaque workflow, reprise, erreur d'étape et mise en forme du résultat des agents."""
 from typing import Optional
 
+import llm_models
+
 # --- CONSTANTES DE FORMAT MARKDOWN POUR LES AGENTS (PARTAGÉES AVEC MAIN.PY) ---
 AGENT_SECTION_SEPARATOR = "\n\n---\n\n"
 
@@ -73,6 +75,18 @@ def _iter_task_sections(result):
         raw = raw if raw is not None else str(task_output)
         yield agent_name, raw
 
+def format_agent_section(agent_name: str, body: str, duration: Optional[float] = None) -> str:
+    """Section d'un agent : « ## <rôle> », puis les marqueurs HTML lus par le frontend (durée d'exécution, modèle utilisé quand
+    le rôle est celui d'un agent connu), puis le texte. Source UNIQUE du format, pour le suivi progressif comme pour le résultat final."""
+    head = [f"## {agent_name}"]
+    if duration is not None:
+        head.append(f"<!--agent-duration:{duration:.2f}-->")
+    model = llm_models.model_for_role(agent_name)
+    if model:
+        head.append(f"<!--agent-model:{model}-->")
+    return "\n".join(head) + f"\n\n{body}"
+
+
 def _format_crew_result(result, task_durations: Optional[dict[str, float]] = None) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
@@ -96,9 +110,5 @@ def _format_crew_result(result, task_durations: Optional[dict[str, float]] = Non
 
     sections = []
     for agent_name, raw in _iter_task_sections(result):
-        duration = (task_durations or {}).get(agent_name)
-        if duration is not None:
-            sections.append(f"## {agent_name}\n<!--agent-duration:{duration:.2f}-->\n\n{raw}")
-        else:
-            sections.append(f"## {agent_name}\n\n{raw}")
+        sections.append(format_agent_section(agent_name, raw, (task_durations or {}).get(agent_name)))
     return AGENT_SECTION_SEPARATOR.join(sections)

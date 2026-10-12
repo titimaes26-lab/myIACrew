@@ -9,9 +9,11 @@ interface AgentSummaryProps {
   // Temps d'exécution de l'agent en secondes (voir CrewResultSection dans parseCrewResult.ts) ;
   // absent/null tant que l'agent n'a pas terminé ou si la durée n'a pas pu être mesurée.
   durationSeconds?: number | null;
+  // Modèle IA utilisé par l'agent (marqueur écrit par le backend), absent pour une section sans agent connu.
+  model?: string | null;
 }
 
-export function AgentSummary({ agentName, content, durationSeconds }: AgentSummaryProps) {
+export function AgentSummary({ agentName, content, durationSeconds, model }: AgentSummaryProps) {
   const metadata = parseAgentMetadata(content, agentName);
 
   return (
@@ -19,6 +21,11 @@ export function AgentSummary({ agentName, content, durationSeconds }: AgentSumma
       {/* Temps d'exécution de l'agent */}
       {typeof durationSeconds === 'number' && (
         <span className="muted">⏱ {formatSeconds(durationSeconds)}</span>
+      )}
+
+      {/* Modèle IA utilisé par l'agent */}
+      {model && (
+        <span className="muted" title="Modèle IA utilisé par cet agent">🤖 {model}</span>
       )}
 
       {/* Status badge (verdict QA ou confiance) */}

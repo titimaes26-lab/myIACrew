@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.75 — Mise à jour le 2026-10-05
+> Version : 1.76 — Mise à jour le 2026-10-05
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.76 (10-12) : le rapport de chaque agent indique le modèle IA utilisé : la section d'un agent (suivi progressif et résultat final) porte, après sa durée, le marqueur `<!--agent-model:gemini-3.8-flash-->` (format unique `crew_workflow.format_agent_section` ; modèle déduit du rôle par `llm_models.model_for_role`, `GEMINI_MODEL` pris en compte ; pas de marqueur pour un rôle inconnu ni pour le résumé). Le frontend l'affiche dans le bandeau de la section (« 🤖 gemini-3.8-flash »), le retire du texte et l'ajoute en tête du texte copié ; le marqueur est aussi retiré du plan donné à l'Architecte au tour suivant.
 > - 1.75 (10-12) : revue du limiteur par modèle : `GEMINI_MODEL_LIMITS` est analysée une seule fois (un texte illisible n'est plus signalé à chaque appel au modèle) et le limiteur déjà créé est retrouvé sans recalculer les plafonds ; le journal d'attente nomme la contrainte en cause (requêtes par minute, tokens par minute ou pause après un 429) ; les flux asynchrones comptent désormais le total réel de tokens ; la fenêtre de débit est extraite dans `llm_rate_window.py`.
 > - 1.74 (10-12) : modèles et limites de débit par modèle : `qualification_agent` et `developer_agent` sur `gemini-3.5-flash-lite`, `product_designer_agent`, `architect_agent`, `diagnostic_agent` et `qa_agent` sur `gemini-3.8-flash` (carte `AGENT_MODELS` de `backend/llm_models.py`, qui porte aussi les plafonds RPM/TPM/RPD de chaque modèle : 10/250 000/1 500 pour 3.8-flash, 15/250 000/1 000 pour 3.5-flash-lite). `llm_limiter.py` passe d'un limiteur global à un limiteur PAR MODÈLE (choisi d'après l'argument `model` de chaque appel `google-genai`) : fenêtre glissante de requêtes et de tokens (estimation de l'entrée avant l'appel, remplacée par `usage_metadata` à la réponse), plafond journalier (échec immédiat `DailyQuotaExceeded`, classé QUOTA_EXHAUSTED non réessayable), pause après 429 propre au modèle. Marge de sécurité 0,8 (`LLM_RATE_MARGIN`), plafonds remplaçables (`GEMINI_MODEL_LIMITS`), `GEMINI_MODEL` force un modèle unique.
 > - 1.73 (10-08) : Dependabot ignore désormais les versions majeures de `typescript` (le PR n°60, TypeScript 7, échouait : `typescript-eslint` borne son peer à `< 6.1.0`) ; le job `audit` reste rouge à cause de `chromadb 1.1.1` (5 failles sans correctif), non bloquant, décision laissée ouverte.
@@ -112,7 +113,7 @@
    puis **réutilisée aux tours suivants** de la conversation (même branche, même PR). Une seule exécution à la fois par
    conversation (`409` sinon).
 6. **Progression** : le frontend sonde `GET /api/conversations/{id}/progress` ; chaque agent terminé apparaît au fur et à mesure
-   avec sa durée d'exécution. Le sondage envoie `known` (nombre d'agents déjà reçus) et ne reçoit que les suivants.
+   avec sa durée d'exécution et le modèle IA qui l'a produit. Le sondage envoie `known` (nombre d'agents déjà reçus) et ne reçoit que les suivants.
 7. **Restitution** : le résultat combiné par agent est stocké dans `executionhistory` ; après le crew, le backend vérifie via
    l'API GitHub qu'une branche et une PR à jour existent réellement.
 
@@ -651,7 +652,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (970 cas, 645 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (983 cas, 653 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont

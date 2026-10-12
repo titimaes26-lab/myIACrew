@@ -15,7 +15,7 @@ from run_support import _data, _new_execution
 
 def _plan_result(plan="## Cible\nUn panier", extra=""):
     return (
-        "## Architecte Logiciel React / TypeScript\n<!--agent-duration:12.50-->\n\n" + plan
+        "## Architecte Logiciel React / TypeScript\n<!--agent-duration:12.50-->\n<!--agent-model:gemini-3.8-flash-->\n\n" + plan
         + "\n\n---\n\n## Analyste Diagnostic Technique\n\ncode" + extra
     )
 
@@ -51,7 +51,7 @@ def test_previous_plan_is_the_architect_section_of_the_last_successful_turn(engi
     _history(engine, conversation_id, _plan_result("## Cible\nPlan récent"))
     current = _history(engine, conversation_id, None, status="running")
     plan = _plan(engine, conversation_id, current)
-    assert plan == "## Cible\nPlan récent" and "agent-duration" not in plan
+    assert plan == "## Cible\nPlan récent" and "agent-duration" not in plan and "agent-model" not in plan
 
 
 @pytest.mark.parametrize("kwargs", [

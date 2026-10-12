@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import type { ChatTurn, LaunchControls } from '../types';
 import StepIndicator from './StepIndicator';
-import { parseCrewResult, extractAgentDuration } from '../utils/parseCrewResult';
+import { parseCrewResult, extractAgentMeta } from '../utils/parseCrewResult';
 import { parseFailureDetail } from '../utils/parseFailureDetail';
 import { isTransientFailure } from '../utils/failureView';
 import FailureBlock from './FailureBlock';
@@ -84,8 +84,8 @@ function ChatMessage({ turn, onRetry, retryDisabled, launch, onSuggest }: ChatMe
     // Ajouter les agents progressivement reçus
     if (turn.completedAgents) {
       Object.entries(turn.completedAgents).forEach(([agentName, rawContent]) => {
-        const { durationSeconds, content } = extractAgentDuration(rawContent);
-        allSections.push({ agentName, content, durationSeconds });
+        const { durationSeconds, model, content } = extractAgentMeta(rawContent);
+        allSections.push({ agentName, content, durationSeconds, model });
       });
     }
 

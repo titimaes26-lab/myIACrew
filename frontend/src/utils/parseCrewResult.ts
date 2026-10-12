@@ -6,6 +6,9 @@ export interface CrewResultSection {
   // extractAgentDuration) ; absent si l'agent n'a pas encore terminé ou si la durée
   // n'a pas pu être mesurée.
   durationSeconds?: number | null;
+  // Modèle IA utilisé par l'agent (par exemple « gemini-3.8-flash »), extrait du marqueur <!--agent-model:...-->
+  // écrit par le backend ; absent pour une section qui n'est pas celle d'un agent connu (ex : le résumé).
+  model?: string | null;
 }
 
 // Marqueur écrit par le backend (persist_completed_agent/_format_crew_result, voir
@@ -16,14 +19,24 @@ export interface CrewResultSection {
 // ChatMessage.tsx), le marqueur peut ne pas être en toute première position.
 const DURATION_MARKER = /<!--agent-duration:([\d.]+)-->\n*/;
 
+// Même principe pour le modèle utilisé (écrit juste après le marqueur de durée).
+const MODEL_MARKER = /<!--agent-model:([^\s>]+)-->\n*/;
+
+// Durée, modèle et texte d'une section brute ; les deux marqueurs sont retirés du texte.
+export function extractAgentMeta(raw: string): { durationSeconds: number | null; model: string | null; content: string } {
+  const durationMatch = raw.match(DURATION_MARKER);
+  const modelMatch = raw.match(MODEL_MARKER);
+  const durationSeconds = durationMatch ? parseFloat(durationMatch[1]) : NaN;
+  return {
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
+    model: modelMatch ? modelMatch[1] : null,
+    content: raw.replace(DURATION_MARKER, '').replace(MODEL_MARKER, ''),
+  };
+}
+
 export function extractAgentDuration(raw: string): { durationSeconds: number | null; content: string } {
-  const match = raw.match(DURATION_MARKER);
-  if (!match || match.index === undefined) {
-    return { durationSeconds: null, content: raw };
-  }
-  const durationSeconds = parseFloat(match[1]);
-  const content = raw.slice(0, match.index) + raw.slice(match.index + match[0].length);
-  return { durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null, content };
+  const { durationSeconds, content } = extractAgentMeta(raw);
+  return { durationSeconds, content };
 }
 
 // Rôles déclarés dans backend/agentsquestion.yaml : seul un titre "## <rôle exact>"
@@ -66,11 +79,11 @@ function isKnownAgentHeading(headingText: string): boolean {
 function toSection(chunk: string): CrewResultSection {
   const match = chunk.match(AGENT_HEADING);
   if (match) {
-    const { durationSeconds, content } = extractAgentDuration(match[2].trim());
-    return { agentName: match[1].trim(), content, durationSeconds };
+    const { durationSeconds, model, content } = extractAgentMeta(match[2].trim());
+    return { agentName: match[1].trim(), content, durationSeconds, model };
   }
-  const { durationSeconds, content } = extractAgentDuration(chunk);
-  return { agentName: null, content, durationSeconds };
+  const { durationSeconds, model, content } = extractAgentMeta(chunk);
+  return { agentName: null, content, durationSeconds, model };
 }
 
 function parseAgentSections(raw: string): CrewResultSection[] {

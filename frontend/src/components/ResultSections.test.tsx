@@ -11,6 +11,11 @@ const sections = [
   { agentName: 'QA', content: 'Verdict : GO', durationSeconds: 5 },
 ];
 
+const withModels = [
+  { agentName: 'Architecte Logiciel React / TypeScript', content: 'Plan : un panier', durationSeconds: 12, model: 'gemini-3.8-flash' },
+  { agentName: 'Résumé', content: 'Fait', model: null },
+];
+
 function details() {
   return Array.from(document.querySelectorAll<HTMLDetailsElement>('details.section-details'));
 }
@@ -104,5 +109,17 @@ describe('ResultSections', () => {
       render(<ResultSections sections={[...sections, { agentName: 'Résumé', content: '### À faire ensuite\nRien de particulier.', durationSeconds: null }]} onSuggest={vi.fn()} />);
       expect(screen.queryByRole('group', { name: 'Prochaines étapes proposées' })).not.toBeInTheDocument();
     });
+  });
+
+  it('affiche le modèle de chaque agent dans son bandeau et le met en tête du texte copié', async () => {
+    render(<ResultSections sections={withModels} />);
+    expect(screen.getByText('🤖 gemini-3.8-flash')).toBeInTheDocument();
+    expect(screen.getAllByText(/🤖/)).toHaveLength(1);                       // pas de modèle pour le résumé
+    await userEvent.click(screen.getByRole('button', { name: 'Copier : Architecte Logiciel React / TypeScript' }));
+    expect(writeText).toHaveBeenLastCalledWith('*Modèle : gemini-3.8-flash*\n\nPlan : un panier');
+    await userEvent.click(screen.getByRole('button', { name: 'Copier : Résumé' }));
+    expect(writeText).toHaveBeenLastCalledWith('Fait');
+    await userEvent.click(screen.getByRole('button', { name: 'Copier tout : tout le résultat' }));
+    expect(writeText.mock.calls[writeText.mock.calls.length - 1][0]).toContain('## Architecte Logiciel React / TypeScript\n\n*Modèle : gemini-3.8-flash*');
   });
 });
