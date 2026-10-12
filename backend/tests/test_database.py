@@ -67,3 +67,70 @@ def test_the_application_modules_no_longer_use_print():
             if re.search(r"(?<![\w.'\"])print\(", line) and not line.strip().startswith(("#", '"', "'")):
                 offenders.append(f"{os.path.basename(path)}:{number}")
     assert offenders == []
+
+
+# --- rattrapage des colonnes manquantes (SQLite) --------------------------------------------------------------------
+
+def _old_sqlite(tmp_path, table_sql):
+    from sqlalchemy import create_engine, text
+    old = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with old.begin() as conn:
+        conn.execute(text(table_sql))
+    return old
+
+
+OLD_CHECKPOINT = ("CREATE TABLE executioncheckpoint (id INTEGER PRIMARY KEY, execution_id INTEGER NOT NULL, step VARCHAR NOT NULL, "
+                  "raw VARCHAR NOT NULL, created_at DATETIME NOT NULL)")
+
+
+def test_an_existing_sqlite_table_gets_the_columns_added_since_its_creation(tmp_path):
+    from sqlmodel import Session, select
+    old = _old_sqlite(tmp_path, OLD_CHECKPOINT)
+    with pytest.raises(Exception, match="no column named model"):                  # le défaut constaté avant le rattrapage
+        with Session(old) as session:
+            session.add(database.ExecutionCheckpoint(execution_id=1, step="design", raw="x", model="m"))
+            session.commit()
+    assert database._add_missing_columns(old) == ["executioncheckpoint.model"]
+    with Session(old) as session:
+        session.add(database.ExecutionCheckpoint(execution_id=1, step="design", raw="x", model="m"))
+        session.commit()
+        assert session.exec(select(database.ExecutionCheckpoint)).one().model == "m"
+
+
+def test_the_catch_up_is_idempotent_and_leaves_existing_rows_alone(tmp_path, caplog):
+    from sqlalchemy import text
+    old = _old_sqlite(tmp_path, OLD_CHECKPOINT)
+    with old.begin() as conn:
+        conn.execute(text("INSERT INTO executioncheckpoint (execution_id, step, raw, created_at) VALUES (1, 'design', 'ancien', '2026-01-01')"))
+    assert database._add_missing_columns(old) == ["executioncheckpoint.model"]
+    caplog.clear()
+    caplog.set_level("INFO", logger="myiacrew")
+    assert database._add_missing_columns(old) == []
+    assert caplog.text == ""                                  # rien n'est retenté sur une colonne déjà présente (pas d'erreur avalée)
+    with old.connect() as conn:
+        assert conn.execute(text("SELECT raw, model FROM executioncheckpoint")).all() == [("ancien", None)]
+
+
+def test_missing_tables_are_skipped_and_a_required_column_is_reported_not_added(tmp_path, caplog):
+    from sqlalchemy import text
+    old = _old_sqlite(tmp_path, "CREATE TABLE executioncheckpoint (id INTEGER PRIMARY KEY)")   # les autres tables n'existent pas
+    caplog.set_level("WARNING", logger="myiacrew")
+    assert database._add_missing_columns(old) == ["executioncheckpoint.model"]                  # la seule colonne facultative
+    assert "executioncheckpoint.raw absente et obligatoire" in caplog.text
+    with old.connect() as conn:
+        assert [row[1] for row in conn.execute(text("PRAGMA table_info(executioncheckpoint)")).all()] == ["id", "model"]
+
+
+def test_the_catch_up_does_nothing_outside_sqlite():
+    from types import SimpleNamespace
+    postgres = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    assert database._add_missing_columns(postgres) == []                                    # Postgres : instructions IF NOT EXISTS
+
+
+def test_create_db_and_tables_applies_the_catch_up(tmp_path, monkeypatch):
+    from sqlalchemy import text
+    old = _old_sqlite(tmp_path, OLD_CHECKPOINT)
+    monkeypatch.setattr(database, "engine", old)
+    database.create_db_and_tables()
+    with old.connect() as conn:
+        assert "model" in [row[1] for row in conn.execute(text("PRAGMA table_info(executioncheckpoint)")).all()]

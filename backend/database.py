@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Index, text
+from sqlalchemy import Index, inspect, text
 from sqlmodel import Field, SQLModel, create_engine, Session
 
 from logs import get_logger
@@ -201,6 +201,40 @@ def _run_lightweight_migrations():
             # erreur de connexion, etc.) doit rester visible dans les logs de démarrage.
             log.warning(f"migration ignorée : {statement!r} -> {type(e).__name__}: {e}")
 
+def _add_missing_columns(bind=None) -> list[str]:
+    """SQLite seulement : ajoute les colonnes déclarées par les modèles et absentes d'une table déjà créée. Les instructions de
+    `_MIGRATION_STATEMENTS` utilisent `ADD COLUMN IF NOT EXISTS`, que SQLite ne comprend pas : sans ce rattrapage, une base
+    SQLite créée avant l'ajout d'une colonne (par exemple `dev.db`) ferait échouer chaque écriture qui la porte. Les colonnes
+    obligatoires sans valeur par défaut ne peuvent pas être ajoutées à une table existante : signalées, jamais ajoutées.
+    Renvoie les colonnes ajoutées (« table.colonne »)."""
+    bind = bind if bind is not None else engine
+    if bind.dialect.name != "sqlite":
+        return []
+    added: list[str] = []
+    inspector = inspect(bind)
+    quote = bind.dialect.identifier_preparer.quote
+    for table in SQLModel.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing or column.primary_key:
+                continue
+            if not column.nullable:
+                log.warning(f"colonne {table.name}.{column.name} absente et obligatoire : à ajouter à la main (ou recréer la base)")
+                continue
+            statement = f"ALTER TABLE {quote(table.name)} ADD COLUMN {quote(column.name)} {column.type.compile(dialect=bind.dialect)}"
+            try:
+                with bind.begin() as conn:
+                    conn.execute(text(statement))
+                added.append(f"{table.name}.{column.name}")
+            except Exception as e:
+                log.warning(f"ajout de colonne ignoré : {statement!r} -> {type(e).__name__}: {e}")
+    if added:
+        log.info(f"colonnes ajoutées aux tables SQLite existantes : {', '.join(added)}")
+    return added
+
+
 def create_db_and_tables():
     if _RAW_DATABASE_URL is None:
         log.warning(
@@ -213,6 +247,7 @@ def create_db_and_tables():
         log.info(f"connexion à la base de données : {engine.url.render_as_string(hide_password=True)}")
     SQLModel.metadata.create_all(engine)
     _run_lightweight_migrations()
+    _add_missing_columns()
 
 def get_session():
     with Session(engine) as session:
