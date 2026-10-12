@@ -12,6 +12,7 @@ import asyncio
 import re
 from typing import NamedTuple, Optional
 
+from llm_limiter import DailyQuotaExceeded
 from logs import get_logger
 
 
@@ -65,6 +66,9 @@ _USER_MESSAGES = {
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub est momentanément injoignable : la livraison n'a pas pu être vérifiée. Réessayez.",
     ErrorCode.GUARDRAIL_FAILED: "Le résultat produit ne respecte pas les contrôles de qualité. Reformulez ou précisez la demande.",
 }
+# Plafond journalier (RPD) d'un modèle atteint : attendre ne sert à rien, donc non réessayable (voir llm_limiter).
+_DAILY_QUOTA_MESSAGE = "Le plafond journalier de requêtes du modèle IA est atteint. Réessayez demain (remise à zéro à minuit, heure du Pacifique)."
+
 # Variante d'EXECUTION_TIMEOUT quand l'attente du quota a dominé le temps passé (voir ExecutionTimeoutError).
 _QUOTA_TIMEOUT_MESSAGE = (
     "L'exécution a dépassé sa durée maximale, en grande partie à cause de l'attente du quota du modèle IA (service saturé), "
@@ -163,6 +167,8 @@ def _classify_single(exc: BaseException) -> ErrorInfo:
             return ErrorInfo(ErrorCode.GITHUB_UNAVAILABLE, True, _USER_MESSAGES[ErrorCode.GITHUB_UNAVAILABLE])
     except Exception as e:
         get_logger("errors").debug(f"classification GitHub indisponible : {type(e).__name__}: {e}")
+    if isinstance(exc, DailyQuotaExceeded):
+        return ErrorInfo(ErrorCode.QUOTA_EXHAUSTED, False, _DAILY_QUOTA_MESSAGE)
     if isinstance(exc, ExecutionTimeoutError):
         message = _QUOTA_TIMEOUT_MESSAGE if exc.quota_wait_seconds > 0 and exc.quota_dominant else _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT]
         return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, message)

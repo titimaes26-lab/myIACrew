@@ -18,6 +18,9 @@ def _reset_execution_state():
     if state is not None:
         state.abandoned_execution_ids.clear()
         state.active_execution_ids.clear()
+    limiter = sys.modules.get("llm_limiter")        # fenêtres et compteurs journaliers par modèle : propres à chaque test
+    if limiter is not None:
+        limiter.reset_model_limiters()
 
 
 @pytest.fixture(autouse=True)

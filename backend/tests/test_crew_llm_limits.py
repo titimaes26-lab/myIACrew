@@ -17,8 +17,8 @@ def test_each_llm_applies_its_own_call_timeout_on_the_http_client(name, seconds)
 
 
 def test_make_llm_defaults_to_120_seconds_and_converts_to_milliseconds():
-    assert _http_timeout_ms(crew_llms._make_llm(0.1)) == 120_000
-    assert _http_timeout_ms(crew_llms._make_llm(0.1, request_timeout=7)) == 7_000
+    assert _http_timeout_ms(crew_llms._make_llm("qa_agent", 0.1)) == 120_000
+    assert _http_timeout_ms(crew_llms._make_llm("qa_agent", 0.1, request_timeout=7)) == 7_000
 
 
 def _generation_cap(llm):
@@ -32,5 +32,5 @@ def test_the_architect_output_cap_reaches_the_generation_config_and_the_others_h
 
 
 def test_make_llm_applies_an_explicit_cap_to_the_generation_config():
-    assert _generation_cap(crew_llms._make_llm(0.1, max_tokens=123)) == 123
-    assert _generation_cap(crew_llms._make_llm(0.1)) is None
+    assert _generation_cap(crew_llms._make_llm("qa_agent", 0.1, max_tokens=123)) == 123
+    assert _generation_cap(crew_llms._make_llm("qa_agent", 0.1)) is None

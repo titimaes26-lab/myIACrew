@@ -27,9 +27,9 @@ from metrics_collect import register_event_listeners
 register_event_listeners()
 
 
-# Sous TOUS les appels au modèle (agents, planificateur/observateur de CrewAI, qualification, résumé) : plafond commun
-# de requêtes par minute et pause commune après un 429 (voir llm_limiter.py). Le max_rpm d'un crew, lui, ne couvre ni
-# les autres exécutions en parallèle ni les appels internes de CrewAI.
+# Sous TOUS les appels au modèle (agents, planificateur/observateur de CrewAI, qualification, résumé) : un limiteur PAR
+# MODÈLE (requêtes et tokens par minute, requêtes par jour, pause après un 429 ; plafonds dans llm_models.py, voir
+# llm_limiter.py). Le max_rpm d'un crew, lui, ne couvre ni les autres exécutions en parallèle ni les appels internes de CrewAI.
 llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
 
 

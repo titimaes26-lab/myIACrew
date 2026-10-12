@@ -18,8 +18,9 @@ os.environ["LITELLM_TIME_CONTINUOUS_BACKOFF"] = "2"
 from crewai import LLM  # noqa: E402
 from google.genai import types as genai_types  # noqa: E402
 from crewai.agent.planning_config import PlanningConfig  # noqa: E402
+import llm_models  # noqa: E402
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
+# Modèle de chaque agent et limites de débit de chaque modèle : voir llm_models (carte AGENT_MODELS, plafonds RPM/TPM/RPD).
 
 DIAGNOSTIC_PLAN_MAX_STEPS = 5
 
@@ -62,10 +63,11 @@ def _output_params(max_tokens: Optional[int]) -> dict:
     # de génération (`max_tokens` n'est qu'un attribut : le plafond n'était pas appliqué) ; les deux sont donc posés.
     return {"max_tokens": max_tokens, "max_output_tokens": max_tokens} if max_tokens else {}
 
-def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
-    # max_tokens borne la SORTIE d'un appel (la génération domine la latence) ; absent, le plafond du fournisseur.
+def _make_llm(agent: str, temperature: float, request_timeout: int = 120, max_tokens: Optional[int] = None) -> LLM:
+    # Le modèle vient de llm_models.AGENT_MODELS (un par agent). max_tokens borne la SORTIE d'un appel (la génération domine
+    # la latence) ; absent, le plafond du fournisseur.
     return LLM(
-        model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=temperature,
+        model=llm_models.model_for_agent(agent), api_key=GEMINI_API_KEY, temperature=temperature,
         **_output_params(max_tokens), **_timeout_params(request_timeout),
     )
 
@@ -76,9 +78,9 @@ def _make_llm(temperature: float, request_timeout: int = 120, max_tokens: Option
 # classification JSON (qualification) qu'une génération de fichiers complets (diagnostic) avant
 # de considérer l'appel bloqué et de déclencher le retry litellm — au détriment de la détection
 # rapide d'un appel réellement figé sur les agents les plus légers.
-qualification_llm = _make_llm(0.1, request_timeout=45)   # sortie JSON structurée, sans outil
+qualification_llm = _make_llm("qualification_agent", 0.1, request_timeout=45)   # sortie JSON structurée, sans outil
 
-designer_llm = _make_llm(0.5, request_timeout=90)        # texte de specs + quelques lectures
+designer_llm = _make_llm("product_designer_agent", 0.5, request_timeout=90)        # texte de specs + quelques lectures
 
 def _architect_max_tokens() -> int:
     """Plafond de sortie de l'Architecte (ARCHITECT_MAX_OUTPUT_TOKENS, 8192 par défaut). Sur les modèles Gemini
@@ -89,11 +91,11 @@ def _architect_max_tokens() -> int:
         return 8192
     return value if value >= 1024 else 8192
 
-architect_llm = _make_llm(0.3, request_timeout=90, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
+architect_llm = _make_llm("architect_agent", 0.3, request_timeout=90, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
 
-diagnostic_llm = _make_llm(0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
+diagnostic_llm = _make_llm("diagnostic_agent", 0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
 
-developer_llm = _make_llm(0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
+developer_llm = _make_llm("developer_agent", 0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
 
                                                           # complet de diagnostic_task (potentiellement volumineux,
                                                           # voir diagnostic_llm) et peut devoir en recopier des
@@ -101,7 +103,7 @@ developer_llm = _make_llm(0.0, request_timeout=90)       # appels d'outils, mais
                                                           # (voir developer_agent) : pas aussi bas que le 60s
                                                           # initialement envisagé pour "peu de texte généré", pour
                                                           # ne pas risquer de couper ce repli sur une grosse livraison.
-qa_llm = _make_llm(0.2, request_timeout=90)               # appels d'outils + rapport final
+qa_llm = _make_llm("qa_agent", 0.2, request_timeout=90)               # appels d'outils + rapport final
 
 # Timeout dédié, plus court que celui des agents (120s) : un résumé qui traîne ne doit
 # pas ajouter jusqu'à 2 minutes à une réponse dont le vrai travail est déjà terminé.
@@ -109,4 +111,4 @@ qa_llm = _make_llm(0.2, request_timeout=90)               # appels d'outils + ra
 # échéant, la justification des choix (voir _build_summary_prompt), une génération
 # légèrement plus longue qui reprenait la marge de cette valeur sans que celle-ci ait
 # été ajustée en conséquence.
-summary_llm = LLM(model=MODEL_NAME, api_key=GEMINI_API_KEY, temperature=0.5, **_timeout_params(25))
+summary_llm = LLM(model=llm_models.summary_model(), api_key=GEMINI_API_KEY, temperature=0.5, **_timeout_params(25))

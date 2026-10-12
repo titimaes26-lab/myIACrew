@@ -26,5 +26,5 @@ def test_a_failing_wait_callback_is_logged_and_does_not_break_the_announcement(c
         raise ValueError("callback cassé")
 
     with caplog.at_level(logging.DEBUG, logger="myiacrew"):
-        llm_limiter._announce(1.0, boom)
+        llm_limiter._announce(1.0, boom, llm_limiter.limiter)
     assert "callback d'attente en échec" in caplog.text and "callback cassé" in caplog.text

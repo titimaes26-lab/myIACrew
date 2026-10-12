@@ -170,7 +170,8 @@ class CrewRun:
                 task_callback=on_task_complete,
                 # 13 (pas 3) : partagé par TOUS les agents en séquence ; la QA, dernière et au max_iter le plus
                 # élevé, hérite le plus de la latence cumulée d'un plafond trop bas. Le retry résumable absorbe
-                # les 429 si cette valeur est trop optimiste face au quota Gemini réel.
+                # les 429 si cette valeur est trop optimiste face au quota Gemini réel. Les plafonds propres à chaque modèle
+                # (8 à 12 requêtes/min effectives) sont appliqués par llm_limiter ; celui-ci ne borne que le total du crew.
                 max_rpm=13,
                 # Journal CrewAI (prompts et sorties complets de chaque agent) : désactivé par défaut, il grossissait sans
                 # limite sur le disque du service ; CREW_LOG_FILE=<chemin> l'active pour un diagnostic ponctuel.

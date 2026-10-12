@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.73 — Mise à jour le 2026-10-05
+> Version : 1.74 — Mise à jour le 2026-10-05
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.74 (10-12) : modèles et limites de débit par modèle : `qualification_agent` et `developer_agent` sur `gemini-3.5-flash-lite`, `product_designer_agent`, `architect_agent`, `diagnostic_agent` et `qa_agent` sur `gemini-3.8-flash` (carte `AGENT_MODELS` de `backend/llm_models.py`, qui porte aussi les plafonds RPM/TPM/RPD de chaque modèle : 10/250 000/1 500 pour 3.8-flash, 15/250 000/1 000 pour 3.5-flash-lite). `llm_limiter.py` passe d'un limiteur global à un limiteur PAR MODÈLE (choisi d'après l'argument `model` de chaque appel `google-genai`) : fenêtre glissante de requêtes et de tokens (estimation de l'entrée avant l'appel, remplacée par `usage_metadata` à la réponse), plafond journalier (échec immédiat `DailyQuotaExceeded`, classé QUOTA_EXHAUSTED non réessayable), pause après 429 propre au modèle. Marge de sécurité 0,8 (`LLM_RATE_MARGIN`), plafonds remplaçables (`GEMINI_MODEL_LIMITS`), `GEMINI_MODEL` force un modèle unique.
 > - 1.73 (10-08) : Dependabot ignore désormais les versions majeures de `typescript` (le PR n°60, TypeScript 7, échouait : `typescript-eslint` borne son peer à `< 6.1.0`) ; le job `audit` reste rouge à cause de `chromadb 1.1.1` (5 failles sans correctif), non bloquant, décision laissée ouverte.
 > - 1.72 (10-05) : revue n°8 : le plafond de sortie de l'architecte (`ARCHITECT_MAX_OUTPUT_TOKENS`, 8192 par défaut) n'était pas appliqué non plus : le fournisseur Gemini natif de CrewAI ne lit que `max_output_tokens` pour sa configuration de génération (`max_output_tokens = None`). Les deux champs sont désormais posés ; `tests/test_crew_llm_limits.py` (ex-`test_crew_llm_timeouts.py`) lit la configuration de génération réelle de chaque LLM. À surveiller : sur les modèles Gemini récents, les jetons de réflexion comptent dans la sortie, un plan très long peut être coupé à 8192 (relever la valeur par la variable d'environnement si besoin).
 > - 1.71 (10-05) : revue n°7 : les délais par appel LLM (45 s qualification, 90 s designer/architecte/développeur/QA, 120 s diagnostic, 25 s résumé) n'étaient pas appliqués : le fournisseur Gemini natif de CrewAI range `request_timeout` dans `additional_params` sans le lire (délai HTTP `None`). Ils sont désormais posés sur le client google-genai (`client_params` → `HttpOptions(timeout)`), vérifiés par `test_crew_llm_limits.py` (7 échecs sur l'ancien code) ; l'exception mypy de `crew_llms` est retirée (l'erreur était un vrai signal). Un appel figé s'arrête donc à son délai au lieu d'attendre le délai global d'exécution.
@@ -195,9 +196,11 @@ Chaque agent rapporte son temps d'exécution (`execution_duration`), affiché da
 
 ### 2.6 Résilience LLM
 
-- **LLM utilisé** : Gemini (`gemini/gemini-3.5-flash-lite` par défaut, configurable via `GEMINI_MODEL`), avec une température et
-  un timeout par agent (2.3).
-- **Quota** : le free tier impose environ **15 requêtes/minute** par projet/modèle. Une pause minimale de **5 s** entre appels
+- **LLM utilisé** : Gemini, un modèle par agent (carte `AGENT_MODELS` de `backend/llm_models.py`) : `gemini-3.5-flash-lite` pour la
+  qualification et le développeur (et le résumé final), `gemini-3.8-flash` pour le designer, l'architecte, le diagnostic et la QA ;
+  `GEMINI_MODEL` force un modèle unique pour tous (repli si un modèle n'est pas disponible sur la clé). Une température et un
+  timeout par agent (2.3).
+- **Quota** : le free tier impose des plafonds PAR MODÈLE (voir « Limiteur Gemini par modèle » plus bas ; environ 10 à 15 requêtes/minute). Une pause minimale de **5 s** entre appels
   (`QuotaManager.min_interval_seconds`) et `max_rpm=13` sur le crew limitent le débit ; le retry absorbe les 429 transitoires.
 - **Retry** : une erreur 429/quota ou 503/surcharge est retentie avec attente `retry after N + 2 s` si Gemini l'indique, sinon
   `base_delay × 2^(essai-1)`. Qualification : 5 essais, base 12 s. Crew : 5 essais, base 15 s.
@@ -278,16 +281,26 @@ déclarer un fichier valide « tronqué » ; non observé sur les corpus mesuré
   /`), sans espace, retour à la ligne, `..`, `//` ni `/` final.
 - **Lecture ciblée à l'envoi** : `/api/execute` lit les tours en cours, les 10 derniers tours (pour le rappel de conversation) et
   la branche de travail précédente par trois requêtes ciblées, au lieu de toute la conversation avec le résultat de chaque tour.
-- **Limiteur global Gemini** (`backend/llm_limiter.py`) : le quota de l'offre gratuite (15 requêtes par minute et par modèle) est
-  partagé par tout le projet, alors que `max_rpm` ne vaut que pour un crew et que le planificateur/observateur de CrewAI (agents
-  avec `reasoning=True`) fait des appels hors de ce compte. Le limiteur enveloppe les méthodes de requête du client `google-genai`
-  (sync, flux, async) : au plus `GEMINI_MAX_REQUESTS_PER_MINUTE` requêtes (12) sur une minute glissante, chaque appelant réservant
-  son créneau, et, sur un 429, le délai demandé par Google (« retry in Xs », `retryDelay`) devient une pause commune à tous les
-  appels suivants (plafonnée à 120 s : au-delà, par exemple un quota journalier épuisé, aucune pause n'est posée et l'erreur
-  remonte aussitôt comme « Quota épuisé » au lieu de laisser l'exécution dormir). Un 429 est reconnu par son code HTTP, sinon par
-  un texte précis (`RESOURCE_EXHAUSTED`, « exceeded your current quota », « 429 » accompagné de quota/rate limit), jamais par un
-  nombre cité dans un autre message. Les attentes de plus de 2 s sont tracées et comptées dans le temps d'attente de l'exécution.
-  Plafond par process : plusieurs instances du backend le multiplient.
+- **Limiteur Gemini par modèle** (`backend/llm_limiter.py`, plafonds dans `backend/llm_models.py`) : le quota de l'offre gratuite est
+  propre à chaque modèle (`gemini-3.8-flash` : 10 requêtes/min, 250 000 tokens/min, 1 500 requêtes/jour ; `gemini-3.5-flash-lite` :
+  15, 250 000 et 1 000) et partagé par tout le projet, alors que `max_rpm` ne vaut que pour un crew et que le
+  planificateur/observateur de CrewAI (agents avec `reasoning=True`) fait des appels hors de ce compte. Le limiteur enveloppe les
+  méthodes de requête du client `google-genai` (sync, flux, async) et choisit le limiteur d'après l'argument `model` de l'appel.
+  Les plafonds sont appliqués avec une marge (`LLM_RATE_MARGIN`, 0,8 : 8 requêtes/min sur 10, 12 sur 15, 200 000 tokens/min,
+  1 200 et 800 requêtes/jour) :
+  - **RPM** : fenêtre glissante, chaque appelant réserve son créneau et attend son tour ;
+  - **TPM** : les tokens comptent sur la même fenêtre : estimation de l'entrée avant l'envoi (4 caractères par token, `llm_usage.py`),
+    remplacée par le total réel (`usage_metadata`, sortie et réflexion comprises) dès la réponse ; la sortie n'étant pas connue
+    d'avance, c'est l'appel SUIVANT qui attend si elle a creusé le budget (flux asynchrone : l'estimation d'entrée seule) ;
+  - **RPD** : plafond journalier (remise à zéro à minuit, heure du Pacifique) : aucune attente n'a de sens, l'appel échoue aussitôt
+    avec `DailyQuotaExceeded`, classée QUOTA_EXHAUSTED non réessayable (les reprises ne la rejouent pas) ; le compteur est par process
+    et repart de zéro au redémarrage ;
+  - **429** : le délai demandé par Google (« retry in Xs », `retryDelay`) devient une pause commune aux seuls appels de CE modèle
+    (plafonnée à 120 s : au-delà, aucune pause n'est posée et l'erreur remonte aussitôt comme « Quota épuisé »). Un 429 est
+    reconnu par son code HTTP, sinon par un texte précis (`llm_quota_errors.py`), jamais par un nombre cité dans un autre message.
+  Un modèle absent de `llm_models.py` tombe sur le limiteur par défaut (`GEMINI_MAX_REQUESTS_PER_MINUTE`, 12, requêtes seules).
+  `GEMINI_MODEL_LIMITS` (JSON) remplace ou ajoute des plafonds (offre payante). Les attentes de plus de 2 s sont tracées et
+  comptées dans le temps d'attente de l'exécution. Plafonds par process : plusieurs instances du backend les multiplient.
 - **Cache de validation des jetons** (`backend/auth.py`) : chaque appel de l'API validait le jeton auprès de Supabase, sondage de
   progression toutes les 3 s compris (latence, limites de débit de Supabase, une panne d'authentification bloquait tout). Une
   validation RÉUSSIE est gardée `AUTH_CACHE_TTL_S` secondes (60 par défaut, 0 la désactive), bornée par l'expiration lue dans le
@@ -414,7 +427,7 @@ déclarer un fichier valide « tronqué » ; non observé sur les corpus mesuré
 | API (Logique HTTP) | Assemblage de l'app, démarrage/arrêt, format d'erreur, points d'accès, schémas d'entrée | `backend/main.py` (assemblage, CORS, démarrage : tables, rattrapage des verdicts QA, balayage des orphelines ; arrêt : attente des crews), `routes_execute.py` (`/api/qualify`, `/api/execute`), `routes_conversations.py` (conversations, messages, progression, dépôts récents), `routes_history.py` (historique, suppression unitaire et par lot), `routes_metrics.py` (tableau de bord), `error_handlers.py` (format d'erreur unique, CORS), `schemas.py`, `auth.py`, `limits.py`, `memory_monitor.py` |
 | Exécution en tâche de fond | Créneau d'exécution, contexte, issue, persistance, reprise | `backend/execution.py` (lancement, file d'attente, délai maximal), `execution_state.py` (tâches suivies, battement de cœur, étape courante), `execution_context.py` (consignes, aperçu du dépôt, plan et branche des tours précédents), `execution_outcomes.py` (succès, échec, relance, livraison), `execution_persistence.py` (sections d'agents, points de reprise, mesures), `execution_resume.py` (échec avant le développement, sorties réutilisables) |
 | Socle backend | Journalisation, erreurs typées, validation, orphelines, résumé de projet | `backend/logs.py`, `errors.py`, `validation.py`, `orphans.py`, `project_summary.py`, `summary.py` |
-| Orchestration agents | Agents et tâches CrewAI, déroulement d'une exécution, guardrails, retry | `backend/crewquestion.py` (agents et tâches), `crew_run.py` (`CrewRun` : reprise, retry résumable, échec attribué à une étape), `crew_tools.py` et `crew_checks.py` (outils et guardrails propres à une exécution, mixins de `AppDevelopmentCrew`, état déclaré dans `crew_state.py`), `crew_guardrails.py` (contrôles des specs, du plan, du verdict QA), `crew_workflow.py` (étapes, reprise, résultat formaté), `crew_retry.py`, `crew_llms.py`, `crew_summary.py`, `crew_result.py`, `crew_workspace.py`, `crew_cache.py`, `conversation_context.py`, `qualification.py`, `agentsquestion.yaml`, `tasksquestion.yaml` |
+| Orchestration agents | Agents et tâches CrewAI, déroulement d'une exécution, guardrails, retry | `backend/crewquestion.py` (agents et tâches), `crew_run.py` (`CrewRun` : reprise, retry résumable, échec attribué à une étape), `crew_tools.py` et `crew_checks.py` (outils et guardrails propres à une exécution, mixins de `AppDevelopmentCrew`, état déclaré dans `crew_state.py`), `crew_guardrails.py` (contrôles des specs, du plan, du verdict QA), `crew_workflow.py` (étapes, reprise, résultat formaté), `crew_retry.py`, `crew_llms.py` (un LLM par agent), `llm_models.py` (carte agent → modèle, plafonds RPM/TPM/RPD par modèle), `llm_limiter.py` (limiteur de débit par modèle), `llm_usage.py` (comptage des tokens), `llm_quota_errors.py` (reconnaissance des 429), `crew_summary.py`, `crew_result.py`, `crew_workspace.py`, `crew_cache.py`, `conversation_context.py`, `qualification.py`, `agentsquestion.yaml`, `tasksquestion.yaml` |
 | Contrôles de qualité (purs) | Lecture de la sortie de l'Analyste, livraison (commit/PR), rapport QA | `backend/analyst_output.py` (contrôle d'une sortie, rapport de livraison), `analyst_blocks.py` (balises de fichiers), `analyst_edits.py` (modifications ciblées), `analyst_imports.py`, `analyst_placeholders.py`, `delivery.py`, `qa_report.py` |
 | Mesure de performance | Collecte par agent (événements CrewAI), agrégats (percentiles, moyennes, tendance) | `backend/metrics_collect.py`, `metrics_report.py`, `metrics_roles.py` |
 | Outils agents et GitHub | Actions concrètes : lecture disque, lecture/écriture GitHub, vérification de syntaxe, livraison | `backend/tools.py`, `delimiter_scan.py` (équilibre des délimiteurs JS/TS), `github_client.py` (client, cache de lecture), `github_read.py`, `github_write.py`, `github_batch.py` (lot en un commit), `github_edit.py`, `github_edit_failures.py`, `github_guards.py` (branche protégée, portée d'écriture, fichiers sensibles), `github_snapshot.py`, `github_delivery.py`, `github_pull_request.py`, `github_access.py` |
@@ -637,7 +650,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (917 cas, 607 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (964 cas, 641 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont
@@ -702,7 +715,9 @@ périmètre).
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Clé du modèle |
-| `GEMINI_MODEL` | `gemini/gemini-3.5-flash-lite` | Modèle utilisé |
+| `GEMINI_MODEL` | — (carte `AGENT_MODELS`) | Force UN modèle pour tous les agents et le résumé |
+| `GEMINI_MODEL_LIMITS` | — | JSON `{"modèle": {"rpm": …, "tpm": …, "rpd": …}}` remplaçant les plafonds par modèle |
+| `LLM_RATE_MARGIN` | `0.8` | Part des plafonds RPM/TPM/RPD réellement utilisée (0,1 à 1) |
 | `GITHUB_TOKEN` | — | Accès GitHub (contenu + pull requests) |
 | `DATABASE_URL` | SQLite local | Base Postgres (Supabase) |
 | `SQL_ECHO` | `false` | Trace des requêtes SQL |

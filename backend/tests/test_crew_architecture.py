@@ -46,8 +46,8 @@ def test_only_the_architect_output_is_capped_and_make_llm_omits_the_cap_by_defau
     assert crew_llms.architect_llm.max_tokens == 8192
     for llm in (crew_llms.qualification_llm, crew_llms.designer_llm, crew_llms.diagnostic_llm, crew_llms.developer_llm, crew_llms.qa_llm):
         assert llm.max_tokens is None
-    assert crew_llms._make_llm(0.1).max_tokens is None
-    assert crew_llms._make_llm(0.1, max_tokens=123).max_tokens == 123
+    assert crew_llms._make_llm("qa_agent", 0.1).max_tokens is None
+    assert crew_llms._make_llm("qa_agent", 0.1, max_tokens=123).max_tokens == 123
 
 
 @pytest.mark.parametrize("env, expected", [(None, 8192), ("6000", 6000), ("abc", 8192), ("100", 8192), ("", 8192)])
