@@ -1,6 +1,6 @@
 """Résultat final d'une exécution : sorties de toutes les tentatives réunies, mise en forme, résumé."""
 import time
-from typing import Any
+from typing import Any, Optional
 
 import crew_retry
 import crew_summary
@@ -20,6 +20,7 @@ class CombinedCrewResult:
 
 async def build_final_result(
     inputs: dict, request_type: str, scope, step_keys: list[str], completed_outputs: dict[str, Any], selected_tasks: list,
+    task_models: Optional[dict[str, str]] = None,
 ) -> str:
     result = CombinedCrewResult([completed_outputs[k] for k in step_keys if k in completed_outputs])
 
@@ -33,7 +34,7 @@ async def build_final_result(
         for t in selected_tasks
         if t.execution_duration is not None
     }
-    formatted = crew_workflow._format_crew_result(result, task_durations)
+    formatted = crew_workflow._format_crew_result(result, task_durations, task_models)
 
     # last_execution_time n'est délibérément pas remis à jour avant cet appel :
     # on_task_complete() l'a déjà fait à la fin de la dernière tâche. Le remettre à

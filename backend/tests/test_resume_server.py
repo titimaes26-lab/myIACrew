@@ -32,6 +32,18 @@ def test_resumable_outputs_returns_the_reusable_prefix(engine):
             "design": "sortie design", "architecture": "sortie architecture"}
 
 
+def test_resumable_outputs_carry_the_model_that_produced_each_reused_step(engine):
+    with Session(engine) as db:
+        conversation, entry = _failed_with_checkpoints(db)
+        for checkpoint in db.exec(select(ExecutionCheckpoint)).all():
+            checkpoint.model = f"srv-{checkpoint.step}"
+            db.add(checkpoint)
+        db.commit()
+        outputs = execution_resume.resumable_outputs(db, _data(entry), "u1", conversation.id)
+        assert dict(outputs) == {"design": "sortie design", "architecture": "sortie architecture"}
+        assert outputs.models == {"design": "srv-design", "architecture": "srv-architecture"}
+
+
 @pytest.mark.parametrize("change", ["other_user", "other_workflow", "other_conversation", "still_running", "other_repo"])
 def test_resume_is_refused_when_the_previous_execution_does_not_match(engine, change):
     with Session(engine) as db:

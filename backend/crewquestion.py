@@ -20,7 +20,7 @@ from tools import check_syntax
 log = get_logger("crew")
 from github_write import github_create_branch, github_write_file, github_write_files
 from github_read import github_read_file, github_list_directory
-from metrics_collect import register_event_listeners
+from metrics_collect import record_served_model, register_event_listeners
 
 # --- MÉTRIQUES & PAUSES ---
 # La mesure par agent (metrics_collect.py) se nourrit des événements CrewAI : abonnement à l'import de ce module.
@@ -30,7 +30,7 @@ register_event_listeners()
 # Sous TOUS les appels au modèle (agents, planificateur/observateur de CrewAI, qualification, résumé) : un limiteur PAR
 # MODÈLE (requêtes et tokens par minute, requêtes par jour, pause après un 429 ; plafonds dans llm_models.py, voir
 # llm_limiter.py). Le max_rpm d'un crew, lui, ne couvre ni les autres exécutions en parallèle ni les appels internes de CrewAI.
-llm_limiter.install(on_wait=crew_retry._record_limiter_wait)
+llm_limiter.install(on_wait=crew_retry._record_limiter_wait, on_served=record_served_model)
 
 
 # --- CREW BASE ---
@@ -229,7 +229,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[[str, str, Optional[float]], None]] = None, resume_outputs: Optional[dict[str, str]] = None, scope: Optional[str] = None):
+    async def run_dynamic_crew(self, inputs: dict, request_type: str, on_step_change: Optional[Callable[[Optional[str]], None]] = None, on_task_output_complete: Optional[Callable[..., None]] = None, resume_outputs: Optional[dict[str, str]] = None, scope: Optional[str] = None):
         """Exécute les étapes du workflow `request_type` (voir crew_run.CrewRun) et renvoie le résultat formaté."""
         run = crew_run.CrewRun(self, inputs, request_type, on_step_change, on_task_output_complete, resume_outputs, scope)
         return await run.execute()

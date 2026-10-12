@@ -53,3 +53,25 @@ def evict_memoized_cache_entries(crew_instance: Any) -> None:
         # (pas un terminal) — voir memory_monitor.py, qui applique la même garde partout pour
         # ne pas perdre le dernier diagnostic si le process se termine brutalement juste après.
         log.warning(f"échec du nettoyage du cache de mémoïsation CrewAI (best-effort, sans impact) : {type(e).__name__}: {e}")
+
+
+def release_run(crew, selected_tasks) -> None:
+    """Fin d'une exécution (succès ou échec définitif) : purge du cache mémoïsé de CrewAI et callbacks des tâches retirés."""
+    # evict_memoized_cache_entries(crew) + t.callback = None : une SEULE fois pour
+    # TOUTE l'exécution (succès ou échec définitif), pas à chaque tentative de la boucle.
+    # Les méthodes @task de crewai sont MÉMOÏSÉES par (nom de méthode, id(self)) dans un cache
+    # module-level SANS éviction native — voir crewai/project/utils.py et la docstring de
+    # evict_memoized_cache_entries. Purger ce cache ENTRE deux tentatives casserait la reprise :
+    # une tâche pas encore exécutée dont le guardrail référence à nouveau self.diagnostic_task()
+    # (voir _diagnostic_retry_context) obtiendrait alors un objet Task tout NEUF, sans le
+    # `.context` câblé plus haut, plutôt que l'objet mémoïsé qui le porte déjà.
+    evict_memoized_cache_entries(crew)
+
+    # t.callback = None sur TOUTES les tâches sélectionnées (pas seulement celles de la
+    # dernière tentative) : filet de sécurité résiduel. execution.py instancie un
+    # AppDevelopmentCrew() dédié à CHAQUE exécution, donc des objets Task neufs ; ceci ne couvre
+    # qu'un cas résiduel très improbable (éviction ayant échoué ET CPython réutilisant l'id()
+    # d'une instance déjà collectée) où une future exécution récupérerait via le cache ces mêmes
+    # objets Task, `.callback` non nettoyée incluse.
+    for t in selected_tasks:
+        t.callback = None

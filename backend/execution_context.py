@@ -102,8 +102,9 @@ async def prefetch_repo_snapshot(
 
 MAX_PREVIOUS_PLAN_CHARS = 6000
 
-AGENT_DURATION_MARKER = re.compile(r"<!--agent-duration:[0-9.]+-->\s*")
-AGENT_MODEL_MARKER = re.compile(r"<!--agent-model:[^\s>]+-->\s*")
+# Marqueurs d'en-tête d'une section d'agent (durée, modèle), chacun sur sa ligne, au tout début du texte : un marqueur cité plus
+# loin par l'agent lui-même (ou en tête de SON texte, après la ligne vide) n'en est jamais un.
+AGENT_HEADER_MARKERS = re.compile(r"\A\s*(?:<!--agent-(?:duration|model):[^\s>]*-->[ \t]*\n)+\n*")
 
 def previous_architecture_plan(
     session: Session, data: "WorkflowExecutionInput", has_repo_target: bool, user_id, conversation_id: int, current_id: int,
@@ -130,7 +131,7 @@ def previous_architecture_plan(
             if step_for_role(agent_name) != "architecture":
                 continue
             body = content.split("\n", 1)[1] if content.startswith("## ") and "\n" in content else content
-            body = AGENT_MODEL_MARKER.sub("", AGENT_DURATION_MARKER.sub("", body)).strip()
+            body = AGENT_HEADER_MARKERS.sub("", body, count=1).strip()
             if body:
                 cut = "\n[… tronqué]" if len(body) > MAX_PREVIOUS_PLAN_CHARS else ""
                 return body[:MAX_PREVIOUS_PLAN_CHARS] + cut

@@ -40,3 +40,9 @@ def total_tokens(response: Any) -> Optional[int]:
     usage = getattr(response, "usage_metadata", None)
     total = getattr(usage, "total_token_count", None)
     return total if isinstance(total, int) and total >= 0 else None
+
+
+def served_model(response: Any) -> Optional[str]:
+    """Modèle que l'API déclare avoir réellement servi (`model_version`, par exemple « gemini-3.8-flash »), ou None."""
+    version = getattr(response, "model_version", None)
+    return version.strip() if isinstance(version, str) and version.strip() else None

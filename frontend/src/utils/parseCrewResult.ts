@@ -2,8 +2,8 @@ export interface CrewResultSection {
   agentName: string | null;
   content: string;
   // Temps d'exécution de l'agent en secondes (Task.execution_duration côté CrewAI),
-  // extrait du marqueur <!--agent-duration:...--> écrit par le backend (voir
-  // extractAgentDuration) ; absent si l'agent n'a pas encore terminé ou si la durée
+  // extrait du marqueur <!--agent-duration:...--> d'en-tête écrit par le backend (voir
+  // extractAgentMeta) ; absent si l'agent n'a pas encore terminé ou si la durée
   // n'a pas pu être mesurée.
   durationSeconds?: number | null;
   // Modèle IA utilisé par l'agent (par exemple « gemini-3.8-flash »), extrait du marqueur <!--agent-model:...-->
@@ -11,26 +11,21 @@ export interface CrewResultSection {
   model?: string | null;
 }
 
-// Marqueur écrit par le backend (persist_completed_agent/_format_crew_result, voir
-// backend/execution_persistence.py et backend/crew_workflow.py) juste après le heading "## AgentName" de
-// chaque section, quand la durée d'exécution de l'agent est connue. Pas ancré en début de
-// chaîne : selon l'origine de la section (résultat final déjà découpé par toSection, ou
-// valeur brute de turn.completedAgents qui commence encore par "## AgentName\n\n", voir
-// ChatMessage.tsx), le marqueur peut ne pas être en toute première position.
-const DURATION_MARKER = /<!--agent-duration:([\d.]+)-->\n*/;
+// Marqueurs écrits par le backend (voir backend/crew_workflow.py, format_agent_section) dans l'EN-TÊTE d'une section : après le
+// heading « ## <rôle> » (présent ou non selon l'origine du texte : résultat final déjà découpé par toSection, ou valeur brute de
+// turn.completedAgents, voir ChatMessage.tsx), chacun sur sa ligne, puis une ligne vide. Seul ce bloc d'en-tête est lu : un
+// marqueur cité plus loin par l'agent dans son propre texte (ou en tête de SON texte, après la ligne vide) n'en est pas un.
+const HEADER_MARKERS = /^(\s*##[^\n]*\n)?\s*((?:<!--agent-(?:duration|model):[^\s>]*-->[ \t]*\n)+)\n*/;
 
-// Même principe pour le modèle utilisé (écrit juste après le marqueur de durée).
-const MODEL_MARKER = /<!--agent-model:([^\s>]+)-->\n*/;
-
-// Durée, modèle et texte d'une section brute ; les deux marqueurs sont retirés du texte.
+// Durée, modèle et texte d'une section brute ; les marqueurs d'en-tête sont retirés du texte.
 export function extractAgentMeta(raw: string): { durationSeconds: number | null; model: string | null; content: string } {
-  const durationMatch = raw.match(DURATION_MARKER);
-  const modelMatch = raw.match(MODEL_MARKER);
-  const durationSeconds = durationMatch ? parseFloat(durationMatch[1]) : NaN;
+  const header = raw.match(HEADER_MARKERS);
+  if (!header) return { durationSeconds: null, model: null, content: raw };
+  const duration = parseFloat(header[2].match(/<!--agent-duration:([\d.]+)-->/)?.[1] ?? '');
   return {
-    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
-    model: modelMatch ? modelMatch[1] : null,
-    content: raw.replace(DURATION_MARKER, '').replace(MODEL_MARKER, ''),
+    durationSeconds: Number.isFinite(duration) ? duration : null,
+    model: header[2].match(/<!--agent-model:([^\s>]+)-->/)?.[1] ?? null,
+    content: (header[1] ?? '') + raw.slice(header[0].length),
   };
 }
 

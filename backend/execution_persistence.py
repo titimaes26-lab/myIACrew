@@ -1,10 +1,11 @@
 """Persistance des résultats d'une exécution : sections des agents terminés (au fil de l'eau), points de reprise,
 mesures par agent."""
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlmodel import Session, select
 
 import database
+import llm_models
 import execution_state
 from metrics_collect import build_agent_run_rows
 from metrics_roles import step_for_role
@@ -18,6 +19,21 @@ log = get_logger("execution_persistence")
 # Structure: {execution_id: set(agent_names_persisted)}
 # Évite les doublons si on_task_output_complete est appelé plusieurs fois pour le même agent
 persisted_agents: dict[int, set[str]] = {}
+
+class ResumeOutputs(dict):
+    """{étape: sortie} des points de reprise, plus `.models` {étape: modèle qui l'avait produite} : une étape reprise garde le
+    modèle d'origine dans le rapport de l'agent (un `dict` ordinaire passe partout où ce type est attendu)."""
+
+    def __init__(self, outputs: Optional[dict[str, str]] = None, models: Optional[dict[str, str]] = None) -> None:
+        super().__init__(outputs or {})
+        self.models: dict[str, str] = dict(models or {})
+
+
+def select_outputs(saved: dict[str, str], steps: Iterable[str]) -> "ResumeOutputs":
+    """Les points de reprise des seules `steps`, modèles compris (si `saved` en porte)."""
+    models = getattr(saved, "models", {})
+    return ResumeOutputs({step: saved[step] for step in steps}, {step: models[step] for step in steps if step in models})
+
 
 def validate_agent_data(
     agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
@@ -68,7 +84,8 @@ def persist_agent_runs(session: Session, db_entry: ExecutionHistory, run_metrics
         log.warning(f"métriques par agent non enregistrées pour execution_id={db_entry.id} : {type(e).__name__}: {e}")
 
 def persist_completed_agent(
-    execution_id: int, agent_name: str, agent_output: str, duration_seconds: Optional[float] = None
+    execution_id: int, agent_name: str, agent_output: str, duration_seconds: Optional[float] = None,
+    model: Optional[str] = None,
 ) -> None:
     """Invoqué quand un agent complète sa tâche, pour accumuler les résultats progressifs.
 
@@ -103,7 +120,7 @@ def persist_completed_agent(
             entry = agent_session.get(ExecutionHistory, execution_id)
             if entry is not None:
                 # Format identique à crew_workflow._format_crew_result : sections séparées par AGENT_SECTION_SEPARATOR
-                agent_section = format_agent_section(agent_name, agent_output, duration_seconds)
+                agent_section = format_agent_section(agent_name, agent_output, duration_seconds, model)
                 output_size = len(agent_output)
 
                 # UPDATE SQL atomique au lieu de read-modify-write en Python
@@ -121,7 +138,10 @@ def persist_completed_agent(
                 # (entry.result, lui, est remplacé par le message d'échec).
                 step = step_for_role(agent_name)
                 if step in RESUMABLE_STEPS:
-                    agent_session.add(ExecutionCheckpoint(execution_id=execution_id, step=step, raw=agent_output))
+                    agent_session.add(ExecutionCheckpoint(
+                        execution_id=execution_id, step=step, raw=agent_output,
+                        model=model or llm_models.model_for_role(agent_name),
+                    ))
                 agent_session.commit()
 
                 # Marquer l'agent comme persisté pour l'idempotence
@@ -131,14 +151,14 @@ def persist_completed_agent(
     except Exception as e:
         log.warning(f"échec de la persistance de l'agent complété (execution_id={execution_id}, agent={agent_name!r}) : {type(e).__name__}: {e}")
 
-def load_checkpoints(session: Session, execution_id: int) -> dict[str, str]:
-    """{étape: sortie} sauvegardées pour une exécution (la plus récente gagne en cas de doublon)."""
+def load_checkpoints(session: Session, execution_id: int) -> ResumeOutputs:
+    """{étape: sortie} sauvegardées pour une exécution (la plus récente gagne en cas de doublon), avec leurs modèles."""
     rows = session.exec(
         select(ExecutionCheckpoint).where(ExecutionCheckpoint.execution_id == execution_id).order_by(ExecutionCheckpoint.id)
     ).all()
-    return {row.step: row.raw for row in rows}
+    return ResumeOutputs({row.step: row.raw for row in rows}, {row.step: row.model for row in rows if row.model})
 
-def load_checkpoints_for(execution_id: int) -> dict[str, str]:
+def load_checkpoints_for(execution_id: int) -> ResumeOutputs:
     """load_checkpoints avec sa propre Session (appelable depuis un thread, hors boucle asyncio)."""
     with Session(database.engine) as checkpoint_session:
         return load_checkpoints(checkpoint_session, execution_id)

@@ -153,6 +153,7 @@ class ExecutionCheckpoint(SQLModel, table=True):
     execution_id: int = Field(index=True)
     step: str  # clé d'étape : design | architecture | diagnostic
     raw: str
+    model: Optional[str] = None  # modèle qui a produit cette sortie (rapport de l'agent à la reprise)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 # SQLModel.metadata.create_all() ne modifie jamais le schéma d'une table déjà existante.
@@ -160,6 +161,7 @@ class ExecutionCheckpoint(SQLModel, table=True):
 # sur une base déjà en place (ex: Supabase en production). Sans effet sur une base neuve
 # (déjà créée avec le bon schéma) ou déjà à jour.
 _MIGRATION_STATEMENTS = [
+    "ALTER TABLE executioncheckpoint ADD COLUMN IF NOT EXISTS model VARCHAR",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'success'",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT now()",
     "ALTER TABLE executionhistory ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT now()",

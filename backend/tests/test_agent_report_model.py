@@ -75,6 +75,14 @@ def test_the_progressive_persistence_writes_the_model_marker(engine):
     assert "<!--agent-model:gemini-3.8-flash-->" in sections["Architecte Logiciel React / TypeScript"]
 
 
-def test_the_model_marker_never_reaches_the_plan_given_to_the_next_turn():
-    assert execution_context.AGENT_MODEL_MARKER.sub("", "<!--agent-model:gemini-3.8-flash-->\n\nplan") == "plan"
-    assert execution_context.AGENT_MODEL_MARKER.sub("", "plan sans marqueur") == "plan sans marqueur"
+def test_only_the_header_markers_are_removed_from_the_plan_given_to_the_next_turn():
+    strip = execution_context.AGENT_HEADER_MARKERS
+    assert strip.sub("", "<!--agent-duration:1.00-->\n<!--agent-model:gemini-3.8-flash-->\n\nplan", count=1) == "plan"
+    assert strip.sub("", "plan sans marqueur") == "plan sans marqueur"
+    # Un marqueur cité dans le texte de l'agent (ou en tête de son texte, après la ligne vide) reste dans le texte.
+    quoted = "intro <!--agent-model:gemini-fake--> fin"
+    assert strip.sub("", quoted) == quoted
+    on_its_own_line = "intro\n<!--agent-model:gemini-fake-->\nsuite"
+    assert strip.sub("", on_its_own_line) == on_its_own_line      # pas en tête : jamais retiré
+    assert strip.sub("", "<!--agent-model:gemini-3.8-flash-->\n\n<!--agent-model:gemini-fake-->\nsuite", count=1) == (
+        "<!--agent-model:gemini-fake-->\nsuite")

@@ -54,6 +54,17 @@ limiter = GeminiRateLimiter(_env_positive_int("GEMINI_MAX_REQUESTS_PER_MINUTE", 
 _model_limiters: dict[str, GeminiRateLimiter] = {}
 _registry_lock = threading.Lock()
 _installed: set[tuple[int, str]] = set()
+_served_hook: Optional[Callable[[str], None]] = None   # reçoit le modèle réellement servi par chaque réponse (voir install)
+
+
+def _report_served(response: Any) -> None:
+    """Signale le modèle que l'API déclare avoir servi (`model_version`) ; best-effort, une mesure ne casse jamais un appel."""
+    model = llm_usage.served_model(response)
+    if model and _served_hook is not None:
+        try:
+            _served_hook(model)
+        except Exception as e:
+            log.debug(f"suivi du modèle servi en échec : {type(e).__name__}: {e}")
 
 
 def limiter_for(model: Optional[str]) -> GeminiRateLimiter:
@@ -118,6 +129,7 @@ def _wrap_sync(function: Callable[..., Any], on_wait: Optional[Callable[[float],
             _note_error(error, lim)
             raise
         lim.settle(ticket, llm_usage.total_tokens(response))
+        _report_served(response)
         return response
     return wrapper
 
@@ -130,14 +142,17 @@ def _wrap_sync_stream(function: Callable[..., Any], on_wait: Optional[Callable[[
         if wait > 0:
             time.sleep(wait)
         actual: Optional[int] = None
+        last = None
         try:
             for chunk in function(*args, **kwargs):
                 actual = llm_usage.total_tokens(chunk) or actual   # le décompte cumulé arrive sur les derniers morceaux
+                last = chunk if llm_usage.served_model(chunk) else last
                 yield chunk
         except Exception as error:
             _note_error(error, lim)
             raise
         lim.settle(ticket, actual)
+        _report_served(last)
     return wrapper
 
 
@@ -154,6 +169,7 @@ def _wrap_async(function: Callable[..., Any], on_wait: Optional[Callable[[float]
             _note_error(error, lim)
             raise
         lim.settle(ticket, llm_usage.total_tokens(response))
+        _report_served(response)
         return response
     return wrapper
 
@@ -161,10 +177,13 @@ def _wrap_async(function: Callable[..., Any], on_wait: Optional[Callable[[float]
 async def _settled_stream(stream: Any, lim: GeminiRateLimiter, ticket: list) -> Any:
     """Relaie les morceaux d'un flux asynchrone et remplace l'estimation par le dernier total de tokens rapporté."""
     actual: Optional[int] = None
+    last = None
     async for chunk in stream:
         actual = llm_usage.total_tokens(chunk) or actual
+        last = chunk if llm_usage.served_model(chunk) else last
         yield chunk
     lim.settle(ticket, actual)
+    _report_served(last)
 
 
 def _wrap_async_stream(function: Callable[..., Any], on_wait: Optional[Callable[[float], None]]) -> Callable[..., Any]:
@@ -193,9 +212,16 @@ def _default_targets() -> list[tuple[Any, str, str]]:
     ]
 
 
-def install(on_wait: Optional[Callable[[float], None]] = None, targets: Optional[list[tuple[Any, str, str]]] = None) -> int:
+def install(
+    on_wait: Optional[Callable[[float], None]] = None, targets: Optional[list[tuple[Any, str, str]]] = None,
+    on_served: Optional[Callable[[str], None]] = None,
+) -> int:
     """Enveloppe les méthodes de requête du client google-genai (à l'échelle du process). Idempotent : renvoie le nombre
-    de méthodes nouvellement enveloppées. `on_wait(secondes)` reçoit chaque attente imposée (mesures d'exécution)."""
+    de méthodes nouvellement enveloppées. `on_wait(secondes)` reçoit chaque attente imposée (mesures d'exécution) ;
+    `on_served(modèle)` le modèle que l'API déclare avoir servi pour chaque réponse (rapport de chaque agent)."""
+    global _served_hook
+    if on_served is not None:
+        _served_hook = on_served
     wrappers = {"sync": _wrap_sync, "stream": _wrap_sync_stream, "async": _wrap_async, "astream": _wrap_async_stream}
     installed = 0
     for cls, name, kind in targets if targets is not None else _default_targets():

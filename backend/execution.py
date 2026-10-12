@@ -97,8 +97,8 @@ async def run_crew(
                         inputs=inputs,
                         request_type=request_type,
                         on_step_change=lambda step_key: execution_state.persist_current_step(execution_id, step_key),
-                        on_task_output_complete=lambda agent_name, output, duration: execution_persistence.persist_completed_agent(
-                            execution_id, agent_name, output, duration),
+                        on_task_output_complete=lambda agent_name, output, duration, **extra: execution_persistence.persist_completed_agent(
+                            execution_id, agent_name, output, duration, **extra),
                         resume_outputs=resume_outputs,
                         # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
                         **({"scope": scope} if scope else {}),

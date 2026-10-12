@@ -42,4 +42,4 @@ def resumable_outputs(session: Session, data: "WorkflowExecutionInput", user_id,
         return {}
     saved = execution_persistence.load_checkpoints(session, previous.id)
     prefix = resumable_prefix(workflow_step_keys(data.target_workflow, data.scope), saved)
-    return {key: saved[key] for key in prefix}
+    return execution_persistence.select_outputs(saved, prefix)

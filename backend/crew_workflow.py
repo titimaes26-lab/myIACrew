@@ -75,25 +75,30 @@ def _iter_task_sections(result):
         raw = raw if raw is not None else str(task_output)
         yield agent_name, raw
 
-def format_agent_section(agent_name: str, body: str, duration: Optional[float] = None) -> str:
-    """Section d'un agent : « ## <rôle> », puis les marqueurs HTML lus par le frontend (durée d'exécution, modèle utilisé quand
-    le rôle est celui d'un agent connu), puis le texte. Source UNIQUE du format, pour le suivi progressif comme pour le résultat final."""
+def format_agent_section(agent_name: str, body: str, duration: Optional[float] = None, model: Optional[str] = None) -> str:
+    """Section d'un agent : « ## <rôle> », puis les marqueurs HTML lus par le frontend (durée d'exécution, modèle utilisé), puis
+    le texte. Source UNIQUE du format, pour le suivi progressif comme pour le résultat final. `model` : modèle réellement servi
+    (rapporté par l'API) ; absent, le modèle configuré pour ce rôle, et aucun marqueur pour un rôle qui n'est pas un agent connu."""
     head = [f"## {agent_name}"]
     if duration is not None:
         head.append(f"<!--agent-duration:{duration:.2f}-->")
-    model = llm_models.model_for_role(agent_name)
+    model = model or llm_models.model_for_role(agent_name)
     if model:
         head.append(f"<!--agent-model:{model}-->")
     return "\n".join(head) + f"\n\n{body}"
 
 
-def _format_crew_result(result, task_durations: Optional[dict[str, float]] = None) -> str:
+def _format_crew_result(
+    result, task_durations: Optional[dict[str, float]] = None, task_models: Optional[dict[str, str]] = None,
+) -> str:
     """Combine les sorties de toutes les tâches exécutées, pas seulement la dernière.
 
     result.raw ne reflète que la sortie de la dernière tâche du crew. Pour un workflow
     à plusieurs tâches (ex: ANALYSE_ONLY = design_task puis architecture_task), le
     contenu produit par les tâches précédentes serait sinon silencieusement perdu et
     jamais renvoyé à l'utilisateur.
+
+    task_models : mapping optionnel agent_name -> modèle réellement servi (voir CrewRun.agent_models).
 
     task_durations : mapping optionnel agent_name -> secondes d'exécution (voir
     run_dynamic_crew, construit depuis Task.execution_duration). Quand une durée est
@@ -110,5 +115,7 @@ def _format_crew_result(result, task_durations: Optional[dict[str, float]] = Non
 
     sections = []
     for agent_name, raw in _iter_task_sections(result):
-        sections.append(format_agent_section(agent_name, raw, (task_durations or {}).get(agent_name)))
+        sections.append(format_agent_section(
+            agent_name, raw, (task_durations or {}).get(agent_name), (task_models or {}).get(agent_name),
+        ))
     return AGENT_SECTION_SEPARATOR.join(sections)

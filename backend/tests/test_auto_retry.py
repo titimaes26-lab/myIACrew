@@ -30,6 +30,20 @@ def test_transient_failure_in_an_early_step_is_retried_once_reusing_saved_steps(
     assert saved.status == "success" and saved.error_code is None
 
 
+def test_the_automatic_retry_keeps_the_model_that_produced_each_reused_step(engine, monkeypatch):
+    seen = []
+
+    async def fake_run(self, inputs, request_type, on_step_change=None, on_task_output_complete=None, resume_outputs=None):
+        seen.append(getattr(resume_outputs, "models", {}))
+        if len(seen) == 1:
+            on_task_output_complete(DESIGNER, "conception", 1.0, model="srv-design")      # modèle servi par l'API
+            raise _step_error(2, "Architecte Logiciel React / TypeScript")
+        return type("R", (), {"raw": "résultat final"})()
+
+    _saved(engine, _launch_with(engine, monkeypatch, fake_run))
+    assert seen == [{}, {"design": "srv-design"}]
+
+
 def test_second_failure_is_final_and_never_retried_again(engine, monkeypatch):
     calls = []
 

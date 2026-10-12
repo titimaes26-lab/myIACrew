@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.76 — Mise à jour le 2026-10-05
+> Version : 1.77 — Mise à jour le 2026-10-05
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.77 (10-12) : modèle de l'agent : le rapport indique le modèle que l'API déclare avoir SERVI (`model_version` de chaque réponse `google-genai`, noté par `llm_limiter` dans les mesures de l'exécution et attribué à l'agent qui vient de finir), le modèle configuré seulement quand l'API n'en dit pas ; une étape reprise (reprise manuelle ou seconde tentative automatique) garde le modèle d'origine (nouvelle colonne `executioncheckpoint.model`, migration `ADD COLUMN IF NOT EXISTS`, transmise par `ResumeOutputs`) ; seuls les marqueurs d'EN-TÊTE d'une section sont lus (backend `AGENT_HEADER_MARKERS`, frontend `extractAgentMeta`) : un marqueur cité dans le texte d'un agent n'est plus pris pour le sien. `_release` de `crew_run` déplacé dans `crew_cache.release_run`.
 > - 1.76 (10-12) : le rapport de chaque agent indique le modèle IA utilisé : la section d'un agent (suivi progressif et résultat final) porte, après sa durée, le marqueur `<!--agent-model:gemini-3.8-flash-->` (format unique `crew_workflow.format_agent_section` ; modèle déduit du rôle par `llm_models.model_for_role`, `GEMINI_MODEL` pris en compte ; pas de marqueur pour un rôle inconnu ni pour le résumé). Le frontend l'affiche dans le bandeau de la section (« 🤖 gemini-3.8-flash »), le retire du texte et l'ajoute en tête du texte copié ; le marqueur est aussi retiré du plan donné à l'Architecte au tour suivant.
 > - 1.75 (10-12) : revue du limiteur par modèle : `GEMINI_MODEL_LIMITS` est analysée une seule fois (un texte illisible n'est plus signalé à chaque appel au modèle) et le limiteur déjà créé est retrouvé sans recalculer les plafonds ; le journal d'attente nomme la contrainte en cause (requêtes par minute, tokens par minute ou pause après un 429) ; les flux asynchrones comptent désormais le total réel de tokens ; la fenêtre de débit est extraite dans `llm_rate_window.py`.
 > - 1.74 (10-12) : modèles et limites de débit par modèle : `qualification_agent` et `developer_agent` sur `gemini-3.5-flash-lite`, `product_designer_agent`, `architect_agent`, `diagnostic_agent` et `qa_agent` sur `gemini-3.8-flash` (carte `AGENT_MODELS` de `backend/llm_models.py`, qui porte aussi les plafonds RPM/TPM/RPD de chaque modèle : 10/250 000/1 500 pour 3.8-flash, 15/250 000/1 000 pour 3.5-flash-lite). `llm_limiter.py` passe d'un limiteur global à un limiteur PAR MODÈLE (choisi d'après l'argument `model` de chaque appel `google-genai`) : fenêtre glissante de requêtes et de tokens (estimation de l'entrée avant l'appel, remplacée par `usage_metadata` à la réponse), plafond journalier (échec immédiat `DailyQuotaExceeded`, classé QUOTA_EXHAUSTED non réessayable), pause après 429 propre au modèle. Marge de sécurité 0,8 (`LLM_RATE_MARGIN`), plafonds remplaçables (`GEMINI_MODEL_LIMITS`), `GEMINI_MODEL` force un modèle unique.
@@ -578,8 +579,8 @@ POST /api/history/bulk-delete {ids: int[≤100]} → {deleted: int[], skipped: [
 automatiquement, sans migration.
 
 **Table `executioncheckpoint`** : sortie d'une étape reprenable terminée — `execution_id` (indexé), `step` (`design`,
-`architecture`, `diagnostic`), `raw`, `created_at`. Supprimée avec l'exécution. Table nouvelle : créée automatiquement, sans
-migration.
+`architecture`, `diagnostic`), `raw`, `model` (modèle qui a produit la sortie, repris dans le rapport de l'agent ; colonne ajoutée
+par migration `ADD COLUMN IF NOT EXISTS`, nulle pour les anciens points de reprise), `created_at`. Supprimée avec l'exécution.
 
 L'URL de la Pull Request n'a **pas** de colonne dédiée : elle figure dans le texte du résultat (bloc « Livraison constatée par les
 outils »). Le schéma `auth` est géré entièrement par Supabase. Au démarrage, `qa_verdict` des exécutions réussies antérieures est
@@ -652,7 +653,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (983 cas, 653 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (996 cas, 666 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont

@@ -75,6 +75,7 @@ class ExecutionMetrics:
         self.rate_limit_hits = 0
         self.total_wait_time = 0.0
         self.agents: dict[str, AgentStats] = {}
+        self._served_models: list[str] = []   # modèles servis depuis la fin du dernier agent (voir take_served_models)
         self._lock = threading.Lock()
 
     @property
@@ -119,6 +120,17 @@ class ExecutionMetrics:
             stats.tool_calls += 1
             if not ok:
                 stats.tool_errors += 1
+
+    def record_served_model(self, model: str):
+        with self._lock:
+            if model not in self._served_models:
+                self._served_models.append(model)
+
+    def take_served_models(self) -> list[str]:
+        """Modèles servis depuis le dernier appel (ceux de l'agent qui vient de finir : les tâches s'enchaînent), puis remise à zéro."""
+        with self._lock:
+            taken, self._served_models = self._served_models, []
+            return taken
 
     def record_agent_done(self, role: Optional[str], duration_seconds: Optional[float]):
         with self._lock:
@@ -222,3 +234,10 @@ def build_agent_run_rows(
             "workflow": workflow, "agent": step, "status": status, **vars(stats),
         })
     return rows
+
+
+def record_served_model(model: str) -> None:
+    """Note, pour l'exécution en cours, le modèle que l'API a réellement servi (sans effet hors exécution suivie)."""
+    metrics = current_metrics.get()
+    if metrics is not None:
+        metrics.record_served_model(model)

@@ -201,7 +201,7 @@ async def retry_outputs_if_transient(
         return None
     log.info(f"execution_id={db_entry_id} : échec transitoire ({info.code}), nouvelle tentative "
         f"automatique dans {execution_state.AUTO_RETRY_DELAY_S}s.")
-    return {key: saved[key] for key in prefix}
+    return execution_persistence.select_outputs(saved, prefix)
 
 def mark_startup_failure(db_entry_id: int, exc: BaseException) -> None:
     """Dernier filet : l'ouverture de la Session ou les `get` initiaux ont échoué (pool épuisé, coupure base).
