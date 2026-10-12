@@ -1,5 +1,6 @@
 """Limiteurs de débit par modèle : RPM, TPM et RPD indépendants d'un modèle à l'autre."""
 import asyncio
+import logging
 from datetime import date
 
 import pytest
@@ -162,6 +163,12 @@ class FakeAsyncModels:
     async def generate_content(self, *, model, contents, config=None):
         return _Response(70_000)
 
+    async def generate_content_stream(self, *, model, contents, config=None):
+        async def chunks():
+            yield _Response(None)
+            yield _Response(150_000)
+        return chunks()
+
 
 @pytest.fixture()
 def wrapped(monkeypatch):
@@ -171,7 +178,7 @@ def wrapped(monkeypatch):
     monkeypatch.setattr(llm_limiter, "limiter", GeminiRateLimiter(100, 60))
     FakeModels.seen, FakeModels.total, FakeModels.fail = [], 50, None
     targets = [(FakeModels, "generate_content", "sync"), (FakeModels, "generate_content_stream", "stream"),
-               (FakeAsyncModels, "generate_content", "async")]
+               (FakeAsyncModels, "generate_content", "async"), (FakeAsyncModels, "generate_content_stream", "astream")]
     originals = {(cls, name): getattr(cls, name) for cls, name, _ in targets}
     waits: list[float] = []
     install(on_wait=waits.append, targets=targets)
@@ -275,3 +282,51 @@ def test_total_tokens_is_only_read_from_a_valid_usage():
 
 def test_the_limits_are_those_of_llm_models():
     assert llm_models.limits_for(FLASH).rpm == limiter_for(FLASH).max_per_minute
+
+
+def test_async_streams_settle_with_the_last_reported_usage(wrapped):
+    async def scenario():
+        stream = await FakeAsyncModels().generate_content_stream(model=FLASH, contents="x")
+        return [chunk async for chunk in stream]
+    assert len(asyncio.run(scenario())) == 2
+    assert limiter_for(FLASH)._entries[-1][1] == 150_000     # le total du dernier morceau, pas l'estimation d'entrée
+
+
+# --- journalisation et mémorisation -----------------------------------------------------------------------------
+
+def test_an_unreadable_limits_variable_is_reported_once_not_at_every_call(monkeypatch, caplog):
+    llm_models._parse_limits_overrides.cache_clear()
+    monkeypatch.setenv("GEMINI_MODEL_LIMITS", "pas du json")
+    with caplog.at_level(logging.WARNING, logger="myiacrew"):
+        for _ in range(5):
+            llm_models.limits_for(FLASH)
+            limiter_for("gemini-unknown")
+    assert caplog.text.count("GEMINI_MODEL_LIMITS ignorée") == 1
+    llm_models._parse_limits_overrides.cache_clear()
+
+
+def test_a_known_limiter_is_found_without_recomputing_the_limits(monkeypatch):
+    first = limiter_for(FLASH)
+    monkeypatch.setattr(llm_models, "limits_for", lambda model: pytest.fail("limites recalculées"))
+    assert limiter_for("gemini/" + FLASH) is first
+
+
+@pytest.mark.parametrize("scenario, expected", [
+    ("rpm", "8 requêtes par minute"), ("tpm", "200000 tokens par minute"), ("429", "pause après un 429"),
+])
+def test_the_wait_log_names_the_constraint_that_caused_it(wrapped, caplog, scenario, expected):
+    models = FakeModels()
+    if scenario == "rpm":
+        for _ in range(8):
+            models.generate_content(model=FLASH, contents="x")
+        call = "x"
+    elif scenario == "tpm":
+        models.total = 199_000
+        models.generate_content(model=FLASH, contents="x")
+        call = "y" * 80_000
+    else:
+        llm_limiter._note_error(RuntimeError(QUOTA_TEXT), limiter_for(FLASH))
+        call = "x"
+    with caplog.at_level(logging.INFO, logger="myiacrew"):
+        models.generate_content(model=FLASH, contents=call)
+    assert "retardée" in caplog.text and expected in caplog.text and FLASH in caplog.text

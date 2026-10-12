@@ -21,6 +21,7 @@ Réglages d'exploitation (variables d'environnement) :
   `{"gemini-3.8-flash": {"rpm": 60, "tpm": 1000000, "rpd": 10000}}`. Une entrée illisible est ignorée.
 - `LLM_RATE_MARGIN` : part des plafonds réellement utilisée, entre 0,1 et 1 (0,8 par défaut).
 """
+import functools
 import json
 import math
 import os
@@ -85,7 +86,12 @@ def rate_margin() -> float:
 
 
 def _limits_overrides() -> dict[str, ModelLimits]:
-    raw = os.getenv("GEMINI_MODEL_LIMITS", "").strip()
+    return _parse_limits_overrides(os.getenv("GEMINI_MODEL_LIMITS", "").strip())
+
+
+@functools.lru_cache(maxsize=8)
+def _parse_limits_overrides(raw: str) -> dict[str, ModelLimits]:
+    """Analyse (mémorisée par texte : une valeur illisible n'est signalée qu'UNE fois, pas à chaque appel au modèle)."""
     if not raw:
         return {}
     try:
