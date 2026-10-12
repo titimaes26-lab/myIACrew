@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.78 — Mise à jour le 2026-10-05
+> Version : 1.79 — Mise à jour le 2026-10-05
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.79 (10-12) : revue n°9 : (1) le journal d'attente du limiteur nomme la contrainte qui fixe vraiment le départ (la pause après un 429 seulement si elle le fixe, sinon la file des réservations déjà faites ; aucune cause quand rien ne retarde l'appel) ; (2) les 4 avis `chromadb` 1.1.1 du job `audit` ont été examinés : ils visent le SERVEUR Chroma (API REST, RBAC, multi-locataire), que l'application ne lance jamais, et `chromadb` n'est là que comme dépendance de CrewAI dont ni la mémoire ni les connaissances ne sont utilisées ; ils sont donc ignorés explicitement (`--ignore-vuln`, commentaire daté dans `ci.yml`), le job ne devient rouge que pour une NOUVELLE faille, et `backend/tests/test_audit_premises.py` vérifie la prémisse et la liste ignorée. Effet de bord corrigé : un `pip-audit` en échec sautait l'étape `npm audit`, qui ne tournait donc plus.
 > - 1.78 (10-12) : revue de la 1.77 : les instructions de migration (`ADD COLUMN IF NOT EXISTS`) n'existent pas en SQLite : sur une base SQLite créée avant l'ajout de `executioncheckpoint.model`, chaque écriture d'un agent terminé échouait en silence (ni section de suivi, ni point de reprise). `database._add_missing_columns` (SQLite seulement, après les migrations) ajoute désormais les colonnes facultatives déclarées par les modèles et absentes d'une table existante, et signale celles qui sont obligatoires ; Postgres garde ses instructions `IF NOT EXISTS`.
 > - 1.77 (10-12) : modèle de l'agent : le rapport indique le modèle que l'API déclare avoir SERVI (`model_version` de chaque réponse `google-genai`, noté par `llm_limiter` dans les mesures de l'exécution et attribué à l'agent qui vient de finir), le modèle configuré seulement quand l'API n'en dit pas ; une étape reprise (reprise manuelle ou seconde tentative automatique) garde le modèle d'origine (nouvelle colonne `executioncheckpoint.model`, migration `ADD COLUMN IF NOT EXISTS`, transmise par `ResumeOutputs`) ; seuls les marqueurs d'EN-TÊTE d'une section sont lus (backend `AGENT_HEADER_MARKERS`, frontend `extractAgentMeta`) : un marqueur cité dans le texte d'un agent n'est plus pris pour le sien. `_release` de `crew_run` déplacé dans `crew_cache.release_run`.
 > - 1.76 (10-12) : le rapport de chaque agent indique le modèle IA utilisé : la section d'un agent (suivi progressif et résultat final) porte, après sa durée, le marqueur `<!--agent-model:gemini-3.8-flash-->` (format unique `crew_workflow.format_agent_section` ; modèle déduit du rôle par `llm_models.model_for_role`, `GEMINI_MODEL` pris en compte ; pas de marqueur pour un rôle inconnu ni pour le résumé). Le frontend l'affiche dans le bandeau de la section (« 🤖 gemini-3.8-flash »), le retire du texte et l'ajoute en tête du texte copié ; le marqueur est aussi retiré du plan donné à l'Architecte au tour suivant.
@@ -654,7 +655,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (1001 cas, 671 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (1004 cas, 674 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont
@@ -689,8 +690,9 @@ périmètre).
   directe de `requirements.txt` a la même version dans le verrou et que le verrou est entièrement épinglé, trié, sans doublon.
 - **Veille des failles** : le job `audit` de la CI (informatif, n'empêche pas de fusionner) lance `pip-audit` sur le verrou et
   `npm audit --omit=dev` ; Dependabot propose chaque semaine les mises à jour npm et GitHub Actions (pas Python : le verrou se
-  régénère à la main). Une exécution de `pip-audit` sur le verrou actuel signale 5 avis sur `chromadb` 1.1.1 (dépendance indirecte
-  bornée par CrewAI, sans version corrigée publiée) : à revoir à chaque mise à jour de CrewAI. Limites connues du verrou : résolu
+  régénère à la main). Une exécution de `pip-audit` sur le verrou actuel signale 5 lignes d'avis sur `chromadb` 1.1.1 (4 avis : dépendance
+  indirecte bornée par CrewAI, sans version corrigée publiée, visant le serveur Chroma que l'application ne lance pas) : ignorés
+  explicitement dans `ci.yml` après examen (prémisse testée par `test_audit_premises.py`), à revoir à chaque mise à jour de CrewAI. Limites connues du verrou : résolu
   pour Linux x86-64 (un hébergement ARM compilerait certains paquets) et sans empreintes de paquets (`--require-hashes`).
 - **Lint backend** (`backend/ruff.toml`) : erreurs réelles seulement (imports et variables inutilisés, noms indéfinis, erreurs de
   syntaxe, arguments mutables par défaut) ; pas de règles de style, qui réécriraient l'historique sans corriger de bug.

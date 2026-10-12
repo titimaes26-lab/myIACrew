@@ -75,10 +75,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # Quatre avis `chromadb` 1.1.1 sont ignorés (les 5 lignes du rapport : PYSEC-2026-311 y figure deux fois), examinés le
+      # 2026-10-12 : ils visent le SERVEUR Chroma (API REST /api/v2/tenants/…, autorisation RBAC, multi-locataire), que
+      # l'application ne lance jamais ; chromadb n'est là que comme dépendance de CrewAI, dont l'application n'utilise ni la
+      # mémoire ni les connaissances (vérifié par backend/tests/test_audit_premises.py). Aucune version corrigée n'existe et CrewAI
+      # borne chromadb~=1.1.0. À revoir à chaque mise à jour de CrewAI ; toute NOUVELLE faille, elle, rend le job rouge.
+      # (Un pip-audit en échec sautait aussi l'étape npm audit ci-dessous : elle ne tournait donc plus.)
       - name: Failles connues du verrou Python (pip-audit)
         run: |
           pip install pip-audit
-          pip-audit --no-deps --disable-pip -r backend/requirements.lock
+          pip-audit --no-deps --disable-pip -r backend/requirements.lock \
+            --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3813 \
+            --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
       - uses: actions/setup-node@v4
         with:
           node-version: 22

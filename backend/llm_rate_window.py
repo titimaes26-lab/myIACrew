@@ -82,8 +82,12 @@ class GeminiRateLimiter:
             budget = self.max_tokens_per_minute
             # Une requête plus grosse que tout le budget ne pourrait jamais passer : elle est plafonnée à ce budget.
             tokens = min(max(0, tokens), budget) if budget else 0
-            start = max(now, self._cooldown_until, self._entries[-1][0] if self._entries else 0.0)
-            reason = "pause après un 429" if self._cooldown_until > now else "file d'attente"
+            last = self._entries[-1][0] if self._entries else 0.0
+            start = max(now, self._cooldown_until, last)
+            # Cause de l'attente = la contrainte qui fixe le départ : la pause d'un 429 seulement si elle le fixe vraiment
+            # (sinon les réservations déjà faites passent devant) ; aucune cause quand rien ne retarde l'appel. Les fenêtres
+            # ci-dessous la précisent (requêtes ou tokens par minute) quand elles repoussent encore le départ.
+            reason = "" if start <= now else ("pause après un 429" if self._cooldown_until >= last else "file d'attente")
             while True:
                 # Epsilon : start = slot + fenêtre peut revenir à slot - 1e-13 en flottants ; sans lui, la boucle ne finirait pas.
                 window = [entry for entry in self._entries if entry[0] > start - self.window_seconds + 1e-9]

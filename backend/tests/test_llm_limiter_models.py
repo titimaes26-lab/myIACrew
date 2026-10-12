@@ -330,3 +330,38 @@ def test_the_wait_log_names_the_constraint_that_caused_it(wrapped, caplog, scena
     with caplog.at_level(logging.INFO, logger="myiacrew"):
         models.generate_content(model=FLASH, contents=call)
     assert "retardée" in caplog.text and expected in caplog.text and FLASH in caplog.text
+
+
+# --- cause d'attente indiquée dans le billet ---------------------------------------------------------------------
+
+def test_the_wait_cause_is_the_constraint_that_really_sets_the_start():
+    free = GeminiRateLimiter(100, 60)
+    assert free.reserve_ticket(now=0)[1][2] == ""                                   # rien ne retarde l'appel : aucune cause
+
+    after_429 = GeminiRateLimiter(100, 60)
+    after_429.note_rate_limited(RuntimeError(QUOTA_TEXT), now=0)
+    assert after_429.reserve_ticket(now=0)[1][2] == "pause après un 429"
+
+    expired = GeminiRateLimiter(100, 60)                                             # pause finie : plus la cause, même si une file existe
+    expired.note_rate_limited(RuntimeError("429 retry in 1s"), now=0)
+    expired.reserve_ticket(now=100)
+    assert expired.reserve_ticket(now=100)[1][2] == ""
+
+    queued = GeminiRateLimiter(100, 60)                                              # file derrière une longue pause : c'est la file qui retarde
+    queued.note_rate_limited(RuntimeError("429 retry in 1s"), now=0)                # pause de 2 s
+    queued._entries.append([30.0, 0, ""])                                            # réservation déjà posée à t = 30 s
+    wait, ticket = queued.reserve_ticket(now=1)
+    assert ticket[2] == "file d'attente" and wait == pytest.approx(29)
+
+    tie = GeminiRateLimiter(100, 60)                                                 # pause et file finissent au même instant : la pause
+    tie.note_rate_limited(RuntimeError("429 retry in 1s"), now=0)
+    tie._entries.append([2.0, 0, ""])
+    assert tie.reserve_ticket(now=1)[1][2] == "pause après un 429"
+
+    rpm = GeminiRateLimiter(1, 60)
+    rpm.reserve(now=0)
+    assert rpm.reserve_ticket(now=0)[1][2] == "1 requêtes par minute"                # la fenêtre précise la cause
+
+    tpm = GeminiRateLimiter(100, 60, max_tokens_per_minute=100)
+    tpm.reserve(now=0, tokens=100)
+    assert tpm.reserve_ticket(now=0, tokens=10)[1][2] == "100 tokens par minute"
