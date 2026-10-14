@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import ResultSections from './ResultSections';
 
 vi.mock('./MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <pre data-testid="md">{content}</pre> }));
@@ -21,6 +21,15 @@ function details() {
 }
 
 let writeText: ReturnType<typeof vi.fn>;
+
+// MarkdownRenderer est chargé à la demande (React.lazy) : tant que son import n'a pas abouti une première fois, TOUT rendu affiche
+// le message de chargement (le Suspense entoure aussi le sommaire et les boutons). Échauffement ici, pour qu'aucun test ne dépende
+// de l'ordre d'exécution (un test synchrone passé en premier échouait, un autre l'ayant précédé le faisait passer).
+beforeAll(async () => {
+  const { unmount } = render(<ResultSections sections={sections} />);
+  await screen.findAllByTestId('md');
+  unmount();
+});
 
 beforeEach(() => {
   writeText = vi.fn().mockResolvedValue(undefined);
