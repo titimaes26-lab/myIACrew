@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 
 import llm_models
 import llm_usage
+import run_budget
 import telemetry
 from llm_quota_errors import is_quota_error, retry_delay_seconds  # noqa: F401  (retry_delay_seconds réexporté)
 from llm_rate_window import (  # noqa: F401  (réexportés : API historique du module)
@@ -110,15 +111,19 @@ def _note_error(error: BaseException, lim: GeminiRateLimiter) -> None:
 
 
 def _reserve_for(kwargs: dict) -> tuple[GeminiRateLimiter, float, list]:
-    """Limiteur du modèle de l'appel, et réservation de son créneau (tokens d'entrée estimés seulement si le modèle a un TPM)."""
+    """Limiteur du modèle de l'appel, et réservation de son créneau (tokens d'entrée estimés seulement si le modèle a un TPM).
+    Budget de tokens de l'exécution atteint : l'appel est refusé AVANT toute réservation."""
+    run_budget.enforce()
     lim = limiter_for(kwargs.get("model"))
     tokens = llm_usage.estimate_prompt_tokens(kwargs.get("contents"), kwargs.get("config")) if lim.max_tokens_per_minute else 0
     wait, ticket = lim.reserve_ticket(tokens=tokens)
     return lim, wait, ticket
 
 
-def _trace(lim: GeminiRateLimiter, started: float, wait: float, ticket: list, tokens: Optional[int], error: Optional[BaseException] = None) -> None:
-    """Span « appel LLM » (modèle, tokens réels, attente imposée par le limiteur, classe d'erreur) ; sans effet si les traces sont inactives."""
+def _after_call(lim: GeminiRateLimiter, started: float, wait: float, ticket: list, tokens: Optional[int], error: Optional[BaseException] = None) -> None:
+    """Fin d'un appel : tokens ajoutés au budget de l'exécution (réels, sinon l'estimation d'entrée ; rien pour un appel en erreur),
+    puis span « appel LLM » (modèle, tokens, attente imposée par le limiteur, classe d'erreur) si les traces sont actives."""
+    run_budget.add(tokens if tokens is not None else (0 if error else ticket[1]))
     telemetry.record_span(
         "llm.call", time.monotonic() - started, model=lim.name, tokens=tokens, wait_s=round(wait, 1), wait_reason=ticket[2] or "",
         error=type(error).__name__ if error else None,
@@ -137,11 +142,11 @@ def _wrap_sync(function: Callable[..., Any], on_wait: Optional[Callable[[float],
             response = function(*args, **kwargs)
         except Exception as error:
             _note_error(error, lim)
-            _trace(lim, started, wait, ticket, None, error)
+            _after_call(lim, started, wait, ticket, None, error)
             raise
         lim.settle(ticket, llm_usage.total_tokens(response))
         _report_served(response)
-        _trace(lim, started, wait, ticket, llm_usage.total_tokens(response))
+        _after_call(lim, started, wait, ticket, llm_usage.total_tokens(response))
         return response
     return wrapper
 
@@ -163,11 +168,11 @@ def _wrap_sync_stream(function: Callable[..., Any], on_wait: Optional[Callable[[
                 yield chunk
         except Exception as error:
             _note_error(error, lim)
-            _trace(lim, started, wait, ticket, actual, error)
+            _after_call(lim, started, wait, ticket, actual, error)
             raise
         lim.settle(ticket, actual)
         _report_served(last)
-        _trace(lim, started, wait, ticket, actual)
+        _after_call(lim, started, wait, ticket, actual)
     return wrapper
 
 
@@ -183,11 +188,11 @@ def _wrap_async(function: Callable[..., Any], on_wait: Optional[Callable[[float]
             response = await function(*args, **kwargs)
         except Exception as error:
             _note_error(error, lim)
-            _trace(lim, started, wait, ticket, None, error)
+            _after_call(lim, started, wait, ticket, None, error)
             raise
         lim.settle(ticket, llm_usage.total_tokens(response))
         _report_served(response)
-        _trace(lim, started, wait, ticket, llm_usage.total_tokens(response))
+        _after_call(lim, started, wait, ticket, llm_usage.total_tokens(response))
         return response
     return wrapper
 
@@ -203,7 +208,7 @@ async def _settled_stream(stream: Any, lim: GeminiRateLimiter, ticket: list, wai
         yield chunk
     lim.settle(ticket, actual)
     _report_served(last)
-    _trace(lim, started, wait, ticket, actual)
+    _after_call(lim, started, wait, ticket, actual)
 
 
 def _wrap_async_stream(function: Callable[..., Any], on_wait: Optional[Callable[[float], None]]) -> Callable[..., Any]:

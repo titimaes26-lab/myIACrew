@@ -61,13 +61,13 @@ MAX_CONCURRENT_EXECUTIONS = _env_int("MAX_CONCURRENT_EXECUTIONS", 1, 1)
 # Étape persistée tant qu'une exécution attend son créneau (jamais une clé réelle de WORKFLOW_STEPS côté frontend).
 QUEUED_STEP = "queued"
 
-# Durée maximale d'UN crew (hors attente dans la file et hors vérification de livraison), EXECUTION_TIMEOUT_S, 20 min par
+# Durée maximale d'UN crew (hors attente dans la file et hors vérification de livraison), EXECUTION_TIMEOUT_S, 30 min par
 # défaut. Avec un seul créneau, une exécution bloquée (appel qui ne revient pas, boucle d'un agent) retiendrait le service
 # pour tous : son battement de cœur continue, le balayage des orphelines ne la libère pas. Au-delà, la tâche est annulée,
 # l'exécution passe en échec (EXECUTION_TIMEOUT, réessayable) et le créneau est rendu. Limite : le crew tourne dans un
 # thread que Python ne sait pas tuer ; il peut finir de s'exécuter (et consommer du quota) après l'annulation, sans effet
 # sur l'exécution déjà marquée en échec.
-EXECUTION_TIMEOUT_S = _env_int("EXECUTION_TIMEOUT_S", 1200, 60)
+EXECUTION_TIMEOUT_S = _env_int("EXECUTION_TIMEOUT_S", 1800, 60)
 
 execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXECUTIONS)
 

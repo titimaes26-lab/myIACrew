@@ -34,6 +34,7 @@ describe('failureHint', () => {
     expect(failureHint('INTERRUPTED')).toContain('Relancer');
     expect(failureHint('RATE_LIMITED')).toContain('Limite atteinte');
     expect(failureHint('EXECUTION_TIMEOUT')).toContain('arrêtée');
+    expect(failureHint('TOKEN_BUDGET_EXCEEDED')).toContain('budget de tokens');
     expect(failureHint('GUARDRAIL_FAILED')).toContain('reformulez');
     // Un échec de livraison a son propre guide « Que faire ? » (FailureBlock), pas ce conseil générique.
     expect(failureHint('DELIVERY_FAILED')).toBeNull();

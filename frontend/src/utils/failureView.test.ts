@@ -89,6 +89,14 @@ describe('EXECUTION_TIMEOUT', () => {
   });
 });
 
+describe('TOKEN_BUDGET_EXCEEDED', () => {
+  it('est un vrai échec (pas une panne passagère) avec sa propre cause', () => {
+    expect(isTransientFailure(undefined, 'TOKEN_BUDGET_EXCEEDED')).toBe(false);
+    expect(isTransientFailure(false, 'TOKEN_BUDGET_EXCEEDED')).toBe(false);
+    expect(failureCause('TOKEN_BUDGET_EXCEEDED').title).toContain('budget de tokens');
+  });
+});
+
 describe('RATE_LIMITED', () => {
   it('est une panne passagère avec sa propre cause', () => {
     expect(isTransientFailure(null, 'RATE_LIMITED')).toBe(true);

@@ -13,6 +13,7 @@ const CAUSES: Record<string, FailureCause> = {
   GITHUB_UNAVAILABLE: { icon: '🔌', title: 'GitHub injoignable' },
   RATE_LIMITED: { icon: '🚦', title: 'Trop de demandes' },
   EXECUTION_TIMEOUT: { icon: '⏱️', title: 'Exécution arrêtée : durée maximale dépassée' },
+  TOKEN_BUDGET_EXCEEDED: { icon: '🪙', title: 'Exécution arrêtée : budget de tokens atteint' },
   GUARDRAIL_FAILED: { icon: '🛡️', title: 'Contrôle de qualité non respecté' },
   DELIVERY_FAILED: { icon: '📦', title: 'Livraison GitHub non confirmée' },
   INTERRUPTED: { icon: '🔌', title: 'Exécution interrompue' },

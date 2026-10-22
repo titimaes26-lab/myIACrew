@@ -13,6 +13,7 @@ import re
 from typing import NamedTuple, Optional
 
 from llm_limiter import DailyQuotaExceeded
+from run_budget import TokenBudgetExceeded
 from logs import get_logger
 
 
@@ -21,6 +22,7 @@ class ErrorCode:
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
     LLM_TIMEOUT = "LLM_TIMEOUT"
     EXECUTION_TIMEOUT = "EXECUTION_TIMEOUT"
+    TOKEN_BUDGET_EXCEEDED = "TOKEN_BUDGET_EXCEEDED"
     GITHUB_UNAVAILABLE = "GITHUB_UNAVAILABLE"
     GUARDRAIL_FAILED = "GUARDRAIL_FAILED"
     DELIVERY_FAILED = "DELIVERY_FAILED"
@@ -62,6 +64,7 @@ _USER_MESSAGES = {
     ErrorCode.QUOTA_EXHAUSTED: "Le quota du modèle IA est épuisé pour le moment. Réessayez dans quelques minutes.",
     ErrorCode.LLM_UNAVAILABLE: "Le modèle IA est momentanément indisponible ou surchargé. Réessayez dans quelques minutes.",
     ErrorCode.LLM_TIMEOUT: "Le modèle IA a mis trop de temps à répondre. Réessayez.",
+    ErrorCode.TOKEN_BUDGET_EXCEEDED: "L'exécution a atteint son budget de tokens et a été arrêtée pour limiter la consommation. Simplifiez la demande ou découpez-la en plusieurs tours.",
     ErrorCode.EXECUTION_TIMEOUT: "L'exécution a dépassé sa durée maximale et a été arrêtée pour libérer le service. Réessayez, ou simplifiez la demande.",
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub est momentanément injoignable : la livraison n'a pas pu être vérifiée. Réessayez.",
     ErrorCode.GUARDRAIL_FAILED: "Le résultat produit ne respecte pas les contrôles de qualité. Reformulez ou précisez la demande.",
@@ -169,6 +172,8 @@ def _classify_single(exc: BaseException) -> ErrorInfo:
         get_logger("errors").debug(f"classification GitHub indisponible : {type(e).__name__}: {e}")
     if isinstance(exc, DailyQuotaExceeded):
         return ErrorInfo(ErrorCode.QUOTA_EXHAUSTED, False, _DAILY_QUOTA_MESSAGE)
+    if isinstance(exc, TokenBudgetExceeded):
+        return ErrorInfo(ErrorCode.TOKEN_BUDGET_EXCEEDED, False, _USER_MESSAGES[ErrorCode.TOKEN_BUDGET_EXCEEDED])
     if isinstance(exc, ExecutionTimeoutError):
         message = _QUOTA_TIMEOUT_MESSAGE if exc.quota_wait_seconds > 0 and exc.quota_dominant else _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT]
         return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, message)

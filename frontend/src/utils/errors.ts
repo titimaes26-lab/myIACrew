@@ -24,6 +24,8 @@ export function failureHint(code: string | null | undefined): string | null {
       return 'Panne temporaire : « Relancer » relance la demande telle quelle, idéalement dans quelques minutes.';
     case 'EXECUTION_TIMEOUT':
       return 'L\'exécution a duré trop longtemps et a été arrêtée pour libérer le service : « Relancer » reprend les étapes déjà réussies ; simplifier la demande aide.';
+    case 'TOKEN_BUDGET_EXCEEDED':
+      return 'L\'exécution a consommé son budget de tokens et a été arrêtée : simplifiez la demande ou découpez-la en plusieurs tours ; « Relancer » reprend les étapes déjà réussies.';
     case 'RATE_LIMITED':
       return 'Limite atteinte : attendez la fin d\'une exécution en cours (ou quelques minutes), puis relancez.';
     case 'INTERRUPTED':

@@ -12,6 +12,7 @@ import execution_context
 import execution_outcomes
 import execution_persistence
 import execution_state
+import run_budget
 import telemetry
 import memory_monitor
 from metrics_collect import flush_events, track_execution_metrics
@@ -95,7 +96,7 @@ async def run_crew(
             state.metrics = run_metrics
             try:
                 async with asyncio.timeout(execution_state.EXECUTION_TIMEOUT_S) as deadline:
-                    with telemetry.span("crew.run", workflow=request_type, execution_id=execution_id, resumed=bool(resume_outputs)):
+                    with run_budget.track_budget(), telemetry.span("crew.run", workflow=request_type, execution_id=execution_id, resumed=bool(resume_outputs)):
                         return await crew.run_dynamic_crew(
                             inputs=inputs,
                             request_type=request_type,
