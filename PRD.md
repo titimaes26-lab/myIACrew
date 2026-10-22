@@ -1,6 +1,6 @@
 # PRD — myIACrew (Studio CrewAI)
 
-> Version : 1.82 — Mise à jour le 2026-10-22
+> Version : 1.83 — Mise à jour le 2026-10-22
 > Adapté du gabarit `game-prd-creator` : ce repo n'est pas un jeu mais un orchestrateur multi-agents ; les sections ont été
 > ajustées au produit réel.
 > Historique (condensé) :
@@ -61,6 +61,7 @@
 > - 1.63 (10-04) : revue complète : journal CrewAI désactivé par défaut (`CREW_LOG_FILE`) et retiré du suivi git ; la coupure en fin de fichier JS/TS (accolade, `${`, template ou commentaire non terminé) bloque désormais le commit, lecteur de délimiteurs corrigé (apostrophes d'un texte JSX, templates imbriqués : 6 fichiers sur 122 de `frontend/src` à tort signalés avant, 0 après) ; `/messages` borné (`limit`, `before_id`) ; `/repo-targets` agrégé en SQL ; `tools.py` testé.
 > - 1.64 (10-04) : revue de la 1.63 : le lecteur de délimiteurs ne coupe plus une chaîne à la fin de la ligne (un attribut JSX sur plusieurs lignes dans une expression `{…}` faisait déclarer le fichier « tronqué » à tort) ; limites connues documentées (`/messages` à 100 tours sans bouton « charger plus », guillemet simple isolé d'un texte JSX).
 > - 1.65 (10-05) : revue complète n°2 : les 23 tests de `parse_completed_agents` visent enfin la fonction de production (ils testaient une copie ; +3 cas, déplacés dans `tests/`) ; une vingtaine de commentaires périmés corrigés et un test qui vérifie les renvois `x.py::nom` ; `execute_workflow` fait son accès base (conversation, plafonds, insertion) hors de la boucle d'événements (`asyncio.to_thread`).
+> - 1.83 (10-22) : étape 1 du plan observabilité/garde-fous : `input_guards.py` (masque les secrets évidents — clés privées, jetons GitHub/Google/AWS/Slack/Bearer, valeurs de `password=`/`api_key=` hors substituts —, repère les injections de prompt évidentes, encadre les fichiers lus par `read_a_files_content` et `github_read_file` de marqueurs « données non fiables »). Appliqué à la demande, à l'historique et à l'aperçu du dépôt (`execution_context.crew_inputs`). Les messages d'erreur des outils restent bruts. Limite connue : un agent qui réécrit un fichier lu peut y recopier `[SECRET MASQUÉ]` (la consigne l'interdit). Tests d'évasion de chemin (`..`, absolu, lien symbolique) ajoutés ; 9 mutations tuées ; 1045 tests verts (normal, inversé, mélangé).
 > - 1.82 (10-17, CI verte sur `main` : run #104, backend 3.11/3.12, frontend, audit) : `vitest` 3.2.7 → 5.0.5 (équivalent de la PR Dependabot #59, qui devient sans objet) : `npm audit` complet passe de 3 avis (dont `tinypool`, exécution de code par pollution de prototype, classé critique) à 0 faille. Vérifié : 248 tests verts (normal + 3 passages `--sequence.shuffle`), tsc, eslint, build.
 > - 1.81 (10-14) : revue n°10 : `ResultSections.test.tsx` dépendait de l'ordre d'exécution (le `Suspense` de `React.lazy(MarkdownRenderer)` entoure aussi le sommaire : un test synchrone passé en premier ne voyait que le message de chargement) ; un échauffement dans `beforeAll` charge le module une fois. Vérifié en ordre mélangé (`vitest --sequence.shuffle`, 6 passages × 248 tests verts) ; côté backend, ordre inversé et ordres mélangés (1004 tests verts). Correction d'une erreur de compte rendu : `pytest -p no:randomly` ne renversait rien (`pytest-randomly` n'est pas installé).
 > - 1.80 (10-12) : le job `audit` ayant retrouvé son étape `npm audit` (elle était sautée tant que `pip-audit` échouait), elle a signalé `source-map-js` 1.2.1 (avis GHSA-68fv-2mgg-jv7q, déni de service, haute gravité, dépendance de `vite`/`postcss`) : `npm audit fix` met le verrou à 1.2.2 (et `brace-expansion` 5.0.9 → 5.0.12, développement seulement) ; `npm audit --omit=dev` (celui de la CI) revient à 0 faille. Restent 3 avis de DÉVELOPPEMENT (chaîne `vitest` → `tinypool`/`@vitest/mocker`, correctif seulement avec `vitest` 5, changement majeur déjà proposé par Dependabot) : hors périmètre du job, qui ne lit que les dépendances de production.
@@ -658,7 +659,7 @@ périmètre).
 - **Persistance** : historique en base Postgres (Supabase) ; les fichiers markdown intermédiaires (`docs/*.md`,
   `tests/reports/qa_report.md`) sont écrits sur le disque **éphémère** de Render (perdus au redéploiement) sauf s'ils sont écrits
   via les outils GitHub sur le repo cible. Sans `DATABASE_URL`, le backend retombe sur SQLite local éphémère.
-- **Tests** : suite backend `pytest` (1004 cas, 674 fonctions, tout dans `backend/tests/`) rangée
+- **Tests** : suite backend `pytest` (1045 cas, 688 fonctions, tout dans `backend/tests/`) rangée
   par thème et sans fichier de plus de 300 lignes : collecte et agrégats des mesures (`test_metrics_*`), suppression d'historique,
   exécution de bout en bout avec un faux crew (`test_run_*`, `test_resume_*`, `test_auto_retry`, `test_execution_deadline`),
   orphelines (`test_orphans_sweep`, `test_execution_heartbeat`, `test_partial_delivery`), crew (`test_crew_*`, dont

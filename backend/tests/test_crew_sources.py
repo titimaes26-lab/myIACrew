@@ -109,7 +109,8 @@ def test_local_mode_commit_read_and_qa_share_the_workspace(monkeypatch, tmp_path
     crew = new_crew(branch="claude/conv-1")
     crew._analyst_files = [{"path": "src/a.ts", "content": "export {};\n"}, {"path": "conf.json", "content": "{ invalide"}]
     assert "REJETÉS" in crew._build_commit_analyst_files_tool().run(commit_message="m")
-    assert crew._build_local_read_tool().run(file_path="src/a.ts") == "export {};\n"
+    read = crew._build_local_read_tool().run(file_path="src/a.ts")
+    assert "export {};\n" in read and read.startswith("<<<DONNÉES_NON_FIABLES")
     report = crew._build_qa_verify_tool().run()
     assert "IDENTIQUE" in report and "NON LIVRÉ" in report
 
@@ -139,7 +140,7 @@ def test_local_reads_normalize_dot_slash_but_stay_confined(monkeypatch, tmp_path
     (crew._workspace / "src").mkdir(parents=True)
     (crew._workspace / "src/a.ts").write_text("export {};\n")
     assert crew_workspace._read_local_file(crew._workspace, "./src/a.ts") == ("export {};\n", None)
-    assert crew._build_local_read_tool().run(file_path="./src/a.ts") == "export {};\n"
+    assert "export {};\n" in crew._build_local_read_tool().run(file_path="./src/a.ts")
     assert crew_workspace._read_local_file(crew._workspace, "../x")[0] is None
 
 

@@ -43,7 +43,7 @@ def test_github_read_file_uses_blob_fallback_for_large_files(monkeypatch):
     monkeypatch.setattr(github_client, "_get_repo", lambda owner, r: repo)
     monkeypatch.setattr(repo, "get_contents", lambda path, ref: FakeContentFile(decoded=None), raising=False)
     result = github_read.github_read_file.run(owner="o", repo="r", path="big.txt", branch="main")
-    assert result == "grand fichier\n"
+    assert "grand fichier\n" in result and result.startswith("<<<DONNÉES_NON_FIABLES")
 
 
 def test_github_read_file_does_not_double_prefix_blob_fallback_errors(monkeypatch):
@@ -66,7 +66,7 @@ def test_cache_serves_repeated_reads_and_builds_the_repo_once(counting):
         second = github_read.github_read_file.func("o", "r", "package.json", "main")
         github_read.github_list_directory.func("o", "r", "", "main")
         github_read.github_list_directory.func("o", "r", "", "main")
-    assert first == second == '{"name": "app"}'
+    assert first == second and '{"name": "app"}' in first
     assert counting.reads == 2          # un fichier + un dossier, une fois chacun
     assert len(counting.created) == 1   # get_repo une seule fois pour toute l'exécution
 

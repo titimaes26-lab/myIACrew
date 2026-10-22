@@ -3,6 +3,7 @@ import base64
 from typing import Callable
 
 import github_client
+import input_guards
 from analyst_blocks import FILE_ABSENT, PRESENT_UNREADABLE
 from crewai.tools import tool
 from github import GithubException
@@ -117,7 +118,9 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
         path (str): chemin du fichier dans le repo (ex: 'src/App.tsx').
         branch (str): branche à lire (défaut 'main').
     """
-    return read_file_cached(owner, repo, path, branch)
+    content = read_file_cached(owner, repo, path, branch)
+    # Le CONTENU d'un fichier est une donnée non fiable ; les messages d'erreur du studio, eux, restent tels quels.
+    return content if content.startswith("ERREUR") else input_guards.guard_untrusted(content, f"{owner}/{repo}:{path}")
 
 def read_file_cached(owner: str, repo: str, path: str, branch: str) -> str:
     return github_client._cached_read("files", (owner, repo, branch, path), lambda: _read_file_uncached(owner, repo, path, branch))

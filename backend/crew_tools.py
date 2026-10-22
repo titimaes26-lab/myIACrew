@@ -2,6 +2,7 @@
 from typing import Any
 
 import crew_guardrails
+import input_guards
 import crew_workspace
 from crew_state import CrewExecutionState
 from crewai.tools import tool
@@ -250,7 +251,9 @@ class CrewToolsMixin(CrewExecutionState):
                     f"ERREUR_FICHIER_INEXISTANT : {error}. Inutile de réessayer la lecture de ce "
                     "fichier exact : note cette absence dans ton rapport et poursuis ton analyse."
                 )
-            return content if content.strip() else f"INFO : Le fichier '{file_path}' est vide."
+            if not content.strip():
+                return f"INFO : Le fichier '{file_path}' est vide."
+            return input_guards.guard_untrusted(content, f"espace local:{file_path}")
 
         self._local_read_tool = read_a_files_content
         return read_a_files_content

@@ -8,6 +8,7 @@ from typing import Optional
 from sqlmodel import Session, col, func, select
 
 import database
+import input_guards
 from metrics_collect import ExecutionMetrics
 from metrics_roles import step_for_role
 from conversation_context import MAX_PRIOR_TURNS_IN_CONTEXT, build_conversation_context
@@ -63,8 +64,8 @@ def crew_inputs(
     previous_plan: str = "",
 ) -> dict:
     return {
-        'user_request': final_prompt,
-        'conversation_context': conversation_context,
+        'user_request': input_guards.guard_text(final_prompt, "demande"),
+        'conversation_context': input_guards.guard_text(conversation_context, "historique"),
         'repo_owner': data.repo_owner or '',
         'repo_name': data.repo_name or '',
         # `or 'main'` : base_branch est None sans repository cible, et les tâches interpolent toujours {base_branch}.
@@ -74,7 +75,7 @@ def crew_inputs(
         'conversation_id': str(conversation_id),
         'repo_instructions': repo_instructions(has_repo_target, data, work_branch, base_branch, branch_exists),
         # Aperçu du repo lu en Python (vide : l'agent lit lui-même avec ses outils).
-        'repo_snapshot': repo_snapshot,
+        'repo_snapshot': input_guards.guard_text(repo_snapshot, "aperçu du dépôt"),
         # Plan d'architecture du tour précédent de la conversation (vide : l'Architecte part de zéro).
         'previous_plan': previous_plan,
     }
