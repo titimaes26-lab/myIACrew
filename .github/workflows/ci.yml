@@ -80,13 +80,19 @@ jobs:
       # l'application ne lance jamais ; chromadb n'est là que comme dépendance de CrewAI, dont l'application n'utilise ni la
       # mémoire ni les connaissances (vérifié par backend/tests/test_audit_premises.py). Aucune version corrigée n'existe et CrewAI
       # borne chromadb~=1.1.0. À revoir à chaque mise à jour de CrewAI ; toute NOUVELLE faille, elle, rend le job rouge.
+      # Deux avis de plus, examinés le 2026-10-22, sans correctif accessible car CrewAI 1.15.23 borne ses dépendances : `mcp`
+      # (CVE-2026-59951, fuite mémoire d'un serveur MCP HTTP ; `mcp~=1.28.1`, correctif en 1.30) et `uv` (PYSEC-2026-4321, racine
+      # TLS révoquée ; `uv~=0.11.6`, correctif en 0.13.4). L'application ne sert pas de MCP et ne lance pas uv : prémisses vérifiées
+      # par backend/tests/test_audit_premises.py. À revoir à chaque mise à jour de CrewAI. Les autres failles (aiohttp, certifi,
+      # opentelemetry, pillow) ont été corrigées dans backend/requirements.lock.
       # (Un pip-audit en échec sautait aussi l'étape npm audit ci-dessous : elle ne tournait donc plus.)
       - name: Failles connues du verrou Python (pip-audit)
         run: |
           pip install pip-audit
           pip-audit --no-deps --disable-pip -r backend/requirements.lock \
             --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3813 \
-            --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815
+            --ignore-vuln PYSEC-2026-3814 --ignore-vuln PYSEC-2026-3815 \
+            --ignore-vuln CVE-2026-59951 --ignore-vuln PYSEC-2026-4321
       - uses: actions/setup-node@v4
         with:
           node-version: 22
