@@ -19,6 +19,7 @@ from database import Conversation, ExecutionHistory
 from errors import ExecutionTimeoutError, classify_exception
 from github_guards import track_write_scope
 from github_client import track_read_cache
+from run_context import tracked
 from logs import get_logger
 from schemas import WorkflowExecutionInput
 
@@ -130,6 +131,7 @@ async def run_crew(
             if current is not None and current.cancelling() > 0:
                 raise
 
+@tracked("db_entry_id")
 async def run_crew_and_persist(
     db_entry_id: int,
     conversation_id: int,

@@ -9,6 +9,8 @@ import logging
 import os
 import sys
 
+import run_context
+
 ROOT_NAME = "myiacrew"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s : %(message)s"
 
@@ -25,6 +27,10 @@ class OneLineFormatter(logging.Formatter):
 
     def formatMessage(self, record: logging.LogRecord) -> str:
         text = super().formatMessage(record)
+        run_id = run_context.current_run_id()
+        if run_id:
+            # Avant le « : » du message : `grep run-12` retrouve tout le déroulé d'une exécution.
+            text = text.replace(" : ", f" [{run_id}] : ", 1)
         return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
