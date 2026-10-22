@@ -12,6 +12,7 @@ import crew_result
 import crew_retry
 import crew_workflow
 import llm_models
+import telemetry
 from metrics_collect import current_metrics
 from github_edit_failures import track_edit_failures
 from logs import get_logger
@@ -223,6 +224,7 @@ class CrewRun:
             duration = task_obj.execution_duration
             if current is not None:
                 current.record_agent_done(agent_name, duration)
+            telemetry.record_span("agent.task", duration, content=raw_output, agent=agent_name, models=served)
             try:
                 self.on_task_output_complete(agent_name, raw_output, duration, **self._model_kwargs(agent_name, served))
             except Exception as e:

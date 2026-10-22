@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 
 import llm_models
 import llm_usage
+import telemetry
 from llm_quota_errors import is_quota_error, retry_delay_seconds  # noqa: F401  (retry_delay_seconds réexporté)
 from llm_rate_window import (  # noqa: F401  (réexportés : API historique du module)
     COOLDOWN_MARGIN_SECONDS, DEFAULT_COOLDOWN_SECONDS, DEFAULT_MAX_PER_MINUTE, MAX_COOLDOWN_SECONDS, WINDOW_SECONDS,
@@ -116,6 +117,14 @@ def _reserve_for(kwargs: dict) -> tuple[GeminiRateLimiter, float, list]:
     return lim, wait, ticket
 
 
+def _trace(lim: GeminiRateLimiter, started: float, wait: float, ticket: list, tokens: Optional[int], error: Optional[BaseException] = None) -> None:
+    """Span « appel LLM » (modèle, tokens réels, attente imposée par le limiteur, classe d'erreur) ; sans effet si les traces sont inactives."""
+    telemetry.record_span(
+        "llm.call", time.monotonic() - started, model=lim.name, tokens=tokens, wait_s=round(wait, 1), wait_reason=ticket[2] or "",
+        error=type(error).__name__ if error else None,
+    )
+
+
 def _wrap_sync(function: Callable[..., Any], on_wait: Optional[Callable[[float], None]]) -> Callable[..., Any]:
     @functools.wraps(function)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -123,13 +132,16 @@ def _wrap_sync(function: Callable[..., Any], on_wait: Optional[Callable[[float],
         _announce(wait, on_wait, lim, ticket[2])
         if wait > 0:
             time.sleep(wait)
+        started = time.monotonic()
         try:
             response = function(*args, **kwargs)
         except Exception as error:
             _note_error(error, lim)
+            _trace(lim, started, wait, ticket, None, error)
             raise
         lim.settle(ticket, llm_usage.total_tokens(response))
         _report_served(response)
+        _trace(lim, started, wait, ticket, llm_usage.total_tokens(response))
         return response
     return wrapper
 
@@ -143,6 +155,7 @@ def _wrap_sync_stream(function: Callable[..., Any], on_wait: Optional[Callable[[
             time.sleep(wait)
         actual: Optional[int] = None
         last = None
+        started = time.monotonic()
         try:
             for chunk in function(*args, **kwargs):
                 actual = llm_usage.total_tokens(chunk) or actual   # le décompte cumulé arrive sur les derniers morceaux
@@ -150,9 +163,11 @@ def _wrap_sync_stream(function: Callable[..., Any], on_wait: Optional[Callable[[
                 yield chunk
         except Exception as error:
             _note_error(error, lim)
+            _trace(lim, started, wait, ticket, actual, error)
             raise
         lim.settle(ticket, actual)
         _report_served(last)
+        _trace(lim, started, wait, ticket, actual)
     return wrapper
 
 
@@ -163,27 +178,32 @@ def _wrap_async(function: Callable[..., Any], on_wait: Optional[Callable[[float]
         _announce(wait, on_wait, lim, ticket[2])
         if wait > 0:
             await asyncio.sleep(wait)
+        started = time.monotonic()
         try:
             response = await function(*args, **kwargs)
         except Exception as error:
             _note_error(error, lim)
+            _trace(lim, started, wait, ticket, None, error)
             raise
         lim.settle(ticket, llm_usage.total_tokens(response))
         _report_served(response)
+        _trace(lim, started, wait, ticket, llm_usage.total_tokens(response))
         return response
     return wrapper
 
 
-async def _settled_stream(stream: Any, lim: GeminiRateLimiter, ticket: list) -> Any:
+async def _settled_stream(stream: Any, lim: GeminiRateLimiter, ticket: list, wait: float = 0.0) -> Any:
     """Relaie les morceaux d'un flux asynchrone et remplace l'estimation par le dernier total de tokens rapporté."""
     actual: Optional[int] = None
     last = None
+    started = time.monotonic()
     async for chunk in stream:
         actual = llm_usage.total_tokens(chunk) or actual
         last = chunk if llm_usage.served_model(chunk) else last
         yield chunk
     lim.settle(ticket, actual)
     _report_served(last)
+    _trace(lim, started, wait, ticket, actual)
 
 
 def _wrap_async_stream(function: Callable[..., Any], on_wait: Optional[Callable[[float], None]]) -> Callable[..., Any]:
@@ -198,7 +218,7 @@ def _wrap_async_stream(function: Callable[..., Any], on_wait: Optional[Callable[
         except Exception as error:
             _note_error(error, lim)
             raise
-        return _settled_stream(stream, lim, ticket)
+        return _settled_stream(stream, lim, ticket, wait)
     return wrapper
 
 

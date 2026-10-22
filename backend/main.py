@@ -15,6 +15,7 @@ from logs import get_logger
 from qa_report import final_verdict
 import execution_state
 import memory_monitor
+import telemetry
 import routes_conversations
 import routes_execute
 import routes_history
@@ -68,6 +69,7 @@ def _backfill_qa_verdicts() -> None:
 def on_startup():
     create_db_and_tables()
     _backfill_qa_verdicts()
+    telemetry.setup()  # inactif sans LANGSMITH_TRACING=true et LANGSMITH_API_KEY
     # Imprimé une seule fois, au démarrage : rend le plafond mémoire du conteneur visible dans les
     # logs Render dès le boot, sans attendre qu'une exécution déclenche la première ligne [MEM]
     # (memory_monitor.log_memory) — utile pour juger d'emblée si le plan actuel a une marge suffisante pour ce

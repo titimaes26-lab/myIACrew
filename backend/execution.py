@@ -12,6 +12,7 @@ import execution_context
 import execution_outcomes
 import execution_persistence
 import execution_state
+import telemetry
 import memory_monitor
 from metrics_collect import flush_events, track_execution_metrics
 from crewquestion import AppDevelopmentCrew
@@ -94,16 +95,17 @@ async def run_crew(
             state.metrics = run_metrics
             try:
                 async with asyncio.timeout(execution_state.EXECUTION_TIMEOUT_S) as deadline:
-                    return await crew.run_dynamic_crew(
-                        inputs=inputs,
-                        request_type=request_type,
-                        on_step_change=lambda step_key: execution_state.persist_current_step(execution_id, step_key),
-                        on_task_output_complete=lambda agent_name, output, duration, **extra: execution_persistence.persist_completed_agent(
-                            execution_id, agent_name, output, duration, **extra),
-                        resume_outputs=resume_outputs,
-                        # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
-                        **({"scope": scope} if scope else {}),
-                    )
+                    with telemetry.span("crew.run", workflow=request_type, execution_id=execution_id, resumed=bool(resume_outputs)):
+                        return await crew.run_dynamic_crew(
+                            inputs=inputs,
+                            request_type=request_type,
+                            on_step_change=lambda step_key: execution_state.persist_current_step(execution_id, step_key),
+                            on_task_output_complete=lambda agent_name, output, duration, **extra: execution_persistence.persist_completed_agent(
+                                execution_id, agent_name, output, duration, **extra),
+                            resume_outputs=resume_outputs,
+                            # Seulement quand il y en a un : le parcours complet reste l'appel historique, sans argument en plus.
+                            **({"scope": scope} if scope else {}),
+                        )
             except TimeoutError:
                 # Une TimeoutError levée PAR le crew (délai d'un appel) n'est pas notre échéance : elle garde sa classe.
                 if not deadline.expired():
