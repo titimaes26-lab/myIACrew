@@ -13,7 +13,7 @@ import json
 import re
 from pathlib import PurePosixPath
 
-from input_guards import find_secret_kinds
+from input_guards import REDACTED, find_secret_kinds
 from logs import get_logger
 
 log = get_logger("delivery_guards")
@@ -68,6 +68,13 @@ def _lifecycle_scripts(content: str) -> str:
 
 def reject_unsafe_content(path: str, content: str) -> str | None:
     """None si `content` peut être livré dans `path`, sinon le message d'erreur à renvoyer tel quel à l'agent (aucun appel réseau)."""
+    if REDACTED in content:
+        log.warning(f"livraison refusée pour {path!r} : marqueur de secret masqué recopié")
+        return (
+            f"ERREUR : écriture refusée sur '{path}' : le contenu contient le marqueur « {REDACTED} », qui remplace une valeur que tu n'as pas "
+            "pu lire (jamais du vrai code). Ne le recopie pas : ne réécris pas ce fichier en entier ; modifie-le avec github_edit_file sur un "
+            "extrait SANS marqueur, ou signale-le comme non livré dans ton rapport final, avec cette raison."
+        )
     secrets = find_secret_kinds(content)
     if secrets:
         log.warning(f"livraison refusée pour {path!r} : secret(s) détecté(s) ({', '.join(secrets)}), valeur non journalisée")

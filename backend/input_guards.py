@@ -30,14 +30,25 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("clé Google", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("clé AWS", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("jeton Slack", re.compile(r"\bxox[abprs]-[0-9A-Za-z-]{10,}\b")),
-    ("jeton Bearer", re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{20,}")),
+    ("jeton Bearer", re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]{20,})")),
     ("clé API Anthropic/OpenAI", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{32,}\b")),
 )
-# « MOT_DE_PASSE = valeur » : on ne masque que la valeur, pas le nom (le code reste lisible).
-_ASSIGNMENT = re.compile(
-    r"""(?ix)
-    (\b[\w.-]*(?:password|passwd|secret|api[_-]?key|token|private[_-]?key)[\w.-]*\s*[:=]\s*)
-    (["']?)([^\s"'#,;]{12,})(\2)
+# « nom = "valeur" » : on ne masque que la valeur, pas le nom (le code reste lisible). DEUX formes seulement, pour ne jamais abîmer
+# du code ordinaire (`const tokenizer = createTokenizerInstance(options)`, `token = request.headers.get(...)`, `token_url = "https://..."`) :
+#  - valeur ENTRE GUILLEMETS, 16 caractères ou plus, sans « . » ni « / » (ni URL ni chemin ni appel), mêlant lettres et chiffres ;
+#  - ligne de style .env (`NOM_EN_MAJUSCULES=valeur`, `export` admis), même contrainte sur la valeur, sans guillemets.
+# Un mot de passe en prose, sans guillemets ni forme .env, n'est PAS masqué : les formats connus (ci-dessus) restent le filet fiable.
+_SECRET_NAME = r"(?:password|passwd|secret|api[_-]?key|token|private[_-]?key)"
+_QUOTED_ASSIGNMENT = re.compile(
+    rf"""(?ix)
+    (\b[\w.-]*{_SECRET_NAME}[\w.-]*\s*[:=]\s*)
+    (["'])([A-Za-z0-9_+=-]{{16,}})(\2)
+    """
+)
+_ENV_ASSIGNMENT = re.compile(
+    rf"""(?mx)
+    (^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*{_SECRET_NAME.upper().replace("[_-]", "[_]")}[A-Z0-9_]*[ \t]*=[ \t]*)
+    ()([A-Za-z0-9_+=-]{{16,}})()[ \t]*$
     """
 )
 _PLACEHOLDER = re.compile(r"(?i)^(?:x{4,}|\*{4,}|<.*>|\$\{.*\}|your[_-].*|changeme|example.*|dummy.*|test.*|process\.env.*|os\.environ.*)$")
@@ -49,12 +60,17 @@ _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"ignore\s+(?:all\s+|any\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?)",
         r"disregard\s+(?:all\s+|the\s+)?(?:previous|prior|above)",
         r"(?:oublie|oubliez)\s+(?:tout|tes|vos)\s+(?:ce\s+qui|instructions|consignes)",
-        r"\byou\s+are\s+now\b",
-        r"\btu\s+es\s+maintenant\b",
+        r"\byou\s+are\s+now\s+(?:an?\s+|the\s+)?(?:ai|assistant|chatbot|dan|admin|root|jailbroken|unrestricted|evil|hacker)\b",
+        r"\btu\s+es\s+maintenant\s+(?:un\s+|une\s+|le\s+|l')?(?:assistant|ia|pirate|admin|root|dan|libre|sans\s+restrictions?)\b",
         r"(?:révèle|affiche|montre|reveal|print|show)\s+(?:ton|votre|your|the)\s+(?:prompt|system\s+prompt|consignes?)",
         r"(?:envoie|send|exfiltr\w+|post)\s+.{0,40}(?:secrets?|tokens?|clés?|keys?|credentials?)\s+.{0,40}https?://",
     )
 )
+
+
+def _looks_like_secret(value: str) -> bool:
+    """Une valeur aléatoire mêle lettres ET chiffres ; un identifiant, un mot ou un nombre non."""
+    return any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
 
 
 def redact_secrets(text: str) -> tuple[str, int]:
@@ -70,19 +86,22 @@ def redact_secrets(text: str) -> tuple[str, int]:
 
     def mask_bearer(match: re.Match[str]) -> str:
         nonlocal count
+        if not _looks_like_secret(match.group(2)):
+            return match.group(0)
         count += 1
         return f"{match.group(1)}{REDACTED}"
 
     def mask_value(match: re.Match[str]) -> str:
         nonlocal count
-        if _PLACEHOLDER.match(match.group(3)):
+        if _PLACEHOLDER.match(match.group(3)) or not _looks_like_secret(match.group(3)):
             return match.group(0)
         count += 1
         return f"{match.group(1)}{match.group(2)}{REDACTED}{match.group(4)}"
 
     for name, pattern in _SECRET_PATTERNS:
         text = pattern.sub(mask_bearer if name == "jeton Bearer" else mask_whole, text)
-    text = _ASSIGNMENT.sub(mask_value, text)
+    text = _QUOTED_ASSIGNMENT.sub(mask_value, text)
+    text = _ENV_ASSIGNMENT.sub(mask_value, text)
     return text, count
 
 

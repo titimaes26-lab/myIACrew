@@ -24,9 +24,27 @@ def test_bearer_token_keeps_the_scheme():
 
 
 def test_assignment_masks_the_value_not_the_name():
-    out, count = redact_secrets('API_KEY = "monSuperSecretReel123"\npassword: hunter2hunter2hunter2')
-    assert "monSuperSecretReel123" not in out and "hunter2hunter2hunter2" not in out
-    assert 'API_KEY = "' in out and "password: " in out and count == 2
+    out, count = redact_secrets('API_KEY = "monSuperSecretReel123"\npassword: "hunter2hunter2hunter2"\nexport DB_PASSWORD=Zx81kq92LmN04pQrs\nGITHUB_TOKEN=abcd1234efgh5678ijkl')
+    for value in ("monSuperSecretReel123", "hunter2hunter2hunter2", "Zx81kq92LmN04pQrs", "abcd1234efgh5678ijkl"):
+        assert value not in out
+    assert 'API_KEY = "' in out and 'password: "' in out and "export DB_PASSWORD=" in out and "GITHUB_TOKEN=" in out and count == 4
+
+
+# Régression : le premier motif « nom = valeur » abîmait du code ordinaire que les agents lisent puis réécrivent
+# (`const tokenizer = [SECRET MASQUÉ]`) — les éditions échouaient et le placeholder pouvait être livré.
+ORDINARY_CODE = [
+    "const tokenizer = createTokenizerInstance(options)", 'token_url = "https://example.com/oauth/token"', "secret_name = get_secret_name_from_env",
+    "this.apiKeyHeader = headers.authorization", 'const passwordField = document.getElementById("password-field")',
+    'private_key_path = "/etc/ssl/private/server.key"', 'token = request.headers.get("Authorization")', "secretsManager = new SecretsManagerClient({})",
+    "const apiKey = process.env.API_KEY_FROM_ENV", "DB_PASSWORD=${DB_PASSWORD}", "PASSWORD_MIN_LENGTH = 12", 'password = "motdepasselonguemaissanschiffres"',
+    'token = "aaaaaaaaaaaaaaaaaaaaaaaa"', "password: hunter2hunter2hunter2", "Authorization: Bearer someVeryLongTokenVariableName",
+    'const SECRET_FILE = "./config/secret-file.json"', "my_token = abcd1234efgh5678ijkl", "db_secret = Zx81kq92LmN04pQrs", "user_api_key = abcd1234efgh5678ijkl", "self.api_key = api_key_from_settings_object",
+]
+
+
+@pytest.mark.parametrize("line", ORDINARY_CODE)
+def test_ordinary_code_is_never_altered(line):
+    assert redact_secrets(line) == (line, 0)
 
 
 @pytest.mark.parametrize("text", [
@@ -46,7 +64,10 @@ def test_obvious_injections_are_detected(text):
     assert detect_injection(text)
 
 
-@pytest.mark.parametrize("text", ["Ajoute un bouton de connexion", "ignore_case=True", "# instructions d'installation", ""])
+@pytest.mark.parametrize("text", [
+    "Ajoute un bouton de connexion", "ignore_case=True", "# instructions d'installation", "", "You are now ready to deploy the app.",
+    "You are now logged in as admin@example.com", "Tu es maintenant connecté", "Tu es maintenant prêt à déployer",
+])
 def test_ordinary_text_is_not_flagged(text):
     assert detect_injection(text) == []
 

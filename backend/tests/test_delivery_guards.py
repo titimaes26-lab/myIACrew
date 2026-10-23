@@ -143,3 +143,18 @@ def test_the_guard_runs_before_the_syntax_check_and_the_network(monkeypatch):
     calls = []
     monkeypatch.setattr(delivery_guards, "log", type("L", (), {"warning": lambda self, m: calls.append(m)})())
     assert reject_unsafe_content("a.ts", GITHUB) and len(calls) == 1
+
+
+@pytest.mark.parametrize("path", ["src/a.ts", "README.md", "build.sh", "package.json"])
+def test_the_redaction_marker_is_never_delivered(path):
+    """Un agent qui recopie « [SECRET MASQUÉ] » dans un fichier réécrit corromprait le code : refus, avec la marche à suivre."""
+    message = reject_unsafe_content(path, "const tokenizer = [SECRET MASQUÉ]\n")
+    assert message.startswith("ERREUR") and "marqueur" in message and "github_edit_file" in message
+
+
+def test_the_marker_is_refused_by_every_write_path(no_network, tmp_path):
+    assert "marqueur" in github_write.github_write_file.run(owner="o", repo="r", path="a.ts", content="x = [SECRET MASQUÉ]", commit_message="m", branch=BRANCH)
+    assert "marqueur" in github_edit.github_edit_file.run(owner="o", repo="r", path="a.ts", branch=BRANCH, old_string="a", new_string="[SECRET MASQUÉ]", commit_message="m")
+    rejected: dict[str, str] = {}
+    crew_workspace._write_files_locally(tmp_path, [{"path": "a.ts", "content": "x = [SECRET MASQUÉ]"}], rejected)
+    assert "marqueur" in rejected["a.ts"]
