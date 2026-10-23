@@ -4,6 +4,7 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from delivery_guards import reject_unsafe_content
 from logs import get_logger
 from tools import check_syntax_content
 
@@ -159,3 +160,7 @@ def _reject_invalid_syntax(path: str, content: str) -> str | None:
     if result.startswith("ERREUR_SYNTAXE"):
         return result
     return None
+
+def _reject_unsafe_content(path: str, content: str) -> str | None:
+    """None si le contenu peut être livré, sinon le message de refus (secret ou script dangereux, voir delivery_guards)."""
+    return reject_unsafe_content(path, content)

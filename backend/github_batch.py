@@ -39,7 +39,10 @@ def _split_by_checks(files: list[dict]) -> tuple[list[dict], list[tuple[str, str
     valides à cause d'un seul fichier à risque."""
     valid_files, rejected = [], []
     for f in files:
-        issue = github_guards._reject_sensitive_path(f["path"]) or github_guards._reject_invalid_syntax(f["path"], f["content"])
+        issue = (
+            github_guards._reject_sensitive_path(f["path"]) or github_guards._reject_invalid_syntax(f["path"], f["content"])
+            or github_guards._reject_unsafe_content(f["path"], f["content"])
+        )
         (rejected.append((f["path"], issue)) if issue else valid_files.append(f))
     return valid_files, rejected
 
@@ -51,7 +54,7 @@ def _rejected_lines(rejected: list[tuple[str, str]]) -> str:
 def _all_rejected_message(rejected: list[tuple[str, str]]) -> str:
     return (
         f"ERREUR : les {len(rejected)} fichier(s) de ce lot ont TOUS été refusés par les contrôles "
-        f"avant commit (chemin sensible ou syntaxe), rien n'a été écrit sur GitHub :\n{_rejected_lines(rejected)}\n"
+        f"avant commit (chemin sensible, syntaxe, secret ou script dangereux), rien n'a été écrit sur GitHub :\n{_rejected_lines(rejected)}\n"
         "Ne retente pas cet appel avec le même contenu (tu n'as aucun moyen de le corriger) : "
         "signale ces fichiers comme non livrés dans ton rapport final, avec leur raison."
     )

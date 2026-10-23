@@ -29,7 +29,11 @@ def github_edit_file(
         new_string (str): texte de remplacement.
         commit_message (str): message de commit.
     """
-    rejection = github_guards._reject_protected_branch(branch) or github_guards._reject_sensitive_path(path)
+    # Le texte AJOUTÉ seulement : un fichier existant qui contenait déjà ce motif ne doit pas devenir inéditable.
+    rejection = (
+        github_guards._reject_protected_branch(branch) or github_guards._reject_sensitive_path(path)
+        or github_guards._reject_unsafe_content(path, new_string)
+    )
     if rejection:
         return rejection
     try:

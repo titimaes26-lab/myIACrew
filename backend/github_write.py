@@ -53,6 +53,9 @@ def github_write_file(owner: str, repo: str, path: str, content: str, branch: st
     rejection = github_guards._reject_protected_branch(branch) or github_guards._reject_sensitive_path(path)
     if rejection:
         return rejection
+    unsafe = github_guards._reject_unsafe_content(path, content)
+    if unsafe:
+        return unsafe
     syntax_issue = github_guards._reject_invalid_syntax(path, content)
     if syntax_issue:
         return (

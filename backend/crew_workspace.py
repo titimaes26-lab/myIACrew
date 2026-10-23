@@ -5,7 +5,7 @@ from pathlib import Path
 
 from analyst_blocks import FILE_ABSENT, PRESENT_UNREADABLE
 from analyst_blocks import normalize_path
-from github_guards import _reject_invalid_syntax
+from github_guards import _reject_invalid_syntax, _reject_unsafe_content
 
 # Dossier DÉDIÉ aux fichiers livrés en mode local (sans repository cible) : jamais le dossier
 # de travail du serveur, où un fichier livré nommé "main.py" ou ".env" écraserait le backend en
@@ -45,7 +45,7 @@ def _write_files_locally(workspace: Path, files: list[dict], rejected_sink: dict
         if target is None:
             rejected_sink[path] = "chemin hors de l'espace de travail local refusé"
             continue
-        syntax_issue = _reject_invalid_syntax(path, content)
+        syntax_issue = _reject_unsafe_content(path, content) or _reject_invalid_syntax(path, content)
         if syntax_issue:
             rejected_sink[path] = syntax_issue
             continue

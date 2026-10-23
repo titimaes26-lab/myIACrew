@@ -86,6 +86,12 @@ def redact_secrets(text: str) -> tuple[str, int]:
     return text, count
 
 
+def find_secret_kinds(text: str) -> list[str]:
+    """Types (« jeton GitHub »...) des secrets de FORMAT connu présents dans `text`, sans jamais renvoyer leur valeur. Ni le motif
+    « mot_de_passe = valeur » ni « Bearer » : trop de faux positifs dans du code ou de la documentation légitimes."""
+    return [name for name, pattern in _SECRET_PATTERNS if name != "jeton Bearer" and pattern.search(text or "")]
+
+
 def detect_injection(text: str) -> list[str]:
     """Extraits (80 caractères au plus) des formulations d'injection de prompt évidentes ; liste vide si rien."""
     found = []
