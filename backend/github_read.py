@@ -1,6 +1,6 @@
 """Lecture GitHub : fichiers et dossiers (outils des agents, lecteurs de vérification de livraison)."""
 import base64
-from typing import Callable
+from typing import Any, Callable
 
 import github_client
 import input_guards
@@ -41,7 +41,10 @@ def _failing_fetch(error: str, branch_missing: bool = False) -> Callable[[str], 
     return fetch
 
 
-def _open_repo_branch(owner: str, repo: str, branch: str):
+_Fetcher = Callable[[str], tuple[str | None, str | None]]
+
+
+def _open_repo_branch(owner: str, repo: str, branch: str) -> tuple[Any | None, _Fetcher | None]:
     """(dépôt, None) ou (None, lecteur qui répond partout par l'erreur) quand le dépôt ou la branche sont inutilisables."""
     try:
         gh_repo = github_client._get_repo(owner, repo)
