@@ -5,7 +5,7 @@ dépôt cible est une donnée non fiable : une consigne glissée dans un README 
 script d'installation, ou à recopier une clé vue pendant sa lecture.
 
 Les scripts dangereux ne sont cherchés que dans les fichiers EXÉCUTABLES (shell, PowerShell, batch, Makefile) et les scripts de
-cycle de vie de `package.json` : jamais dans un README ni dans le code applicatif, où `curl ... | sh` est une documentation légitime.
+cycle de vie de `package.json` (fichier entier ou fragment) : jamais dans un README ni dans le code applicatif, où `curl ... | sh` est une documentation légitime.
 
 Les motifs sont volontairement étroits (un refus est définitif pour le fichier) : ce garde-fou est un filet, pas une garantie ;
 une écriture déguisée (`c""url | sh`, contenu encodé) n'est pas détectée. Un message de refus ne contient jamais la valeur d'un secret."""
@@ -57,13 +57,22 @@ def _dangerous_in(text: str) -> str | None:
     return None
 
 
+_LIFECYCLE_ENTRY = re.compile(
+    r'"(?P<key>[A-Za-z]+)"\s*:\s*"(?P<value>(?:[^"\\\n]|\\.)*)"'
+)
+
+
 def _lifecycle_scripts(content: str) -> str:
-    """Texte des scripts de cycle de vie d'un package.json (vide si JSON illisible ou sans scripts)."""
-    try:
-        scripts = json.loads(content).get("scripts", {})
-        return "\n".join(str(value) for key, value in scripts.items() if key.lower() in _LIFECYCLE_SCRIPTS)
-    except (ValueError, AttributeError, TypeError):
-        return ""
+    """Valeurs des scripts de cycle de vie trouvées dans `content`, un package.json ENTIER ou un simple FRAGMENT (le texte ajouté
+    par github_edit_file n'est presque jamais du JSON valide : le chercher par motif, pas par analyse du JSON)."""
+    values = []
+    for match in _LIFECYCLE_ENTRY.finditer(content):
+        if match["key"].lower() in _LIFECYCLE_SCRIPTS:
+            try:
+                values.append(json.loads(f'"{match["value"]}"'))
+            except ValueError:
+                values.append(match["value"])
+    return "\n".join(values)
 
 
 def reject_unsafe_content(path: str, content: str) -> str | None:
