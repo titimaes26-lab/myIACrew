@@ -62,39 +62,25 @@ def execution_cost(prompt_tokens: float, completion_tokens: float, price_per_mil
         return None
     return prompt_tokens * price_per_million[0] / 1_000_000 + completion_tokens * price_per_million[1] / 1_000_000
 
-def summarize(
-    runs: list[dict], executions: list[dict], days: int, workflow: Optional[str] = None, tz_offset_minutes: int = 0,
-    price_per_million: Optional[tuple[float, float]] = None,
-) -> dict:
-    """Vue d'ensemble pour le tableau de bord. `runs` : lignes AgentRun ; `executions` : exécutions
-    TERMINÉES (status success|failed) de la période, avec created_at / updated_at (datetime).
-    tz_offset_minutes : décalage de l'utilisateur à l'est d'UTC, appliqué UNIQUEMENT au regroupement par
-    jour (une exécution à 23 h 30 UTC appartient au lendemain pour quelqu'un à UTC+2)."""
-    # Une seule définition de « durée d'une exécution » : sert à la médiane globale ET à celle de chaque jour.
-    duration_by_execution = {
-        e["id"]: (e["updated_at"] - e["created_at"]).total_seconds()
-        for e in executions if e.get("updated_at") and e.get("created_at")
-    }
-    durations = list(duration_by_execution.values())
-    by_execution_tokens: dict[int, int] = {}
-    by_execution_calls: dict[int, int] = {}
+def _usage_by_execution(runs: list[dict]) -> tuple[dict[int, int], dict[int, int], dict[int, list[float]]]:
+    """(tokens, appels LLM, [tokens d'entrée, tokens de sortie]) PAR exécution ; seules les mesures dont l'usage de tokens est connu comptent
+    pour les tokens (jamais « 0 » inventé)."""
+    tokens: dict[int, int] = {}
+    calls: dict[int, int] = {}
+    split: dict[int, list[float]] = {}
     for run in runs:
         if run["usage_calls"] > 0:
-            by_execution_tokens[run["execution_id"]] = by_execution_tokens.get(run["execution_id"], 0) + run["total_tokens"]
-        by_execution_calls[run["execution_id"]] = by_execution_calls.get(run["execution_id"], 0) + run["llm_calls"]
-    succeeded = sum(1 for e in executions if e["status"] == "success")
-    # Coût par exécution, sur les seules mesures dont l'usage de tokens est connu (jamais « 0 » inventé).
-    token_split: dict[int, list[float]] = {}
+            tokens[run["execution_id"]] = tokens.get(run["execution_id"], 0) + run["total_tokens"]
+        calls[run["execution_id"]] = calls.get(run["execution_id"], 0) + run["llm_calls"]
     for run in runs:
         if run["usage_calls"] > 0:
-            split = token_split.setdefault(run["execution_id"], [0.0, 0.0])
-            split[0] += run["prompt_tokens"]
-            split[1] += run["completion_tokens"]
-    costs = [
-        cost for cost in (execution_cost(p, c, price_per_million) for p, c in token_split.values()) if cost is not None
-    ]
-    verdicts = {name: sum(1 for e in executions if e.get("qa_verdict") == name) for name in QA_VERDICTS}
+            entry = split.setdefault(run["execution_id"], [0.0, 0.0])
+            entry[0] += run["prompt_tokens"]
+            entry[1] += run["completion_tokens"]
+    return tokens, calls, split
 
+
+def _agent_stats(runs: list[dict]) -> list[dict]:
     agents = []
     for step in metrics_roles.PIPELINE_ORDER:
         step_runs = [r for r in runs if r["agent"] == step]
@@ -116,7 +102,12 @@ def summarize(
             "avg_tool_calls": _round(_mean([r["tool_calls"] for r in step_runs])),
             "tool_errors": sum(r["tool_errors"] for r in step_runs),
         })
+    return agents
 
+
+def _daily_stats(
+    executions: list[dict], calls: dict[int, int], tokens: dict[int, int], duration_by_execution: dict[int, float], tz_offset_minutes: int,
+) -> dict[str, dict]:
     daily: dict[str, dict] = {}
     daily_durations: dict[str, list[float]] = {}
     shift = timedelta(minutes=tz_offset_minutes)
@@ -125,8 +116,8 @@ def summarize(
         day = daily.setdefault(execution_day[e["id"]], {"executions": 0, "failed": 0, "llm_calls": 0, "tokens": 0, "qa_total": 0, "qa_go": 0})
         day["executions"] += 1
         day["failed"] += 1 if e["status"] == "failed" else 0
-        day["llm_calls"] += by_execution_calls.get(e["id"], 0)
-        day["tokens"] += by_execution_tokens.get(e["id"], 0)
+        day["llm_calls"] += calls.get(e["id"], 0)
+        day["tokens"] += tokens.get(e["id"], 0)
         if e.get("qa_verdict") in QA_VERDICTS:
             day["qa_total"] += 1
             day["qa_go"] += 1 if e["qa_verdict"] == "GO" else 0
@@ -135,6 +126,32 @@ def summarize(
     for date, values in daily.items():
         # None (pas 0) un jour sans durée mesurable : le graphique n'y trace aucune barre.
         values["median_duration_seconds"] = _round(percentile(daily_durations.get(date, []), 0.5))
+    return daily
+
+
+def summarize(
+    runs: list[dict], executions: list[dict], days: int, workflow: Optional[str] = None, tz_offset_minutes: int = 0,
+    price_per_million: Optional[tuple[float, float]] = None,
+) -> dict:
+    """Vue d'ensemble pour le tableau de bord. `runs` : lignes AgentRun ; `executions` : exécutions
+    TERMINÉES (status success|failed) de la période, avec created_at / updated_at (datetime).
+    tz_offset_minutes : décalage de l'utilisateur à l'est d'UTC, appliqué UNIQUEMENT au regroupement par
+    jour (une exécution à 23 h 30 UTC appartient au lendemain pour quelqu'un à UTC+2)."""
+    # Une seule définition de « durée d'une exécution » : sert à la médiane globale ET à celle de chaque jour.
+    duration_by_execution = {
+        e["id"]: (e["updated_at"] - e["created_at"]).total_seconds()
+        for e in executions if e.get("updated_at") and e.get("created_at")
+    }
+    durations = list(duration_by_execution.values())
+    by_execution_tokens, by_execution_calls, token_split = _usage_by_execution(runs)
+    succeeded = sum(1 for e in executions if e["status"] == "success")
+    # Coût par exécution, sur les seules mesures dont l'usage de tokens est connu (jamais « 0 » inventé).
+    costs = [
+        cost for cost in (execution_cost(p, c, price_per_million) for p, c in token_split.values()) if cost is not None
+    ]
+    verdicts = {name: sum(1 for e in executions if e.get("qa_verdict") == name) for name in QA_VERDICTS}
+    agents = _agent_stats(runs)
+    daily = _daily_stats(executions, by_execution_calls, by_execution_tokens, duration_by_execution, tz_offset_minutes)
 
     return {
         "period_days": days,

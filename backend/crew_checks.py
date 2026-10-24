@@ -15,6 +15,18 @@ log = get_logger("crew")
 MAX_RETRY_CONTEXT_CHARS = 4000
 
 
+def _ambiguity_clarification(ambiguous: list[str]) -> str:
+    # Fichier livré DANS la réponse ET déclaré "NON réalisé" : ambigu ("NON réalisé" peut décrire autre chose que le fichier). On ne
+    # tranche pas en silence : l'Analyste est invité à clarifier ; s'il ne le fait pas, le fichier est EXCLU (et signalé) — committer
+    # une version peut-être partielle par-dessus le vrai fichier est pire que ne rien committer.
+    return (
+        "Fichier(s) à la fois livré(s) entre balises ET déclaré(s) 'NON réalisé' : "
+        + ", ".join(ambiguous)
+        + ". Retire leurs balises s'ils ne sont vraiment pas réalisés, ou reformule la ligne "
+        "du plan qui les mentionne."
+    )
+
+
 class CrewChecksMixin(CrewExecutionState):
     """Méthodes de AppDevelopmentCrew qui posent l'état d'une exécution et contrôlent la sortie des agents (guardrails)."""
 
@@ -84,37 +96,10 @@ class CrewChecksMixin(CrewExecutionState):
             raw, read_base=self._read_base_file, list_dir=self._list_base_dir,
             context_files=list(getattr(self, "_analyst_files", []) or []),
         )
-        merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
-        not_extracted = dict(getattr(self, "_not_extracted", {}))
-        delivered_now = {f["path"] for f in files}
-        withdrawn = crew_guardrails._withdrawn_paths(raw, list(merged) + sorted(delivered_now))
-        # Fichier d'une tentative PRÉCÉDENTE déclaré "NON réalisé" : retrait explicite.
-        for path in withdrawn - delivered_now:
-            merged.pop(path, None)
-            not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
-        # Fichier livré DANS cette réponse ET déclaré "NON réalisé" : ambigu ("NON réalisé" peut
-        # décrire autre chose que le fichier). On ne tranche pas en silence : l'Analyste est
-        # invité à clarifier ; s'il ne le fait pas, le fichier est EXCLU (et signalé) — committer
-        # une version peut-être partielle par-dessus le vrai fichier est pire que ne rien committer.
-        ambiguous = sorted(withdrawn & delivered_now)
+        merged, not_extracted, ambiguous = self._merge_analyst_attempt(raw, files, faulty_paths, broken)
         if ambiguous:
-            clarification = (
-                "Fichier(s) à la fois livré(s) entre balises ET déclaré(s) 'NON réalisé' : "
-                + ", ".join(ambiguous)
-                + ". Retire leurs balises s'ils ne sont vraiment pas réalisés, ou reformule la ligne "
-                "du plan qui les mentionne."
-            )
+            clarification = _ambiguity_clarification(ambiguous)
             issue = f"{issue}\n\n{clarification}" if issue else clarification
-        for f in files:
-            if f["path"] not in faulty_paths:
-                merged[f["path"]] = f
-                not_extracted.pop(f["path"], None)
-        # Jamais de fichier à raccourci ou tronqué dans ce que le Développeur committera : il
-        # écraserait le vrai fichier par une version incomplète. Une version SAINE d'une tentative
-        # précédente reste en revanche committable.
-        for path, reason in [(p, "contenu incomplet (commentaire de raccourci)") for p in faulty_paths] + list(broken.items()):
-            if path not in merged:
-                not_extracted[path] = reason
         self._analyst_files = list(merged.values())
         self._not_extracted = not_extracted
         if issue is None:
@@ -132,6 +117,31 @@ class CrewChecksMixin(CrewExecutionState):
         self._not_extracted = not_extracted
         excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
         return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
+
+    def _merge_analyst_attempt(
+        self, raw: str, files: list[dict], faulty_paths: set[str], broken: dict[str, str],
+    ) -> tuple[dict[str, dict], dict[str, str], list[str]]:
+        """Fusionne les fichiers de cette tentative avec ceux des précédentes : (fichiers committables par chemin, {chemin: raison} des
+        fichiers jamais committables, chemins AMBIGUS : livrés dans cette réponse ET déclarés "NON réalisé")."""
+        merged = {f["path"]: f for f in getattr(self, "_analyst_files", [])}
+        not_extracted = dict(getattr(self, "_not_extracted", {}))
+        delivered_now = {f["path"] for f in files}
+        withdrawn = crew_guardrails._withdrawn_paths(raw, list(merged) + sorted(delivered_now))
+        # Fichier d'une tentative PRÉCÉDENTE déclaré "NON réalisé" : retrait explicite.
+        for path in withdrawn - delivered_now:
+            merged.pop(path, None)
+            not_extracted[path] = "retiré par l'Analyste (NON réalisé)"
+        for f in files:
+            if f["path"] not in faulty_paths:
+                merged[f["path"]] = f
+                not_extracted.pop(f["path"], None)
+        # Jamais de fichier à raccourci ou tronqué dans ce que le Développeur committera : il
+        # écraserait le vrai fichier par une version incomplète. Une version SAINE d'une tentative
+        # précédente reste en revanche committable.
+        for path, reason in [(p, "contenu incomplet (commentaire de raccourci)") for p in faulty_paths] + list(broken.items()):
+            if path not in merged:
+                not_extracted[path] = reason
+        return merged, not_extracted, sorted(withdrawn & delivered_now)
 
     def _development_report_guardrail(self, task_output):
         """Ajoute au rapport du Développeur ce que les OUTILS ont réellement constaté (fichiers

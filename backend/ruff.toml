@@ -5,7 +5,11 @@ target-version = "py311"
 extend-exclude = ["workspace"]
 
 [lint]
-select = ["F", "E4", "E7", "E9", "B006"]
+select = ["F", "E4", "E7", "E9", "B006", "C901"]
+
+[lint.mccabe]
+# Complexité cyclomatique : au-delà de 10, une fonction se découpe (les 8 qui dépassaient ont été refactorées, comportement vérifié identique).
+max-complexity = 10
 
 [lint.per-file-ignores]
 "crewquestion.py" = ["E402"]   # load_dotenv() et la config d'environnement doivent précéder l'import de crewai

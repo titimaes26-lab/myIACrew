@@ -32,6 +32,53 @@ def _decode_content_file(gh_repo, content_file, path: str) -> tuple[str | None, 
     except UnicodeDecodeError:
         return None, f"{PRESENT_UNREADABLE} : '{path}' existe mais n'est pas du texte UTF-8"
 
+def _failing_fetch(error: str, branch_missing: bool = False) -> Callable[[str], tuple[str | None, str | None]]:
+    def fetch(path: str) -> tuple[str | None, str | None]:
+        return None, error
+    # Permet à l'appelant de distinguer « la branche n'existe pas (encore) » d'une erreur
+    # transitoire : seul le premier cas autorise de lire une autre branche à la place.
+    fetch.branch_missing = branch_missing  # type: ignore[attr-defined]
+    return fetch
+
+
+def _open_repo_branch(owner: str, repo: str, branch: str):
+    """(dépôt, None) ou (None, lecteur qui répond partout par l'erreur) quand le dépôt ou la branche sont inutilisables."""
+    try:
+        gh_repo = github_client._get_repo(owner, repo)
+    except GithubException as e:
+        return None, _failing_fetch(
+            f"ERREUR : le repository {owner}/{repo} est introuvable ou inaccessible avec ce jeton"
+            if e.status == 404 else github_client._github_error(e)
+        )
+    except Exception as e:
+        return None, _failing_fetch(f"ERREUR : {e}")
+    try:
+        # Branche vérifiée d'abord : sans elle, chaque lecture renverrait 404 et TOUS les fichiers
+        # passeraient pour absents, alors que c'est la branche qui manque (non vérifiable).
+        gh_repo.get_branch(branch)
+    except GithubException as e:
+        if e.status == 404:
+            return None, _failing_fetch(f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}", branch_missing=True)
+        return None, _failing_fetch(github_client._github_error(e))
+    except Exception as e:
+        return None, _failing_fetch(f"ERREUR : {e}")
+    return gh_repo, None
+
+
+def _fetch_file(gh_repo, branch: str, path: str) -> tuple[str | None, str | None]:
+    try:
+        content_file = gh_repo.get_contents(path, ref=branch)
+    except GithubException as e:
+        if e.status == 404:
+            return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur la branche '{branch}'"
+        return None, github_client._github_error(e)
+    except Exception as e:
+        return None, f"ERREUR : {e}"
+    if isinstance(content_file, list):
+        return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
+    return _decode_content_file(gh_repo, content_file, path)
+
+
 def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tuple[str | None, str | None]]:
     """Fonction path -> (contenu, None) ou (None, raison), pour un usage Python interne (voir
     qa_verify_delivered_files, crew_tools.py), sans passer par l'objet Tool crewai.
@@ -41,47 +88,12 @@ def make_file_fetcher(owner: str, repo: str, branch: str) -> Callable[[str], tup
     renvoie pas son contenu, ou contenu non UTF-8) est signalé par PRESENT_UNREADABLE, pour que
     la QA ne le déclare jamais ABSENT à tort.
     """
-    def failing(error: str, branch_missing: bool = False) -> Callable[[str], tuple[str | None, str | None]]:
-        def fetch(path: str) -> tuple[str | None, str | None]:
-            return None, error
-        # Permet à l'appelant de distinguer « la branche n'existe pas (encore) » d'une erreur
-        # transitoire : seul le premier cas autorise de lire une autre branche à la place.
-        fetch.branch_missing = branch_missing  # type: ignore[attr-defined]
-        return fetch
-
-    try:
-        gh_repo = github_client._get_repo(owner, repo)
-    except GithubException as e:
-        error = (
-            f"ERREUR : le repository {owner}/{repo} est introuvable ou inaccessible avec ce jeton"
-            if e.status == 404 else github_client._github_error(e)
-        )
-        return failing(error)
-    except Exception as e:
-        return failing(f"ERREUR : {e}")
-    try:
-        # Branche vérifiée d'abord : sans elle, chaque lecture renverrait 404 et TOUS les fichiers
-        # passeraient pour absents, alors que c'est la branche qui manque (non vérifiable).
-        gh_repo.get_branch(branch)
-    except GithubException as e:
-        if e.status == 404:
-            return failing(f"ERREUR : la branche '{branch}' est introuvable sur {owner}/{repo}", branch_missing=True)
-        return failing(github_client._github_error(e))
-    except Exception as e:
-        return failing(f"ERREUR : {e}")
+    gh_repo, failure = _open_repo_branch(owner, repo, branch)
+    if failure is not None:
+        return failure
 
     def fetch(path: str) -> tuple[str | None, str | None]:
-        try:
-            content_file = gh_repo.get_contents(path, ref=branch)
-        except GithubException as e:
-            if e.status == 404:
-                return None, f"{FILE_ABSENT} : '{path}' n'existe pas sur la branche '{branch}'"
-            return None, github_client._github_error(e)
-        except Exception as e:
-            return None, f"ERREUR : {e}"
-        if isinstance(content_file, list):
-            return None, f"{FILE_ABSENT} : '{path}' est un dossier, pas un fichier"
-        return _decode_content_file(gh_repo, content_file, path)
+        return _fetch_file(gh_repo, branch, path)
 
     return fetch
 

@@ -33,6 +33,62 @@ _RETRY_HINT = (
 )
 
 
+def _excluded_note(not_extracted: dict[str, str]) -> str:
+    if not not_extracted:
+        return ""
+    return (
+        "\nEXCLUS (non committables) : "
+        + "; ".join(f"{p} ({reason})" for p, reason in sorted(not_extracted.items()))
+        + ". Ne les committe JAMAIS, avec aucun outil : liste-les comme non livrés."
+    )
+
+
+def _nothing_to_commit(files: list[dict], not_extracted: dict[str, str], excluded_note: str, has_repo_target: bool) -> str | None:
+    """Message INFO quand il n'y a aucun fichier à committer, sinon None."""
+    if files:
+        return None
+    if not_extracted:
+        return f"INFO : aucun fichier committable.{excluded_note}"
+    if not has_repo_target:
+        # En local, cet outil est le SEUL moyen d'écrire : aucun repli possible.
+        return (
+            "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
+            "l'Analyste, rien n'a été écrit dans l'espace de travail local. Indique-le "
+            "dans ton rapport (aucun fichier livré)."
+        )
+    return (
+        "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
+        "l'Analyste. Si elle contient quand même du code, committe-le avec "
+        "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
+    )
+
+
+def _commit_files(crew: Any, commit_message: str, files: list[dict], rejections: dict[str, str]) -> str:
+    """Écrit les fichiers (espace local ou branche de travail GitHub) ; remplit `rejections` {chemin: raison}."""
+    target = getattr(crew, "_repo_target", None)
+    if target is None:
+        return crew_workspace._write_files_locally(crew._workspace, files, rejections)
+    owner, repo = target
+    result = write_files_to_branch(owner, repo, crew._work_branch, commit_message, files, rejections)
+    if not result.startswith("OK"):
+        # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
+        for f in files:
+            rejections.setdefault(f["path"], f"commit refusé : {result[:200]}")
+    return result
+
+
+def _record_commit(crew: Any, files: list[dict], rejections: dict[str, str], result: str) -> None:
+    # Cet appel fait foi pour SES fichiers : un échec précédent réparé par ce commit est
+    # oublié, un nouveau refus est retenu (voir qa_verify_delivered_files).
+    for f in files:
+        crew._write_rejections.pop(f["path"], None)
+    crew._write_rejections.update(rejections)
+    for f in files:
+        crew._committed_paths.discard(f["path"])
+    if result.startswith("OK"):
+        crew._committed_paths.update(f["path"] for f in files if f["path"] not in rejections)
+
+
 class CrewToolsMixin(CrewExecutionState):
     """Méthodes de AppDevelopmentCrew qui fabriquent les outils d'agents ; lit l'état posé par _reset_execution_state."""
 
@@ -85,49 +141,16 @@ class CrewToolsMixin(CrewExecutionState):
             """
             files = list(getattr(crew_self, "_analyst_files", []) or [])
             not_extracted = dict(getattr(crew_self, "_not_extracted", {}) or {})
-            excluded_note = (
-                "\nEXCLUS (non committables) : "
-                + "; ".join(f"{p} ({reason})" for p, reason in sorted(not_extracted.items()))
-                + ". Ne les committe JAMAIS, avec aucun outil : liste-les comme non livrés."
-            ) if not_extracted else ""
-            if not files and not_extracted:
-                return f"INFO : aucun fichier committable.{excluded_note}"
-            if not files:
-                if getattr(crew_self, "_repo_target", None) is None:
-                    # En local, cet outil est le SEUL moyen d'écrire : aucun repli possible.
-                    return (
-                        "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
-                        "l'Analyste, rien n'a été écrit dans l'espace de travail local. Indique-le "
-                        "dans ton rapport (aucun fichier livré)."
-                    )
-                return (
-                    "INFO : aucun fichier n'a pu être extrait automatiquement de la réponse de "
-                    "l'Analyste. Si elle contient quand même du code, committe-le avec "
-                    "github_write_files ; sinon, indique dans ton rapport qu'il n'y avait rien à committer."
-                )
+            excluded_note = _excluded_note(not_extracted)
+            nothing = _nothing_to_commit(files, not_extracted, excluded_note, getattr(crew_self, "_repo_target", None) is not None)
+            if nothing is not None:
+                return nothing
             manifest = format_manifest(files)
             crew_self._commit_tool_used = True
             commit_message = conventional_commit_message(commit_message, getattr(crew_self, "_request_type", ""))
             rejections: dict[str, str] = {}
-            target = getattr(crew_self, "_repo_target", None)
-            if target is None:
-                result = crew_workspace._write_files_locally(crew_self._workspace, files, rejections)
-            else:
-                owner, repo = target
-                result = write_files_to_branch(owner, repo, crew_self._work_branch, commit_message, files, rejections)
-                if not result.startswith("OK"):
-                    # Commit entier refusé (branche protégée, collision de dossier, erreur GitHub).
-                    for f in files:
-                        rejections.setdefault(f["path"], f"commit refusé : {result[:200]}")
-            # Cet appel fait foi pour SES fichiers : un échec précédent réparé par ce commit est
-            # oublié, un nouveau refus est retenu (voir qa_verify_delivered_files).
-            for f in files:
-                crew_self._write_rejections.pop(f["path"], None)
-            crew_self._write_rejections.update(rejections)
-            for f in files:
-                crew_self._committed_paths.discard(f["path"])
-            if result.startswith("OK"):
-                crew_self._committed_paths.update(f["path"] for f in files if f["path"] not in rejections)
+            result = _commit_files(crew_self, commit_message, files, rejections)
+            _record_commit(crew_self, files, rejections, result)
             retry_hint = "" if result.startswith("OK") else _RETRY_HINT
             return f"{result}\nFichiers extraits de la réponse de l'Analyste :\n{manifest}{excluded_note}{retry_hint}"
 

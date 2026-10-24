@@ -33,6 +33,52 @@ MAX_DIFF_LINES_PER_FILE = 40
 MAX_PARALLEL_FETCHES = 8
 
 
+def _resolve_edit(
+    path: str, blocks: list[tuple[str, str]], duplicated: bool, read_base: Callable[[str], tuple[str | None, str | None]] | None,
+) -> tuple[str | None, str | None]:
+    """(fichier complet, None) ou (None, raison) pour un bloc <<<MODIFICATION>>> résolu contre le fichier d'origine."""
+    if duplicated:
+        return None, "livré à la fois en <<<FICHIER>>> et en <<<MODIFICATION>>> : choisis un seul des deux"
+    if read_base is None:
+        return None, "modification impossible : lecture du fichier d'origine indisponible"
+    base, error = read_base(path)
+    if base is None:
+        return None, (
+            f"modification impossible : fichier d'origine illisible ({(error or 'erreur inconnue')[:120]}) "
+            "— pour créer un nouveau fichier, utilise <<<FICHIER>>>"
+        )
+    content, error = analyst_edits.apply_edits(base, blocks)
+    return (content, None) if content is not None else (None, error or "modification inapplicable")
+
+
+def _no_file_problem(text: str, files: list[dict], broken: dict[str, str]) -> str | None:
+    if files or broken:
+        return None
+    # "non réalisé" ne dispense du signalement que si la réponse ne contient AUCUN code :
+    # des blocs de code hors balises sont un problème de format, pas un choix assumé.
+    has_code = bool(analyst_blocks.ANY_FENCE.search(text or ""))
+    if not has_code and analyst_blocks.NOT_DELIVERED_MARKER.search(text or ""):
+        return None
+    return (
+        "Aucun fichier exploitable trouvé : encadre CHAQUE fichier livré par une ligne "
+        "'<<<FICHIER: chemin/relatif/du/fichier>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
+        "contenu COMPLET entre les deux (ou, pour modifier un fichier existant, un bloc "
+        "'<<<MODIFICATION: chemin>>>'). Si tu ne peux livrer aucun fichier, dis-le "
+        "explicitement en le marquant 'NON réalisé' avec la raison."
+    )
+
+
+def _placeholders_problem(placeholders: list[tuple[str, int, str]]) -> str | None:
+    if not placeholders:
+        return None
+    listing = "\n".join(f"- {p} ligne {n} : {line}" for p, n, line in placeholders[:10])
+    return (
+        "Contenu incomplet détecté (commentaires de remplacement qui seraient committés tels "
+        f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
+        "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
+    )
+
+
 def review_diagnostic_output(
     text: str,
     read_base: Callable[[str], tuple[str | None, str | None]] | None = None,
@@ -55,21 +101,10 @@ def review_diagnostic_output(
     edited_paths: set[str] = set()
     replaced_text: list[dict] = []
     for path, blocks in edits.items():
-        if any(f["path"] == path for f in files):
+        duplicated = any(f["path"] == path for f in files)
+        if duplicated:
             files = [f for f in files if f["path"] != path]
-            broken[path] = "livré à la fois en <<<FICHIER>>> et en <<<MODIFICATION>>> : choisis un seul des deux"
-            continue
-        if read_base is None:
-            broken[path] = "modification impossible : lecture du fichier d'origine indisponible"
-            continue
-        base, error = read_base(path)
-        if base is None:
-            broken[path] = (
-                f"modification impossible : fichier d'origine illisible ({(error or 'erreur inconnue')[:120]}) "
-                "— pour créer un nouveau fichier, utilise <<<FICHIER>>>"
-            )
-            continue
-        content, error = analyst_edits.apply_edits(base, blocks)
+        content, error = _resolve_edit(path, blocks, duplicated, read_base)
         if content is None:
             broken[path] = error or "modification inapplicable"
             continue
@@ -84,27 +119,10 @@ def review_diagnostic_output(
             "Fichiers annoncés mais inexploitables (ils ne seront PAS committés) :\n"
             + "\n".join(f"- {p} ({reason})" for p, reason in broken.items())
         )
-    if not files and not broken:
-        # "non réalisé" ne dispense du signalement que si la réponse ne contient AUCUN code :
-        # des blocs de code hors balises sont un problème de format, pas un choix assumé.
-        has_code = bool(analyst_blocks.ANY_FENCE.search(text or ""))
-        if has_code or not analyst_blocks.NOT_DELIVERED_MARKER.search(text or ""):
-            problems.append(
-                "Aucun fichier exploitable trouvé : encadre CHAQUE fichier livré par une ligne "
-                "'<<<FICHIER: chemin/relatif/du/fichier>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
-                "contenu COMPLET entre les deux (ou, pour modifier un fichier existant, un bloc "
-                "'<<<MODIFICATION: chemin>>>'). Si tu ne peux livrer aucun fichier, dis-le "
-                "explicitement en le marquant 'NON réalisé' avec la raison."
-            )
+    problems.extend(p for p in (_no_file_problem(text, files, broken),) if p)
     placeholders = analyst_placeholders.find_placeholders([f for f in files if f["path"] not in edited_paths])
     placeholders += analyst_placeholders.find_placeholders(replaced_text)
-    if placeholders:
-        listing = "\n".join(f"- {p} ligne {n} : {line}" for p, n, line in placeholders[:10])
-        problems.append(
-            "Contenu incomplet détecté (commentaires de remplacement qui seraient committés tels "
-            f"quels) :\n{listing}\nRéécris CES fichiers EN ENTIER, sans aucun raccourci, ou "
-            "retire leurs balises et liste-les comme 'NON réalisé' dans ton plan."
-        )
+    problems.extend(p for p in (_placeholders_problem(placeholders),) if p)
     import_problems = analyst_imports.find_import_problems(
         files, list_dir, context_files,
         import_scope={path: text["content"] for path, text in ((r["path"], r) for r in replaced_text)},

@@ -153,8 +153,8 @@ def _supabase_unavailable() -> HTTPException:
     return HTTPException(status_code=503, detail="Impossible de vérifier l'authentification (Supabase injoignable).")
 
 
-async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
-    """Vérifie le token Supabase envoyé par le frontend et retourne l'utilisateur authentifié."""
+def _bearer_token(authorization: Optional[str]) -> str:
+    """Jeton Bearer de l'en-tête Authorization ; 401 s'il manque, 500 si le backend n'est pas configuré pour le vérifier."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Authentification requise.")
 
@@ -164,25 +164,26 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             detail="SUPABASE_URL / SUPABASE_ANON_KEY manquants dans les variables d'environnement du backend.",
         )
 
-    token = authorization.split(" ", 1)[1].strip()
-    user = cached_user(token)
-    if user is not None:
-        return user
-    # Une seule validation à la fois PAR jeton : des requêtes simultanées du même utilisateur (onglets, sondages qui se
-    # chevauchent) attendent la première et reçoivent SON issue — succès, mais aussi 401 ou 503, pour qu'une panne de
-    # Supabase ne les fasse pas attendre chacune son propre délai l'une après l'autre. Rien n'est gardé après coup, sauf
-    # un succès (cache) : la requête suivante revalide. Si le validateur est annulé (client déconnecté), les autres
-    # reprennent la main plutôt que d'être annulées avec lui.
-    key = _cache_key(token)
+    return authorization.split(" ", 1)[1].strip()
+
+
+async def _shared_validation(key: str) -> Optional[dict]:
+    """Issue de la validation déjà EN COURS pour ce jeton (succès, mais aussi 401 ou 503 : l'exception est relancée), ou None s'il n'y
+    en a pas. Si le validateur est annulé (client déconnecté), on reprend la main plutôt que d'être annulé avec lui."""
     while True:
         shared = _inflight.get(key)
         if shared is None:
-            break
+            return None
         try:
             return dict(await asyncio.shield(shared))
         except asyncio.CancelledError:
             if not shared.cancelled():
                 raise   # c'est CETTE requête qui est annulée
+
+
+async def _validate_and_publish(token: str, key: str) -> dict:
+    """Valide le jeton auprès de Supabase et publie l'issue pour les requêtes simultanées qui l'attendent (sans point de suspension
+    entre le contrôle « rien en cours » de l'appelant et l'inscription ci-dessous : deux validations du même jeton ne se doublent pas)."""
     outcome: asyncio.Future = asyncio.get_running_loop().create_future()
     _inflight[key] = outcome
     try:
@@ -199,6 +200,23 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     finally:
         if _inflight.get(key) is outcome:
             del _inflight[key]
+
+
+async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    """Vérifie le token Supabase envoyé par le frontend et retourne l'utilisateur authentifié."""
+    token = _bearer_token(authorization)
+    user = cached_user(token)
+    if user is not None:
+        return user
+    # Une seule validation à la fois PAR jeton : des requêtes simultanées du même utilisateur (onglets, sondages qui se
+    # chevauchent) attendent la première et reçoivent SON issue — succès, mais aussi 401 ou 503, pour qu'une panne de
+    # Supabase ne les fasse pas attendre chacune son propre délai l'une après l'autre. Rien n'est gardé après coup, sauf
+    # un succès (cache) : la requête suivante revalide.
+    key = _cache_key(token)
+    shared = await _shared_validation(key)
+    if shared is not None:
+        return shared
+    return await _validate_and_publish(token, key)
 
 
 async def _validate_with_supabase(token: str) -> dict:
