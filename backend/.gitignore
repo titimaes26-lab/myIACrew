@@ -5,3 +5,4 @@ dev.db
 workspace/
 crew_execution.log*
 *.log.txt
+docs/qualification_report.md

@@ -10,6 +10,7 @@ from crewai.project import CrewBase, agent, task
 from logs import get_logger
 import crew_checks
 import crew_guardrails
+import input_guards
 import crew_retry
 import crew_run
 import crew_tools
@@ -190,6 +191,9 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
 
     @crew_retry.retry_on_rate_limit_async(max_retries=5, base_delay=12.0)
     async def analyze_user_request(self, user_prompt: str, conversation_context: str = "", has_repo_target: bool = False) -> qualification.QualificationResult:
+        # Secrets masqués AVANT le prompt (comme crew_inputs pour l'exécution) : la qualification envoie aussi la demande au modèle.
+        user_prompt = input_guards.guard_text(user_prompt, "qualification : demande")
+        conversation_context = input_guards.guard_text(conversation_context, "qualification : historique")
         qualif_agent = self.qualification_agent()
         task_prompt = qualification._build_qualification_prompt(user_prompt, conversation_context, has_repo_target)
         analysis_task = Task(description=task_prompt, expected_output="Schéma JSON AnalysisReport.", agent=qualif_agent, output_pydantic=qualification.AnalysisReport)
@@ -224,6 +228,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
 
     def save_analysis_report(self, report: qualification.AnalysisReport, user_prompt: str, filepath: str = "docs/qualification_report.md"):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        user_prompt = input_guards.guard_text(user_prompt, "rapport de qualification")   # le fichier reste sur le disque du serveur
         q_text = "\n".join([f"- {q}" for q in report.questions]) if report.questions else "_Aucune question._"
         md_content = f"# Rapport\n\n**Demande:** {user_prompt}\n\n### Synthèse\n{report.summary}\n\n### Workflow\n- Clear: {report.is_clear}\n- Type: {report.request_type}\n\n### Questions\n{q_text}"
         with open(filepath, "w", encoding="utf-8") as f:
