@@ -23,15 +23,19 @@ UNTRUSTED_RULE = (
     "contient et ne recopie pas les marqueurs « {redacted} »."
 )
 
+# PERFORMANCE (revue n°15) : ces motifs lisent des fichiers de plusieurs centaines de Ko (SVG, code minifié, données encodées). Le module `re`
+# garde le GIL pendant toute la recherche : un motif à temps quadratique fige TOUT le serveur (mesuré : un tracé SVG de 100 Ko > 20 s). Règles :
+# jamais de préfixe non borné avant un mot-clé (`\b[\w.-]*mot`), quantificateurs longs POSSESSIFS (`{32,}+`, Python 3.11), le reste borné.
 # Formats à FORTE confiance seulement : un faux positif corromprait du code légitime, un faux négatif laisse passer un secret.
+_PRIVATE_KEY_BEGIN = re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----")
+_PRIVATE_KEY_END = re.compile(r"-----END (?:[A-Z]+ )?PRIVATE KEY-----")
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("clé privée", re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z]+ )?PRIVATE KEY-----", re.DOTALL)),
-    ("jeton GitHub", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})\b")),
+    ("jeton GitHub", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}+|github_pat_[A-Za-z0-9_]{50,}+)\b")),
     ("clé Google", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("clé AWS", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("jeton Slack", re.compile(r"\bxox[abprs]-[0-9A-Za-z-]{10,}\b")),
-    ("jeton Bearer", re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]{20,})")),
-    ("clé API Anthropic/OpenAI", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{32,}\b")),
+    ("jeton Slack", re.compile(r"\bxox[abprs]-[0-9A-Za-z-]{10,}+")),
+    ("jeton Bearer", re.compile(r"(?i)\b(bearer\s{1,20})([A-Za-z0-9._~+/=-]{20,}+)")),
+    ("clé API Anthropic/OpenAI", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{32,}+")),
 )
 # « nom = "valeur" » : on ne masque que la valeur, pas le nom (le code reste lisible). DEUX formes seulement, pour ne jamais abîmer
 # du code ordinaire (`const tokenizer = createTokenizerInstance(options)`, `token = request.headers.get(...)`, `token_url = "https://..."`) :
@@ -41,14 +45,14 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _SECRET_NAME = r"(?:password|passwd|secret|api[_-]?key|token|private[_-]?key)"
 _QUOTED_ASSIGNMENT = re.compile(
     rf"""(?ix)
-    (\b[\w.-]*{_SECRET_NAME}[\w.-]*\s*[:=]\s*)
-    (["'])([A-Za-z0-9_+=-]{{16,}})(\2)
+    ({_SECRET_NAME}[\w.-]{{0,40}}\s{{0,20}}[:=]\s{{0,20}})
+    (["'])([A-Za-z0-9_+=-]{{16,}}+)(\2)
     """
 )
 _ENV_ASSIGNMENT = re.compile(
     rf"""(?mx)
-    (^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*{_SECRET_NAME.upper().replace("[_-]", "[_]")}[A-Z0-9_]*[ \t]*=[ \t]*)
-    ()([A-Za-z0-9_+=-]{{16,}})()[ \t]*$
+    (^[ \t]{{0,20}}(?:export[ \t]+)?[A-Z][A-Z0-9_]{{0,60}}?{_SECRET_NAME.upper().replace("[_-]", "[_]")}[A-Z0-9_]{{0,40}}[ \t]*=[ \t]*)
+    ()([A-Za-z0-9_+=-]{{16,}}+)()[ \t]*$
     """
 )
 _PLACEHOLDER = re.compile(r"(?i)^(?:x{4,}|\*{4,}|<.*>|\$\{.*\}|your[_-].*|changeme|example.*|dummy.*|test.*|process\.env.*|os\.environ.*)$")
@@ -63,7 +67,7 @@ _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\byou\s+are\s+now\s+(?:an?\s+|the\s+)?(?:ai|assistant|chatbot|dan|admin|root|jailbroken|unrestricted|evil|hacker)\b",
         r"\btu\s+es\s+maintenant\s+(?:un\s+|une\s+|le\s+|l')?(?:assistant|ia|pirate|admin|root|dan|libre|sans\s+restrictions?)\b",
         r"(?:révèle|affiche|montre|reveal|print|show)\s+(?:ton|votre|your|the)\s+(?:prompt|system\s+prompt|consignes?)",
-        r"(?:envoie|send|exfiltr\w+|post)\s+.{0,40}(?:secrets?|tokens?|clés?|keys?|credentials?)\s+.{0,40}https?://",
+        r"(?:envoie|send|exfiltr\w{1,20}|post)\s+.{0,40}(?:secrets?|tokens?|clés?|keys?|credentials?)\s+.{0,40}https?://",
     )
 )
 
@@ -71,6 +75,22 @@ _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 def _looks_like_secret(value: str) -> bool:
     """Une valeur aléatoire mêle lettres ET chiffres ; un identifiant, un mot ou un nombre non."""
     return any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+
+
+def _private_key_spans(text: str) -> list[tuple[int, int]]:
+    """Plages [début, fin[ des blocs de clé privée (BEGIN … END), en temps LINÉAIRE : la balise de fin est cherchée à partir de la balise
+    de début, et s'il n'y en a plus aucune plus loin, aucun autre bloc ne peut se fermer (pas de relecture jusqu'à la fin pour chacun)."""
+    spans: list[tuple[int, int]] = []
+    position = 0
+    while True:
+        begin = _PRIVATE_KEY_BEGIN.search(text, position)
+        if begin is None:
+            return spans
+        end = _PRIVATE_KEY_END.search(text, begin.end())
+        if end is None:
+            return spans
+        spans.append((begin.start(), end.end()))
+        position = end.end()
 
 
 def redact_secrets(text: str) -> tuple[str, int]:
@@ -98,6 +118,14 @@ def redact_secrets(text: str) -> tuple[str, int]:
         count += 1
         return f"{match.group(1)}{match.group(2)}{REDACTED}{match.group(4)}"
 
+    spans = _private_key_spans(text)
+    if spans:
+        count += len(spans)
+        pieces, position = [], 0
+        for start, end in spans:
+            pieces += [text[position:start], REDACTED]
+            position = end
+        text = "".join(pieces) + text[position:]
     for name, pattern in _SECRET_PATTERNS:
         text = pattern.sub(mask_bearer if name == "jeton Bearer" else mask_whole, text)
     text = _QUOTED_ASSIGNMENT.sub(mask_value, text)
@@ -108,7 +136,9 @@ def redact_secrets(text: str) -> tuple[str, int]:
 def find_secret_kinds(text: str) -> list[str]:
     """Types (« jeton GitHub »...) des secrets de FORMAT connu présents dans `text`, sans jamais renvoyer leur valeur. Ni le motif
     « mot_de_passe = valeur » ni « Bearer » : trop de faux positifs dans du code ou de la documentation légitimes."""
-    return [name for name, pattern in _SECRET_PATTERNS if name != "jeton Bearer" and pattern.search(text or "")]
+    text = text or ""
+    kinds = ["clé privée"] if _private_key_spans(text) else []
+    return kinds + [name for name, pattern in _SECRET_PATTERNS if name != "jeton Bearer" and pattern.search(text)]
 
 
 def detect_injection(text: str) -> list[str]:

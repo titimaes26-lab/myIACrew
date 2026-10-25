@@ -131,3 +131,58 @@ def test_workspace_write_outside_is_rejected(tmp_path):
     rejected: dict[str, str] = {}
     message = crew_workspace._write_files_locally(tmp_path, [{"path": "../evil.py", "content": "x = 1\n"}], rejected)
     assert "ERREUR" in message and "../evil.py" in rejected and not (tmp_path.parent / "evil.py").exists()
+
+
+# --- performance (revue n°15) : `re` garde le GIL, un motif quadratique figeait TOUT le serveur (tracé SVG de 100 Ko : > 20 s) ---------------
+
+import time  # noqa: E402
+
+from input_guards import find_secret_kinds  # noqa: E402
+
+PATHOLOGICAL = {
+    "tracé SVG": "M" + "12.5-3.2L4.1-2.2" * 8000,
+    "identifiants pointés": "ab.cd-ef_gh" * 12000,
+    "mot-clé répété": "token" * 12000,
+    "mot-clé répété en majuscules": "TOKEN" * 12000,
+    "mots-clés séparés par des tirets": "secret-key-" * 12000,
+    "ligne .env géante": "API_KEY" + "A" * 150_000,
+    "clé sk- répétée": "sk-" * 40000,
+    "jeton slack répété": "xoxb-" * 30000,
+    "Bearer répété": "Bearer " * 25000,
+    "balises de clé privée sans fin": "-----BEGIN PRIVATE KEY-----\n" * 30000,
+    "balises de fin sans début": "-----END PRIVATE KEY-----\n" * 30000,
+    "exfiltr répété": "exfiltr" * 20000,
+    "send répété": "send " * 30000,
+}
+MAX_SECONDS = 2.0     # mesuré : quelques centièmes de seconde ; large pour ne pas dépendre de la charge de la machine
+
+
+@pytest.mark.parametrize("label", list(PATHOLOGICAL))
+def test_pathological_text_is_scanned_in_linear_time(label):
+    text = PATHOLOGICAL[label]
+    started = time.perf_counter()
+    redact_secrets(text)
+    find_secret_kinds(text)
+    detect_injection(text)
+    assert time.perf_counter() - started < MAX_SECONDS, f"{label} : {len(text)} caractères trop lents"
+
+
+def test_a_megabyte_of_ordinary_code_is_scanned_quickly():
+    started = time.perf_counter()
+    out, count = redact_secrets("const x = computeSomething(a, b) + 42;\n" * 26_000)
+    assert count == 0 and time.perf_counter() - started < MAX_SECONDS
+
+
+def test_many_private_key_blocks_are_all_masked_in_order():
+    block = "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----"
+    out, count = redact_secrets(f"a {block} b {block} c")
+    assert out == f"a {REDACTED} b {REDACTED} c" and count == 2
+    assert redact_secrets("-----BEGIN PRIVATE KEY-----\nsans fin") == ("-----BEGIN PRIVATE KEY-----\nsans fin", 0)
+    assert find_secret_kinds(f"x {block}") == ["clé privée"] and find_secret_kinds("-----END PRIVATE KEY-----") == []
+
+
+@pytest.mark.parametrize("secret", ["sk-ant-" + "a1" * 30, "xoxb-1234567890-abcdefgh"])
+def test_a_key_followed_by_a_word_character_is_masked_whole(secret):
+    """L'ancien motif (`\\b` final avec retour arrière) laissait visible la fin d'une clé suivie de « _ » ; le nouveau masque toute la suite."""
+    out, count = redact_secrets(f"{secret}_suite")
+    assert count == 1 and secret not in out and "a1a1" not in out and "abcdefgh" not in out
