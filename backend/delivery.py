@@ -16,8 +16,9 @@ MAX_SECTION_CHARS = 1500
 MAX_REQUEST_CHARS = 400
 PULL_REQUEST_URL = re.compile(r"https://github\.com/[^\s)>\]]+/pull/\d+")
 _HEADING = re.compile(r"^\s*(#{1,6}\s|\*\*[^*\n]+\*\*\s*:?\s*$)")
+# Quantificateurs possessifs : `\s*[-*>]*\s*` était ambigu (temps quadratique sur une longue ligne de blancs).
 _OTHER_PLAIN_SECTION = re.compile(
-    r"^\s*[-*>]*\s*(hypoth[èe]ses?|plan|auto-?revue|fichiers?|conclusion|limites?|r[ée]sum[ée])\b[^:\n]{0,40}:",
+    r"^\s*+[-*>]*+\s*+(hypoth[èe]ses?|plan|auto-?revue|fichiers?|conclusion|limites?|r[ée]sum[ée])\b[^:\n]{0,40}:",
     re.IGNORECASE,
 )
 _PLAIN_HEADING = re.compile(r"^\s*[A-Za-zÀ-ÿ][^:\n]{0,60}:")
@@ -81,8 +82,10 @@ def extract_section(raw: str, keyword: str, limit: int = MAX_SECTION_CHARS) -> s
 
 _ZERO_WIDTH = "\u200b"
 _MENTION = re.compile(r"(?<![\w`])@(?=[A-Za-z0-9])")
+# `(\s*:?\s+)` était ambigu (deux `\s` adjacents autour d'un « : » facultatif : quadratique sur « fix » suivi de blancs). Mêmes séparateurs
+# admis : des blancs seuls, ou des blancs facultatifs, un « : », puis au moins un blanc.
 _CLOSING_KEYWORD = re.compile(
-    r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)((?:[\w.-]+/[\w.-]+)?#\d+)", re.IGNORECASE
+    r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s++|\s*+:\s++)((?:[\w.-]+/[\w.-]+)?#\d+)", re.IGNORECASE
 )
 
 
@@ -132,15 +135,54 @@ def build_pull_request_body(
     return "\n\n".join(parts)
 
 
+_REQUEST_HEADER = re.compile(r"Demande initiale\s*:")
+_REQUEST_HEADER_AT_START = re.compile(r"\s*Demande initiale\s*:")
+_CLARIFICATIONS_HEADER = re.compile(r"Précisions apportées\s*:")
+_TYPE_LABEL = "Type d'exécution"
+
+
+def _first_marker_newline(text: str, lower: int) -> int | None:
+    """Indice du premier « \\n » (au-delà de `lower`) situé dans les blancs qui précèdent un « Type d'exécution » ; None s'il n'y en a pas."""
+    label = text.find(_TYPE_LABEL, lower)
+    while label != -1:
+        start = label
+        while start > lower and text[start - 1].isspace():          # remonte les blancs juste avant le libellé
+            start -= 1
+        newline = text.find("\n", start, label)
+        if newline != -1:
+            return newline
+        label = text.find(_TYPE_LABEL, label + 1)
+    return None
+
+
+def _request_part(text: str) -> str | None:
+    """Texte de la demande dans l'enveloppe « Demande initiale : … / Type d'exécution : … / Précisions apportées : … », ou None.
+    Écrit SANS expression à `.*?` suivie de `\\s*` (quadratique sur de longs blancs : 20 000 caractères de la demande = 1 s de gel par requête) ;
+    le résultat n'est utilisé qu'après `.strip()`, les blancs en bord sont donc sans importance. Les blancs qui suivent « : » sont d'abord
+    CONSOMMÉS (comme le `\\s*` glouton de l'ancienne expression) ; ils ne servent de retour à la ligne qu'en dernier recours."""
+    header = _REQUEST_HEADER.search(text)
+    if header:
+        colon_end = header.end()
+        after_blanks = colon_end + (len(text) - colon_end - len(text[colon_end:].lstrip()))
+        newline = _first_marker_newline(text, after_blanks)
+        if newline is None:
+            newline = _first_marker_newline(text, colon_end)
+        if newline is not None:
+            return text[colon_end:newline]
+    at_start = _REQUEST_HEADER_AT_START.match(text)
+    if at_start is None:
+        return None
+    end = _CLARIFICATIONS_HEADER.search(text, at_start.end())
+    return text[at_start.end():end.start() if end else len(text)]
+
+
 def extract_user_request(final_prompt: str) -> str:
     """Texte de la demande seul, sans l'enveloppe « Demande initiale / Type d'exécution /
     Précisions apportées » construite par routes_execute.py, précisions comprises si elles existent."""
     text = final_prompt or ""
-    request = re.search(r"Demande initiale\s*:\s*(.*?)\n\s*Type d'exécution", text, re.DOTALL)
     clarifications = re.search(r"Précisions apportées\s*:\s*(.*)$", text, re.DOTALL)
-    if request is None:
-        request = re.match(r"\s*Demande initiale\s*:\s*(.*?)\s*(?=Précisions apportées\s*:|$)", text, re.DOTALL)
-    result = (request.group(1) if request else text).strip()
+    part = _request_part(text)
+    result = (text if part is None else part).strip()      # une demande vide (« Demande initiale : » seul) reste vide
     if clarifications and not clarifications.group(1).strip().lower().startswith("aucune"):
         result += f" — Précisions : {clarifications.group(1).strip()}"
     return result

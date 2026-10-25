@@ -24,7 +24,8 @@ QA_VERDICT = re.compile(
 
 
 SEVERITY = {"GO": 0, "GO_AVEC_RESERVES": 1, "NO_GO": 2}
-_NONE_VALUE = re.compile(r"^[\s*_`>-]*(aucune?s?|n[ée]ant|none|rien|n/?a|-|—)?[\s.*_`]*$", re.IGNORECASE)
+# `*+` possessif : les deux classes de blancs se recouvrent, le retour arrière redistribuait les blancs entre elles (quadratique sur une longue suite).
+_NONE_VALUE = re.compile(r"^[\s*_`>-]*+(aucune?s?|n[ée]ant|none|rien|n/?a|-|—)?[\s.*_`]*$", re.IGNORECASE)
 _END_OF_BLOCKING = re.compile(
     r"^[\s*_`>#|-]*(verdict|probl[èe]mes?\s+mineurs?|fichiers?\s+non\s+v[ée]rifi[ée]s?|crit[èe]res?\s+d'acceptation)\b",
     re.IGNORECASE,
@@ -32,7 +33,9 @@ _END_OF_BLOCKING = re.compile(
 _STATUS_NV = re.compile(r"NON[ _-]?V[ÉE]RIFIABLE", re.IGNORECASE)
 _STATUS_KO = re.compile(r"(?<![A-Za-z])KO(?![A-Za-z])")
 _STATUS_OK = re.compile(r"(?<![A-Za-z])OK(?![A-Za-z])")
-_FILE_LINE_REF = re.compile(r"[\w./\\-]+\.\w{1,5}:\d+|\bligne\s+\d+", re.IGNORECASE)
+# `(?<=[\w./\\-])\.` et non `[\w./\\-]+\.` : le préfixe répété était relu depuis chaque position d'un long mot (quadratique). Même réponse à « y a-t-il une
+# référence fichier:ligne ? » (un caractère de nom de fichier juste avant le point).
+_FILE_LINE_REF = re.compile(r"(?<=[\w./\\-])\.\w{1,5}:\d+|\bligne\s+\d+", re.IGNORECASE)
 _MANUAL_TEST_HINT = re.compile(
     r"\b(test|tester|manuel|manuellement|v[ée]rifier|ouvrir|cliquer|lancer|[ée]tapes?|saisir|ex[ée]cuter)\b", re.IGNORECASE
 )
@@ -65,7 +68,17 @@ def final_verdict(raw: str) -> str | None:
 
 
 _DECORATION = re.compile(r"[*_`\u2705\u274c\u26a0\ufe0f\u2611\u2714\u2716\U0001F7E2\U0001F534\U0001F7E1]")
-_TRAILING_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+def _strip_trailing_paren(cell: str) -> str:
+    """`cell` sans sa dernière parenthèse finale « (…) » (contenu sans « ) »), ou inchangée. Équivalent linéaire de l'ancien `\\s*\\([^)]*\\)\\s*$`
+    (quadratique sur de longs blancs ou de nombreuses « ( »)."""
+    trimmed = cell.rstrip()
+    if not trimmed.endswith(")"):
+        return cell
+    previous_close = trimmed.rfind(")", 0, len(trimmed) - 1)
+    opening = trimmed.find("(", previous_close + 1, len(trimmed) - 1)   # la PREMIÈRE « ( » après la « ) » précédente : « ((a) » part en entier
+    if opening == -1:
+        return cell
+    return trimmed[:opening].rstrip()
 _STATUS_ONLY = re.compile(r"(OK|KO|NON[ _-]?V[ÉE]RIFIABLE)", re.IGNORECASE)
 
 
@@ -73,7 +86,7 @@ def _status_of(cell: str) -> str | None:
     """OK, KO ou NV si la cellule EST un statut (mise en forme, emoji et parenthèse finale tolérés,
     ex: « ✅ **OK** », « OK (heuristique) ») ; None sinon. Un en-tête « Statut OK/KO/NON VÉRIFIABLE »
     n'en est donc pas un."""
-    cleaned = _TRAILING_PAREN.sub("", _DECORATION.sub("", cell)).strip()
+    cleaned = _strip_trailing_paren(_DECORATION.sub("", cell)).strip()
     if not _STATUS_ONLY.fullmatch(cleaned):
         return None
     if _STATUS_NV.search(cleaned):

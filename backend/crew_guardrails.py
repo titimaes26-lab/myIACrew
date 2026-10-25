@@ -3,7 +3,7 @@ import re
 from typing import List, Optional
 
 from analyst_blocks import NOT_DELIVERED_MARKER
-from analyst_blocks import FILE_BLOCKS, normalize_path
+from analyst_blocks import normalize_path, strip_file_blocks
 from qa_report import QA_VERDICT
 
 _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
@@ -88,7 +88,7 @@ def _withdrawn_paths(text: str, candidates) -> set[str]:
         for path in candidates
     }
     withdrawn: set[str] = set()
-    for line in FILE_BLOCKS.sub("", text).splitlines():
+    for line in strip_file_blocks(text).splitlines():
         for match in NOT_DELIVERED_MARKER.finditer(line):
             before = line[:match.start()]
             if _NEGATION_BEFORE.search(before):
@@ -190,7 +190,9 @@ ARCHITECTURE_REQUIRED_HEADINGS = (
     "Existant", "Cible", "Décisions", "Contrat", "Fichiers à créer ou modifier", "Couverture", "Risques",
 )
 
-_ARCH_FILE_LINE = re.compile(r"^\s*[-*]\s*\**\s*(?:CRÉER|CREER|MODIFIER)\b\**\s*(.*)$", re.MULTILINE)
+# Début de ligne `^[^\S\n]*` (et non `^\s*`, qui traversait les lignes vides depuis chaque début de ligne : quadratique) et `\s*+ \**+ \s*+`
+# possessifs (deux `\s*` autour d'un `\**` facultatif étaient ambigus). Mêmes entrées reconnues, même groupe 1.
+_ARCH_FILE_LINE = re.compile(r"^[^\S\n]*[-*]\s*+\**+\s*+(?:CRÉER|CREER|MODIFIER)\b\**\s*(.*)$", re.MULTILINE)
 
 _ARCH_FILE_ENTRY = re.compile(r"^`?([^\s`:]+)`?\s*:\s*\S")
 

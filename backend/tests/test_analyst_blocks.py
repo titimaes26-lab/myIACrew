@@ -166,9 +166,9 @@ def test_tab_indented_marker_with_space_indented_content_is_dedented():
 
 
 def test_withdrawal_mentions_inside_indented_file_bodies_are_ignored():
-    from analyst_blocks import FILE_BLOCKS
+    from analyst_blocks import strip_file_blocks
     text = "   <<<FICHIER: README.md>>>\n   - src/b.ts : NON réalisé (suivi)\n   <<<FIN_FICHIER>>>\n"
-    assert "NON réalisé" not in FILE_BLOCKS.sub("", text)
+    assert "NON réalisé" not in strip_file_blocks(text)
 
 
 def test_bold_decorated_markers_are_recognized():

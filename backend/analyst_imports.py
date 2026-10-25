@@ -8,11 +8,14 @@ import analyst_blocks
 CODE_EXTENSIONS = {"ts", "tsx", "js", "jsx"}
 
 _IMPORT_FROM = re.compile(
-    r"""import\s+(?:type\s+)?([\w$]+)?\s*,?\s*(?:\{([^}]*)\})?\s*(?:\*\s+as\s+[\w$]+)?\s*from\s*['"](\.{1,2}/[^'"]+)['"]""",
+    # Quantificateurs POSSESSIFS (`*+`, `++`) : les `\s*` voisins autour de groupes facultatifs étaient ambigus (temps polynomial sur « import » suivi
+    # de blancs) ; un blanc n'est jamais le début d'un élément suivant, donc ne rien rendre ne change aucune correspondance.
+    r"""import\s++(?:type\s++)?([\w$]++)?\s*+,?\s*+(?:\{([^}]*+)\})?\s*+(?:\*\s++as\s++[\w$]++)?\s*+from\s*+['"](\.{1,2}/[^'"]++)['"]""",
     re.DOTALL,
 )
 
-_IMPORT_SIDE_EFFECT = re.compile(r"""^\s*import\s*['"](\.{1,2}/[^'"]+)['"]""", re.MULTILINE)
+# `[^\S\n]*` et non `\s*` : sous MULTILINE, `^\s*` traversait les lignes vides depuis chaque début de ligne (quadratique).
+_IMPORT_SIDE_EFFECT = re.compile(r"""^[^\S\n]*import\s*['"](\.{1,2}/[^'"]++)['"]""", re.MULTILINE)
 
 _EXPORT_DECL = re.compile(
     r"export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?|class|abstract\s+class|type|interface|enum)\s+([\w$]+)"

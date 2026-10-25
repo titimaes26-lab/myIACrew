@@ -27,13 +27,32 @@ FILE_END = re.compile(r"^<<<\s*FIN[\s_]+FICHIER\s*(?::\s*([^>]*?)\s*)?>{3,}.*$",
 
 FENCE_LINE = re.compile(r"^(`{3,}|~{3,})")
 
-ANY_FENCE = re.compile(r"^\s*(`{3,}|~{3,})", re.MULTILINE)
+# `[^\S\n]*` (blancs SAUF le retour à la ligne) et non `\s*` : sous MULTILINE, `^\s*` traversait les lignes vides à partir de CHAQUE début de
+# ligne (temps quadratique : 30 000 retours à la ligne = 14 s, tout le serveur figé). Même ensemble de lignes reconnues.
+ANY_FENCE = re.compile(r"^[^\S\n]*(`{3,}|~{3,})", re.MULTILINE)
 
 # Les corps de fichiers entre balises ne sont jamais des déclarations de l'Analyste.
-FILE_BLOCKS = re.compile(
-    r"^[ \t]*<<<\s*FICHIER\s*:.*?^[ \t]*<<<\s*FIN[\s_]+FICHIER[^\n]*$",
-    re.IGNORECASE | re.MULTILINE | re.DOTALL,
-)
+_FILE_BLOCK_START = re.compile(r"^[ \t]*<<<\s*FICHIER\s*:", re.IGNORECASE | re.MULTILINE)
+_FILE_BLOCK_END = re.compile(r"^[ \t]*<<<\s*FIN[\s_]+FICHIER[^\n]*$", re.IGNORECASE | re.MULTILINE)
+
+
+def strip_file_blocks(text: str) -> str:
+    """`text` sans les blocs <<<FICHIER: …>>> … <<<FIN_FICHIER>>> (balises comprises). Temps LINÉAIRE : l'ancienne expression unique
+    `DÉBUT.*?FIN` (DOTALL) relisait tout le reste du texte pour CHAQUE balise de début sans fin (quadratique, 100 Ko = 3 s). Ici la balise de
+    fin est cherchée une fois à partir de chaque début, et s'il n'y en a plus aucune plus loin, aucun autre bloc ne peut se fermer."""
+    pieces: list[str] = []
+    position = 0
+    while True:
+        start = _FILE_BLOCK_START.search(text, position)
+        if start is None:
+            break
+        end = _FILE_BLOCK_END.search(text, start.end())
+        if end is None:
+            break
+        pieces.append(text[position:start.start()])
+        position = end.end()
+    pieces.append(text[position:])
+    return "".join(pieces)
 
 PROSE_EXTENSIONS = {"md", "mdx", "txt", "rst"}
 
