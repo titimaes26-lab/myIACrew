@@ -53,10 +53,26 @@ def _diagnostic_planning_config() -> PlanningConfig:
         max_step_iterations=_diagnostic_step_max_iterations(),
     )
 
+DEFAULT_TIMEOUT_SCALE = 1.0
+MIN_TIMEOUT_SCALE, MAX_TIMEOUT_SCALE = 0.25, 10.0
+
+
+def _timeout_scale() -> float:
+    """Multiplicateur de TOUS les délais d'appel (LLM_TIMEOUT_SCALE, de 0,25 à 10, 1 par défaut ; illisible ou hors bornes : le défaut).
+    Permet d'ajuster sur l'hébergeur, sans changer le code, si le modèle réel est plus lent que prévu."""
+    try:
+        value = float(os.getenv("LLM_TIMEOUT_SCALE", ""))
+    except ValueError:
+        return DEFAULT_TIMEOUT_SCALE
+    return value if MIN_TIMEOUT_SCALE <= value <= MAX_TIMEOUT_SCALE else DEFAULT_TIMEOUT_SCALE
+
+
 def _timeout_params(seconds: float) -> dict:
     # Délai d'UN appel HTTP au fournisseur. Le fournisseur Gemini natif de CrewAI ne lit pas `request_timeout` (rangé dans
     # additional_params, jamais utilisé : aucun délai n'était appliqué) : il faut le poser sur le client google-genai.
-    return {"client_params": {"http_options": genai_types.HttpOptions(timeout=int(seconds * 1000))}}
+    # ATTENTION : google-genai envoie ce délai à GOOGLE (en-tête `X-Server-Timeout`) : au-delà, le serveur coupe l'appel avec
+    # « 504 DEADLINE_EXCEEDED », même si le modèle allait répondre. Un délai trop court FAIT échouer des appels qui auraient abouti.
+    return {"client_params": {"http_options": genai_types.HttpOptions(timeout=int(seconds * _timeout_scale() * 1000))}}
 
 def _output_params(max_tokens: Optional[int]) -> dict:
     # Plafond de SORTIE d'un appel. Le fournisseur Gemini natif de CrewAI ne lit que `max_output_tokens` pour sa configuration
@@ -78,9 +94,10 @@ def _make_llm(agent: str, temperature: float, request_timeout: int = 120, max_to
 # classification JSON (qualification) qu'une génération de fichiers complets (diagnostic) avant
 # de considérer l'appel bloqué et de déclencher le retry litellm — au détriment de la détection
 # rapide d'un appel réellement figé sur les agents les plus légers.
-qualification_llm = _make_llm("qualification_agent", 0.1, request_timeout=45)   # sortie JSON structurée, sans outil
+# Délais (secondes, avant LLM_TIMEOUT_SCALE) : 90 s coupait déjà le designer en « 504 DEADLINE_EXCEEDED » sur un vrai modèle qui réfléchit avant de répondre.
+qualification_llm = _make_llm("qualification_agent", 0.1, request_timeout=90)   # sortie JSON structurée, sans outil
 
-designer_llm = _make_llm("product_designer_agent", 0.5, request_timeout=90)        # texte de specs + quelques lectures
+designer_llm = _make_llm("product_designer_agent", 0.5, request_timeout=180)        # texte de specs + quelques lectures
 
 def _architect_max_tokens() -> int:
     """Plafond de sortie de l'Architecte (ARCHITECT_MAX_OUTPUT_TOKENS, 8192 par défaut). Sur les modèles Gemini
@@ -91,11 +108,11 @@ def _architect_max_tokens() -> int:
         return 8192
     return value if value >= 1024 else 8192
 
-architect_llm = _make_llm("architect_agent", 0.3, request_timeout=90, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
+architect_llm = _make_llm("architect_agent", 0.3, request_timeout=180, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
 
-diagnostic_llm = _make_llm("diagnostic_agent", 0.2, request_timeout=120)     # génère le code source COMPLET des fichiers : le plus volumineux
+diagnostic_llm = _make_llm("diagnostic_agent", 0.2, request_timeout=300)     # génère le code source COMPLET des fichiers : le plus volumineux
 
-developer_llm = _make_llm("developer_agent", 0.0, request_timeout=90)       # appels d'outils, mais reçoit en CONTEXTE le code
+developer_llm = _make_llm("developer_agent", 0.0, request_timeout=180)       # appels d'outils, mais reçoit en CONTEXTE le code
 
                                                           # complet de diagnostic_task (potentiellement volumineux,
                                                           # voir diagnostic_llm) et peut devoir en recopier des
@@ -103,7 +120,7 @@ developer_llm = _make_llm("developer_agent", 0.0, request_timeout=90)       # ap
                                                           # (voir developer_agent) : pas aussi bas que le 60s
                                                           # initialement envisagé pour "peu de texte généré", pour
                                                           # ne pas risquer de couper ce repli sur une grosse livraison.
-qa_llm = _make_llm("qa_agent", 0.2, request_timeout=90)               # appels d'outils + rapport final
+qa_llm = _make_llm("qa_agent", 0.2, request_timeout=180)               # appels d'outils + rapport final
 
 # Timeout dédié, plus court que celui des agents (120s) : un résumé qui traîne ne doit
 # pas ajouter jusqu'à 2 minutes à une réponse dont le vrai travail est déjà terminé.
@@ -111,4 +128,4 @@ qa_llm = _make_llm("qa_agent", 0.2, request_timeout=90)               # appels d
 # échéant, la justification des choix (voir _build_summary_prompt), une génération
 # légèrement plus longue qui reprenait la marge de cette valeur sans que celle-ci ait
 # été ajustée en conséquence.
-summary_llm = LLM(model=llm_models.summary_model(), api_key=GEMINI_API_KEY, temperature=0.5, **_timeout_params(25))
+summary_llm = LLM(model=llm_models.summary_model(), api_key=GEMINI_API_KEY, temperature=0.5, **_timeout_params(45))

@@ -1,4 +1,6 @@
-"""Bornes de l'attribution d'un arrêt par délai au quota du modèle."""
+"""Bornes de l'attribution d'un arrêt par délai au quota du modèle, et classement des erreurs de délai du fournisseur."""
+import pytest
+
 from errors import QUOTA_DOMINANT_SHARE, ErrorCode, ExecutionTimeoutError, classify_exception
 
 
@@ -18,3 +20,31 @@ def test_a_timeout_is_blamed_on_the_quota_only_when_it_was_waited_for_and_domina
     forced = ExecutionTimeoutError("t", quota_wait_seconds=0.0, limit_seconds=100.0)
     forced.quota_dominant = True        # état incohérent : aucune attente de quota => message générique
     assert classify_exception(forced).message == generic.message
+
+
+# --- 504 DEADLINE_EXCEEDED (le délai posé sur l'appel est écoulé côté Google) --------------------------------------------------------------
+
+DEADLINE_504 = ("504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'Deadline expired before operation could complete.', "
+                "'status': 'DEADLINE_EXCEEDED'}}")
+
+
+@pytest.mark.parametrize("message", [DEADLINE_504, DEADLINE_504.lower(), "Deadline expired before operation could complete.", "deadline exceeded after 90s",
+                                     "DEADLINE_EXCEEDED"])
+def test_a_deadline_error_is_a_retryable_model_timeout_not_an_internal_error(message):
+    info = classify_exception(RuntimeError(message))
+    assert info.code == ErrorCode.LLM_TIMEOUT and info.retryable is True and info.message
+
+
+def test_a_deadline_error_wrapped_by_crewai_is_still_recognised():
+    try:
+        try:
+            raise RuntimeError(DEADLINE_504)
+        except RuntimeError as inner:
+            raise ValueError("Agent execution failed") from inner
+    except ValueError as wrapped:
+        assert classify_exception(wrapped).code == ErrorCode.LLM_TIMEOUT
+
+
+@pytest.mark.parametrize("message", ["Critère KO : ligne 504 du fichier", "page_504.tsx introuvable", "HTTP 504 Gateway du proxy du dépôt cible"])
+def test_a_bare_504_in_a_message_is_not_taken_for_a_model_timeout(message):
+    assert classify_exception(RuntimeError(message)).code == ErrorCode.INTERNAL_ERROR

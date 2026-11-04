@@ -43,7 +43,9 @@ class ErrorCode:
 QUOTA_MARKERS = ("429", "resource_exhausted", "rate limit", "quota")
 UNAVAILABLE_MARKERS = ("503", "unavailable", "high demand", "overloaded")
 GUARDRAIL_MARKERS = ("guardrail", "garde-fou")
-TIMEOUT_MARKERS = ("timed out", "timeout")
+# « 504 DEADLINE_EXCEEDED … Deadline expired before operation could complete » : le délai posé sur l'appel (X-Server-Timeout) est écoulé côté Google.
+# Pas de « 504 » seul : un numéro de ligne dans un rapport ferait classer à tort l'exception.
+TIMEOUT_MARKERS = ("timed out", "timeout", "deadline_exceeded", "deadline exceeded", "deadline expired")
 
 _STATUS_CODES = {
     401: ErrorCode.UNAUTHORIZED,
