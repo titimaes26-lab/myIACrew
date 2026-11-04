@@ -159,12 +159,12 @@ Contexte explicite par tâche (pas toutes les sorties précédentes) : `architec
 
 | Agent | Rôle | Outils | Itérations max | Timeout LLM |
 |---|---|---|---|---|
-| `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) | 2 | 45 s |
-| `product_designer_agent` | Specs fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub | 3 | 90 s |
-| `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub | 5 | 90 s |
-| `diagnostic_agent` | Diagnostic de la cause et rédaction du code source complet | lecture seule (disque local + GitHub) | 7 | 120 s |
-| `developer_agent` | Commit fidèle du code de l'Analyste et ouverture de la PR | écriture seule : commit des fichiers de l'Analyste, branche, `check_syntax`, PR | 6 | 90 s |
-| `qa_agent` | Vérification outillée et verdict | `qa_verify_delivered_files`, lecture, `check_syntax` | 10 | 90 s |
+| `qualification_agent` | Qualifie le type de demande | Aucun (interdiction explicite de lire des fichiers) | 2 | 90 s |
+| `product_designer_agent` | Specs fonctionnelles (jeu ou application) | lecture disque local + lecture GitHub | 3 | 180 s |
+| `architect_agent` | Architecture technique React/TypeScript | lecture disque local + lecture GitHub | 5 | 180 s |
+| `diagnostic_agent` | Diagnostic de la cause et rédaction du code source complet | lecture seule (disque local + GitHub) | 7 | 300 s |
+| `developer_agent` | Commit fidèle du code de l'Analyste et ouverture de la PR | écriture seule : commit des fichiers de l'Analyste, branche, `check_syntax`, PR | 6 | 180 s |
+| `qa_agent` | Vérification outillée et verdict | `qa_verify_delivered_files`, lecture, `check_syntax` | 10 | 180 s |
 
 Le plafond de sortie de l'Architecte est de `ARCHITECT_MAX_OUTPUT_TOKENS` (8192 par défaut) ; ses garde-fous
 (`crew_guardrails.py`) sont `_architecture_issues` (structure attendue) et `_truncation_issues` (sortie tronquée). L'Architecte et
