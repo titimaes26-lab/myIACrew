@@ -24,6 +24,9 @@ def _reset_execution_state():
     limiter = sys.modules.get("llm_limiter")        # fenêtres et compteurs journaliers par modèle : propres à chaque test
     if limiter is not None:
         limiter.reset_model_limiters()
+    fallback = sys.modules.get("llm_fallback")      # compteurs d'indisponibilité et replis actifs : propres à chaque test
+    if fallback is not None:
+        fallback.reset()
 
 
 @pytest.fixture(autouse=True)

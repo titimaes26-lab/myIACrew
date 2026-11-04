@@ -26,11 +26,12 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+import llm_fallback
 import llm_models
 import llm_usage
 import run_budget
 import telemetry
-from llm_quota_errors import is_quota_error, retry_delay_seconds  # noqa: F401  (retry_delay_seconds réexporté)
+from llm_quota_errors import is_quota_error, is_unavailable_error, retry_delay_seconds  # noqa: F401  (retry_delay_seconds réexporté)
 from llm_rate_window import (  # noqa: F401  (réexportés : API historique du module)
     COOLDOWN_MARGIN_SECONDS, DEFAULT_COOLDOWN_SECONDS, DEFAULT_MAX_PER_MINUTE, MAX_COOLDOWN_SECONDS, WINDOW_SECONDS,
     DailyQuotaExceeded, GeminiRateLimiter,
@@ -101,13 +102,38 @@ def _announce(wait: float, on_wait: Optional[Callable[[float], None]], lim: Gemi
             log.debug(f"callback d'attente en échec : {type(e).__name__}: {e}")
 
 
-def _note_error(error: BaseException, lim: GeminiRateLimiter) -> None:
+DEFAULT_UNAVAILABLE_PAUSE_S, MAX_UNAVAILABLE_PAUSE_S = 30.0, 300.0
+
+
+def _unavailable_pause() -> float:
+    """Pause commune après un 503 (LLM_UNAVAILABLE_PAUSE_S, de 0 à 300 s, 30 par défaut ; illisible ou hors bornes : le défaut)."""
+    try:
+        value = float(os.getenv("LLM_UNAVAILABLE_PAUSE_S", ""))
+    except ValueError:
+        return DEFAULT_UNAVAILABLE_PAUSE_S
+    return value if 0 <= value <= MAX_UNAVAILABLE_PAUSE_S else DEFAULT_UNAVAILABLE_PAUSE_S
+
+
+def _note_unavailable(error: BaseException, lim: GeminiRateLimiter) -> bool:
+    """503 : pause commune du modèle, et True si cette erreur déclenche le repli (l'appel doit être rejoué sur l'autre modèle)."""
+    if lim is limiter or not is_unavailable_error(error):
+        return False
+    pause = _unavailable_pause()
+    lim.note_unavailable(pause)
+    log.warning(f"{type(error).__name__} Gemini ({lim.name}) : modèle indisponible ou surchargé, pause commune de {pause:.0f} s")
+    return llm_fallback.note_unavailable(lim.name)
+
+
+def _note_error(error: BaseException, lim: GeminiRateLimiter) -> bool:
+    """Note une erreur d'appel ; True quand l'appel doit être rejoué UNE fois sur le modèle de repli."""
     if is_quota_error(error):
         pause = lim.note_rate_limited(error)
         if pause > 0:
             log.warning(f"429 Gemini ({lim.name}) : pause commune de {pause:.0f} s pour les requêtes vers ce modèle")
         else:
             log.warning(f"429 Gemini ({lim.name}) avec un délai trop long (quota journalier ?) : aucune pause commune, l'erreur remonte")
+        return False
+    return _note_unavailable(error, lim)
 
 
 def _reserve_for(kwargs: dict) -> tuple[GeminiRateLimiter, float, list]:
@@ -115,6 +141,10 @@ def _reserve_for(kwargs: dict) -> tuple[GeminiRateLimiter, float, list]:
     Budget de tokens de l'exécution atteint : l'appel est refusé AVANT toute réservation."""
     run_budget.enforce()
     lim = limiter_for(kwargs.get("model"))
+    replacement = None if lim is limiter else llm_fallback.replacement_for(lim.name)
+    if replacement:                                              # repli actif : le modèle de l'appel change AVANT la réservation
+        kwargs["model"] = replacement
+        lim = limiter_for(replacement)
     tokens = llm_usage.estimate_prompt_tokens(kwargs.get("contents"), kwargs.get("config")) if lim.max_tokens_per_minute else 0
     wait, ticket = lim.reserve_ticket(tokens=tokens)
     return lim, wait, ticket
@@ -124,6 +154,8 @@ def _after_call(lim: GeminiRateLimiter, started: float, wait: float, ticket: lis
     """Fin d'un appel : tokens ajoutés au budget de l'exécution (réels, sinon l'estimation d'entrée ; rien pour un appel en erreur),
     puis span « appel LLM » (modèle, tokens, attente imposée par le limiteur, classe d'erreur) si les traces sont actives."""
     run_budget.add(tokens if tokens is not None else (0 if error else ticket[1]))
+    if error is None:
+        llm_fallback.note_success(lim.name)
     elapsed = time.monotonic() - started
     # Durée réelle de chaque appel : sert à régler les délais (LLM_TIMEOUT_SCALE) sur des mesures. Jamais le texte échangé.
     log.info(
@@ -147,9 +179,12 @@ def _wrap_sync(function: Callable[..., Any], on_wait: Optional[Callable[[float],
         try:
             response = function(*args, **kwargs)
         except Exception as error:
-            _note_error(error, lim)
+            replay = _note_error(error, lim)
             _after_call(lim, started, wait, ticket, None, error)
-            raise
+            if not replay:
+                raise
+            kwargs["model"] = llm_fallback.fallback_model()      # cet appel a déclenché le repli : servi par l'autre modèle
+            return wrapper(*args, **kwargs)
         lim.settle(ticket, llm_usage.total_tokens(response))
         _report_served(response)
         _after_call(lim, started, wait, ticket, llm_usage.total_tokens(response))
@@ -193,9 +228,12 @@ def _wrap_async(function: Callable[..., Any], on_wait: Optional[Callable[[float]
         try:
             response = await function(*args, **kwargs)
         except Exception as error:
-            _note_error(error, lim)
+            replay = _note_error(error, lim)
             _after_call(lim, started, wait, ticket, None, error)
-            raise
+            if not replay:
+                raise
+            kwargs["model"] = llm_fallback.fallback_model()
+            return await wrapper(*args, **kwargs)
         lim.settle(ticket, llm_usage.total_tokens(response))
         _report_served(response)
         _after_call(lim, started, wait, ticket, llm_usage.total_tokens(response))

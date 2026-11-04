@@ -132,3 +132,11 @@ class GeminiRateLimiter:
         with self._lock:
             self._cooldown_until = max(self._cooldown_until, now + pause)
         return pause
+
+    def note_unavailable(self, pause: float, now: Optional[float] = None) -> None:
+        """Pause commune après un 503 (modèle surchargé) : les requêtes suivantes vers ce modèle attendent au lieu de s'enchaîner."""
+        if pause <= 0:
+            return
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._cooldown_until = max(self._cooldown_until, now + pause)
