@@ -67,6 +67,20 @@ def _timeout_scale() -> float:
     return value if MIN_TIMEOUT_SCALE <= value <= MAX_TIMEOUT_SCALE else DEFAULT_TIMEOUT_SCALE
 
 
+DEFAULT_AGENT_RETRIES, MAX_AGENT_RETRIES = 1, 3
+
+
+def agent_max_retries() -> int:
+    """Nouvelles tentatives d'un agent après un échec d'appel (AGENT_MAX_RETRIES, de 0 à 3, 1 par défaut ; illisible ou hors bornes : le défaut).
+    CrewAI en fait 2 par défaut (3 essais) : sur un appel qui dépasse son délai, chaque essai dure ce délai, et l'exécution est ensuite
+    relancée automatiquement une fois : l'attente d'un échec réel se multipliait."""
+    try:
+        value = int(os.getenv("AGENT_MAX_RETRIES", ""))
+    except ValueError:
+        return DEFAULT_AGENT_RETRIES
+    return value if 0 <= value <= MAX_AGENT_RETRIES else DEFAULT_AGENT_RETRIES
+
+
 def _timeout_params(seconds: float) -> dict:
     # Délai d'UN appel HTTP au fournisseur. Le fournisseur Gemini natif de CrewAI ne lit pas `request_timeout` (rangé dans
     # additional_params, jamais utilisé : aucun délai n'était appliqué) : il faut le poser sur le client google-genai.

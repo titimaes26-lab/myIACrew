@@ -124,8 +124,14 @@ def _after_call(lim: GeminiRateLimiter, started: float, wait: float, ticket: lis
     """Fin d'un appel : tokens ajoutés au budget de l'exécution (réels, sinon l'estimation d'entrée ; rien pour un appel en erreur),
     puis span « appel LLM » (modèle, tokens, attente imposée par le limiteur, classe d'erreur) si les traces sont actives."""
     run_budget.add(tokens if tokens is not None else (0 if error else ticket[1]))
+    elapsed = time.monotonic() - started
+    # Durée réelle de chaque appel : sert à régler les délais (LLM_TIMEOUT_SCALE) sur des mesures. Jamais le texte échangé.
+    log.info(
+        f"appel {lim.name} : {elapsed:.1f} s, tokens={tokens if tokens is not None else 'n/a'}, attente limiteur={wait:.1f} s"
+        f"{' (' + ticket[2] + ')' if ticket[2] else ''}" + (f", ERREUR {type(error).__name__}" if error else "")
+    )
     telemetry.record_span(
-        "llm.call", time.monotonic() - started, model=lim.name, tokens=tokens, wait_s=round(wait, 1), wait_reason=ticket[2] or "",
+        "llm.call", elapsed, model=lim.name, tokens=tokens, wait_s=round(wait, 1), wait_reason=ticket[2] or "",
         error=type(error).__name__ if error else None,
     )
 

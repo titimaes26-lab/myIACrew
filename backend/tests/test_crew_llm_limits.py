@@ -58,3 +58,20 @@ def test_the_architect_output_cap_reaches_the_generation_config_and_the_others_h
 def test_make_llm_applies_an_explicit_cap_to_the_generation_config():
     assert _generation_cap(crew_llms._make_llm("qa_agent", 0.1, max_tokens=123)) == 123
     assert _generation_cap(crew_llms._make_llm("qa_agent", 0.1)) is None
+
+
+@pytest.mark.parametrize("raw,expected", [("", 1), ("0", 0), ("2", 2), ("3", 3), ("4", 1), ("-1", 1), ("abc", 1), ("1.5", 1)])
+def test_agent_retries_come_from_the_environment_within_safe_bounds(monkeypatch, raw, expected):
+    monkeypatch.setenv("AGENT_MAX_RETRIES", raw)
+    assert crew_llms.agent_max_retries() == expected
+
+
+def test_every_crew_agent_gets_the_reduced_retry_limit(monkeypatch):
+    import crewquestion
+    crew = crewquestion.AppDevelopmentCrew()
+    names = ("qualification_agent", "product_designer_agent", "architect_agent", "diagnostic_agent", "developer_agent", "qa_agent")
+    monkeypatch.delenv("AGENT_MAX_RETRIES", raising=False)
+    assert [getattr(crew, n)().max_retry_limit for n in names] == [1] * 6
+    monkeypatch.setenv("AGENT_MAX_RETRIES", "0")
+    crew = crewquestion.AppDevelopmentCrew()                                # @agent mémorise l'agent par instance
+    assert [getattr(crew, n)().max_retry_limit for n in names] == [0] * 6

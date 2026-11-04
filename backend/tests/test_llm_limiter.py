@@ -183,3 +183,24 @@ def test_limiter_waits_are_counted_in_the_execution_metrics_of_the_calling_conte
             return metrics.total_wait_time
     assert asyncio.run(scenario()) == 2.5
     _record_limiter_wait(1.0)   # hors exécution : sans effet, sans erreur
+
+
+def _call_log(caplog, **kwargs):
+    import logging
+    args = dict(wait=2.0, ticket=[0, 100, "quota minute"], tokens=321, error=None)
+    args.update(kwargs)
+    lim = GeminiRateLimiter(name="gemini-test")
+    with caplog.at_level(logging.INFO, logger="llm_limiter"):
+        llm_limiter._after_call(lim, time.monotonic() - 3.0, args["wait"], args["ticket"], args["tokens"], args["error"])
+    return [r.getMessage() for r in caplog.records if "appel gemini-test" in r.getMessage()]
+
+
+def test_each_model_call_logs_model_duration_tokens_and_limiter_wait(caplog):
+    (line,) = _call_log(caplog)
+    assert "gemini-test" in line and "3.0 s" in line and "tokens=321" in line and "attente limiteur=2.0 s (quota minute)" in line
+    assert "ERREUR" not in line
+
+
+def test_a_failed_call_logs_the_error_class_and_never_its_message(caplog):
+    (line,) = _call_log(caplog, tokens=None, error=RuntimeError("secret prompt text"))
+    assert "ERREUR RuntimeError" in line and "tokens=n/a" in line and "secret prompt text" not in line

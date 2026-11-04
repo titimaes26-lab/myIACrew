@@ -43,7 +43,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
 
     @agent
     def qualification_agent(self) -> Agent:
-        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=crew_llms.qualification_llm, max_iter=2, verbose=True)
+        return Agent(config=self.agents_config['qualification_agent'], tools=[], llm=crew_llms.qualification_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=2, verbose=True)
 
     @agent
     def product_designer_agent(self) -> Agent:
@@ -52,7 +52,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # Sans file_write_tool : son livrable est le texte de sa réponse (sauvegardé via
             # output_file), un outil d'écriture ne faisait que le distraire de son raisonnement.
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=crew_llms.designer_llm, max_iter=3, verbose=True,
+            llm=crew_llms.designer_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=3, verbose=True,
         )
 
     @agent
@@ -60,7 +60,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
         return Agent(
             config=self.agents_config['architect_agent'],
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=crew_llms.architect_llm, max_iter=5, verbose=True,
+            llm=crew_llms.architect_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=5, verbose=True,
         )
 
     @agent
@@ -77,7 +77,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
             tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
-            llm=crew_llms.diagnostic_llm, max_iter=7, verbose=True,
+            llm=crew_llms.diagnostic_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=7, verbose=True,
             # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus critique du pipeline,
             # dont tout le code livré dépend. Un seul appel de plan ; en effort « low », l'observation de chaque étape
             # se fait par heuristique, SANS appel LLM. L'ancien `reasoning=True` (effort « medium ») ajoutait un appel
@@ -125,7 +125,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # github_open_delivery_pull_request) tient en 4 appels ; 6 laisse une marge raisonnable sans jamais
             # retomber au niveau d'avant cette séparation, qui devait aussi couvrir un diagnostic
             # entier dans le même budget.
-            llm=crew_llms.developer_llm, max_iter=6, verbose=True,
+            llm=crew_llms.developer_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=6, verbose=True,
         )
 
     @agent
@@ -147,7 +147,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # (elle doit alors signaler explicitement lesquels restent non vérifiés, voir
             # tasksquestion.yaml), donc ce budget n'a pas besoin de suivre la taille du lot — juste
             # d'en couvrir davantage qu'avant sans pour autant viser l'exhaustivité.
-            llm=crew_llms.qa_llm, max_iter=10, verbose=True,
+            llm=crew_llms.qa_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=10, verbose=True,
         )
 
     @task
