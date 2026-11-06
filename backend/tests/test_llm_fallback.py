@@ -96,11 +96,12 @@ class _Response:
 class FakeModels:
     seen: list = []
     failing: set = set()
+    message = OVERLOAD
 
     def generate_content(self, *, model, contents, config=None):
         self.seen.append(model)
         if model in self.failing:
-            raise RuntimeError(OVERLOAD)
+            raise RuntimeError(self.message)
         return _Response()
 
 
@@ -118,7 +119,7 @@ def wrapped(monkeypatch):
     monkeypatch.setattr(llm_limiter.time, "sleep", slept.append)
     monkeypatch.setattr(llm_limiter, "_installed", set())
     monkeypatch.setattr(llm_limiter, "limiter", GeminiRateLimiter(100, 60))
-    FakeModels.seen, FakeModels.failing = [], {FLASH}
+    FakeModels.seen, FakeModels.failing, FakeModels.message = [], {FLASH}, OVERLOAD
     targets = [(FakeModels, "generate_content", "sync"), (FakeAsyncModels, "generate_content", "async")]
     originals = {(cls, name): getattr(cls, name) for cls, name, _ in targets}
     install(targets=targets)
@@ -216,3 +217,43 @@ def test_the_wait_reason_names_the_cause_of_the_pause_429_or_503():
     assert after_429.reserve_ticket(now=1)[1][2] == "pause après un 429"
     after_503.note_rate_limited(RuntimeError("429 retry in 60s"), now=2)           # une pause 429 plus longue reprend la main
     assert after_503.reserve_ticket(now=3)[1][2] == "pause après un 429"
+
+
+# --- délai dépassé (504 DEADLINE_EXCEEDED) : le repli démarre dès le premier -------------------------------------------
+
+DEADLINE = "504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'Deadline expired before operation could complete.', 'status': 'DEADLINE_EXCEEDED'}}"
+
+
+@pytest.mark.parametrize("error, expected", [
+    (CodedError(504), True), (RuntimeError(DEADLINE), True), (RuntimeError("deadline exceeded"), True),
+    (CodedError(503), False), (RuntimeError("ligne 504 du rapport"), False), (ValueError("autre"), False),
+])
+def test_deadline_errors_are_recognised_by_code_or_text(error, expected):
+    from llm_quota_errors import is_deadline_error
+    assert is_deadline_error(error) is expected
+
+
+def test_an_immediate_deadline_starts_the_fallback_at_the_first_error_and_says_why(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert llm_fallback.note_unavailable(FLASH, now=0, immediate=True) is True
+    assert llm_fallback.replacement_for(FLASH, now=1) == LITE
+    assert "délai dépassé" in caplog.text
+
+
+def test_a_504_replays_the_failing_call_on_the_fallback_at_once_without_any_pause(wrapped):
+    FakeModels.message = DEADLINE
+    models = FakeModels()
+    assert models.generate_content(model=FLASH, contents="x")                  # servi par le repli dès le premier 504
+    assert FakeModels.seen == [FLASH, LITE]
+    models.generate_content(model=FLASH, contents="x")
+    assert FakeModels.seen[-1] == LITE
+    wait, _ = llm_limiter.limiter_for(FLASH).reserve_ticket(tokens=0)
+    assert wait == 0                                                           # pas de pause de 30 s : le modèle ne répond pas, attendre ne sert à rien
+
+
+def test_a_504_never_triggers_the_fallback_when_it_is_disabled(wrapped, monkeypatch):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "off")
+    FakeModels.message = DEADLINE
+    with pytest.raises(RuntimeError):
+        FakeModels().generate_content(model=FLASH, contents="x")
+    assert FakeModels.seen == [FLASH]

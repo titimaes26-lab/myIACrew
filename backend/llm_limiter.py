@@ -31,7 +31,7 @@ import llm_models
 import llm_usage
 import run_budget
 import telemetry
-from llm_quota_errors import is_quota_error, is_unavailable_error, retry_delay_seconds  # noqa: F401  (retry_delay_seconds réexporté)
+from llm_quota_errors import is_deadline_error, is_quota_error, is_unavailable_error, retry_delay_seconds  # noqa: F401  (retry_delay_seconds réexporté)
 from llm_rate_window import (  # noqa: F401  (réexportés : API historique du module)
     COOLDOWN_MARGIN_SECONDS, DEFAULT_COOLDOWN_SECONDS, DEFAULT_MAX_PER_MINUTE, MAX_COOLDOWN_SECONDS, WINDOW_SECONDS,
     DailyQuotaExceeded, GeminiRateLimiter,
@@ -115,8 +115,14 @@ def _unavailable_pause() -> float:
 
 
 def _note_unavailable(error: BaseException, lim: GeminiRateLimiter) -> bool:
-    """503 : pause commune du modèle, et True si cette erreur déclenche le repli (l'appel doit être rejoué sur l'autre modèle)."""
-    if lim is limiter or not is_unavailable_error(error):
+    """503 : pause commune du modèle, et True si cette erreur déclenche le repli (l'appel doit être rejoué sur l'autre modèle).
+    504 (délai dépassé) : pas de pause (le modèle ne répond pas, attendre n'y change rien) mais repli dès le premier."""
+    if lim is limiter:
+        return False
+    if is_deadline_error(error):
+        log.warning(f"{type(error).__name__} Gemini ({lim.name}) : délai dépassé sans réponse du modèle")
+        return llm_fallback.note_unavailable(lim.name, immediate=True)
+    if not is_unavailable_error(error):
         return False
     pause = _unavailable_pause()
     lim.note_unavailable(pause)

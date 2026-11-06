@@ -38,3 +38,13 @@ def is_unavailable_error(error: BaseException) -> bool:
     if any(getattr(error, attr, None) in _UNAVAILABLE_CODES for attr in ("code", "status_code")):
         return True
     return _UNAVAILABLE_TEXT.search(str(error)) is not None
+
+
+_DEADLINE_TEXT = re.compile(r"deadline[_ ]exceeded|deadline expired", re.IGNORECASE)
+
+
+def is_deadline_error(error: BaseException) -> bool:
+    """Délai de l'appel dépassé côté Google (504 DEADLINE_EXCEEDED) : le modèle n'a pas répondu avant notre délai (X-Server-Timeout)."""
+    if any(getattr(error, attr, None) == 504 for attr in ("code", "status_code")):
+        return True
+    return _DEADLINE_TEXT.search(str(error)) is not None

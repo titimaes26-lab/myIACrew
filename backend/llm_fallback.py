@@ -51,20 +51,22 @@ def replacement_for(model_key: str, now: Optional[float] = None) -> Optional[str
         return target if _active_until.get(model_key, 0.0) > now else None
 
 
-def note_unavailable(model_key: str, now: Optional[float] = None) -> bool:
-    """Compte une erreur d'indisponibilité ; True quand CET appel vient de déclencher le repli (il doit être rejoué dessus)."""
+def note_unavailable(model_key: str, now: Optional[float] = None, immediate: bool = False) -> bool:
+    """Compte une erreur d'indisponibilité ; True quand CET appel vient de déclencher le repli (il doit être rejoué dessus).
+    `immediate` : un délai dépassé (504) coûte tout le délai de l'appel (jusqu'à 3 minutes) : le repli démarre dès le premier."""
     target = fallback_model()
     if target is None or target == model_key:
         return False
     now = time.monotonic() if now is None else now
     with _lock:
-        count = _consecutive.get(model_key, 0) + 1
+        count = THRESHOLD if immediate else _consecutive.get(model_key, 0) + 1
         _consecutive[model_key] = count
         if count < THRESHOLD or _active_until.get(model_key, 0.0) > now:
             return False
         _active_until[model_key] = now + _ttl()
         _consecutive[model_key] = 0
-    log.warning(f"modèle {model_key} surchargé ({THRESHOLD} erreurs de suite) : repli sur {target} pendant {_ttl():.0f} s")
+    cause = "délai dépassé" if immediate else f"{THRESHOLD} erreurs de suite"
+    log.warning(f"modèle {model_key} surchargé ({cause}) : repli sur {target} pendant {_ttl():.0f} s")
     return True
 
 
