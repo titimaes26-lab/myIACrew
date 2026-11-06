@@ -1,17 +1,20 @@
 """Les avis ignorés par le job « audit » de la CI ne le sont que sur une PRÉMISSE vérifiée ici, et la CI n'ignore que ceux-là :
 - 4 avis `chromadb` : l'application n'utilise ni serveur Chroma ni mémoire/connaissances CrewAI ;
-- `mcp` (CVE-2026-59951, fuite mémoire d'un SERVEUR MCP en HTTP « streamable » à état) : l'application n'importe pas `mcp` et ne
-  sert aucun MCP ; CrewAI borne `mcp~=1.28.1`, le correctif (1.30) est donc inaccessible ;
+- `mcp` (CVE-2026-59951, fuite mémoire d'un SERVEUR MCP en HTTP « streamable » à état ; CVE-2026-116684, authentification bearer d'un
+  SERVEUR MCP sans contrôle d'audience ; CVE-2026-116685, clients HTTP/SSE qui suivent une redirection vers un autre hôte ;
+  CVE-2026-116686, client qui valide l'`outputSchema` d'un serveur MCP en ouvrant ses références `$ref`) : l'application n'importe
+  pas `mcp`, ne sert aucun MCP et ne se connecte à aucun serveur MCP ; CrewAI borne `mcp~=1.28.1`, le correctif (1.30) est donc
+  inaccessible ;
 - `uv` (PYSEC-2026-4321, racine TLS révoquée dans le magasin d'`uv`) : outil de ligne de commande de `crewai-cli` (borné
   `uv~=0.11.6`, correctif 0.13.4 inaccessible), jamais lancé par l'application ni par le déploiement.
-Examinés le 2026-10-22. À revoir à chaque mise à jour de CrewAI."""
+Examinés le 2026-10-22 (mcp : 116684/5/6 le 2026-11-06). À revoir à chaque mise à jour de CrewAI."""
 import glob
 import os
 import re
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(BACKEND)
-IGNORED = ["PYSEC-2026-311", "PYSEC-2026-3813", "PYSEC-2026-3814", "PYSEC-2026-3815", "CVE-2026-59951", "PYSEC-2026-4321"]
+IGNORED = ["PYSEC-2026-311", "PYSEC-2026-3813", "PYSEC-2026-3814", "PYSEC-2026-3815", "CVE-2026-59951", "CVE-2026-116684", "CVE-2026-116685", "CVE-2026-116686", "PYSEC-2026-4321"]
 CHROMA_USE = re.compile(r"chromadb|\bmemory\s*=\s*True|\bMemory\(|knowledge_sources|\bKnowledge\(|\bembedder\s*=|chroma\s+run", re.IGNORECASE)
 
 
@@ -52,7 +55,7 @@ def _offenders(pattern):
 
 
 def test_the_application_neither_imports_nor_serves_mcp():
-    assert _offenders(MCP_USE) == [], "l'application utilise mcp : l'avis CVE-2026-59951 ignoré par la CI est à réexaminer"
+    assert _offenders(MCP_USE) == [], "l'application utilise mcp : les avis CVE-2026-59951 et CVE-2026-11668x ignorés par la CI sont à réexaminer"
 
 
 def test_neither_the_application_nor_its_deployment_runs_uv():

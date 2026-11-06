@@ -1,15 +1,17 @@
-"""Modèle de repli et pause sur 503 (Gemini surchargé)."""
-import asyncio
+"""Modèle de repli sur indisponibilité (Gemini surchargé) : détection des erreurs, compteur, durée, réglages (module pur).
+Les scénarios « dans les appels » (wrapper du limiteur, rejeu sur le repli) sont dans test_llm_fallback_calls.py."""
 import logging
 
 import pytest
 
 import llm_fallback
-import llm_limiter
-from llm_limiter import GeminiRateLimiter, install
+from llm_limiter import GeminiRateLimiter
 from llm_quota_errors import is_unavailable_error
 
+
 FLASH, LITE = "gemini-3.8-flash", "gemini-3.5-flash-lite"
+
+
 OVERLOAD = "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand.', 'status': 'UNAVAILABLE'}}"
 
 
@@ -27,8 +29,6 @@ def clean_env(monkeypatch):
     monkeypatch.setenv("LLM_FALLBACK_THRESHOLD", "2")
 
 
-# --- détection ---------------------------------------------------------------------------------------------------
-
 @pytest.mark.parametrize("error, expected", [
     (CodedError(503), True), (CodedError(500), True), (CodedError(502), True), (CodedError(504, "DEADLINE_EXCEEDED"), False),
     (CodedError(429, "RESOURCE_EXHAUSTED"), False), (RuntimeError(OVERLOAD), True), (RuntimeError("model overloaded"), True),
@@ -37,8 +37,6 @@ def clean_env(monkeypatch):
 def test_unavailable_errors_are_recognised_by_code_or_text(error, expected):
     assert is_unavailable_error(error) is expected
 
-
-# --- compteur, seuil, durée ---------------------------------------------------------------------------------------
 
 def test_the_fallback_starts_at_the_second_consecutive_unavailable_error_and_ends_after_its_ttl():
     assert llm_fallback.note_unavailable(FLASH, now=0) is False
@@ -89,120 +87,11 @@ def test_switching_to_the_fallback_is_logged_without_any_text(caplog):
     assert FLASH in message and LITE in message
 
 
-# --- dans les appels ----------------------------------------------------------------------------------------------
-
-class _Response:
-    usage_metadata = None
-
-
-class FakeModels:
-    seen: list = []
-    failing: set = set()
-    message = OVERLOAD
-
-    def generate_content(self, *, model, contents, config=None):
-        self.seen.append(model)
-        if model in self.failing:
-            raise RuntimeError(self.message)
-        return _Response()
-
-
-class FakeAsyncModels:
-    async def generate_content(self, *, model, contents, config=None):
-        FakeModels.seen.append(model)
-        if model in FakeModels.failing:
-            raise RuntimeError(OVERLOAD)
-        return _Response()
-
-
-@pytest.fixture()
-def wrapped(monkeypatch):
-    slept: list[float] = []
-    monkeypatch.setattr(llm_limiter.time, "sleep", slept.append)
-    monkeypatch.setattr(llm_limiter, "_installed", set())
-    monkeypatch.setattr(llm_limiter, "limiter", GeminiRateLimiter(100, 60))
-    FakeModels.seen, FakeModels.failing, FakeModels.message = [], {FLASH}, OVERLOAD
-    targets = [(FakeModels, "generate_content", "sync"), (FakeAsyncModels, "generate_content", "async")]
-    originals = {(cls, name): getattr(cls, name) for cls, name, _ in targets}
-    install(targets=targets)
-    yield slept
-    for (cls, name), original in originals.items():
-        setattr(cls, name, original)
-
-
-def test_the_second_overload_is_replayed_on_the_fallback_and_the_next_calls_go_straight_there(wrapped):
-    models = FakeModels()
-    with pytest.raises(RuntimeError):
-        models.generate_content(model=FLASH, contents="x")                      # 1er 503 : remonte (CrewAI réessaiera)
-    assert models.generate_content(model=FLASH, contents="x")                   # 2e 503 : rejoué sur le repli et servi
-    assert FakeModels.seen == [FLASH, FLASH, LITE]
-    models.generate_content(model=FLASH, contents="x")
-    assert FakeModels.seen[-1] == LITE                                          # repli actif : plus d'appel au modèle surchargé
-
-
-def test_the_first_overload_pauses_the_model_for_the_next_calls(wrapped):
-    models = FakeModels()
-    with pytest.raises(RuntimeError):
-        models.generate_content(model=FLASH, contents="x")
-    wait, _ = llm_limiter.limiter_for(FLASH).reserve_ticket(tokens=0)
-    assert 25 <= wait <= 31                                                     # LLM_UNAVAILABLE_PAUSE_S = 30 par défaut
-
-
-def test_other_errors_are_never_replayed_and_do_not_count(wrapped):
-    FakeModels.failing = set()
-    models = FakeModels()
-    models.generate_content(model=FLASH, contents="x")
-    assert llm_fallback.note_unavailable(FLASH, now=0) is False                 # le succès a remis le compteur à zéro
-    assert FakeModels.seen == [FLASH]
-
-
-def test_async_calls_get_the_same_fallback(wrapped, monkeypatch):
-    monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", "0")                          # sinon le 2e appel attendrait VRAIMENT 30 s (asyncio.sleep)
-    async def scenario():
-        models = FakeAsyncModels()
-        with pytest.raises(RuntimeError):
-            await models.generate_content(model=FLASH, contents="x")
-        return await models.generate_content(model=FLASH, contents="x")
-    assert asyncio.run(scenario())
-    assert FakeModels.seen == [FLASH, FLASH, LITE]
-
-
-def test_with_the_fallback_disabled_the_overload_always_reaches_the_caller(wrapped, monkeypatch):
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "off")
-    models = FakeModels()
-    for _ in range(3):
-        with pytest.raises(RuntimeError):
-            models.generate_content(model=FLASH, contents="x")
-    assert FakeModels.seen == [FLASH] * 3
-
-
 def test_the_unavailable_pause_is_configurable_and_bounded(monkeypatch):
-    assert llm_limiter._unavailable_pause() == 30.0
+    assert llm_fallback.unavailable_pause() == 30.0
     for raw, expected in (("0", 0.0), ("5", 5.0), ("300", 300.0), ("301", 30.0), ("-1", 30.0), ("abc", 30.0)):
         monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", raw)
-        assert llm_limiter._unavailable_pause() == expected
-
-
-def test_a_successful_call_between_two_overloads_resets_the_count(wrapped, monkeypatch):
-    monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", "0")
-    models = FakeModels()
-    with pytest.raises(RuntimeError):
-        models.generate_content(model=FLASH, contents="x")
-    FakeModels.failing = set()
-    models.generate_content(model=FLASH, contents="x")                          # succès : compteur à zéro
-    FakeModels.failing = {FLASH}
-    with pytest.raises(RuntimeError):
-        models.generate_content(model=FLASH, contents="x")                      # 1er 503 d'une nouvelle série : pas de repli
-    assert FakeModels.seen == [FLASH, FLASH, FLASH]
-
-
-def test_a_model_unknown_to_the_limits_table_never_gets_a_fallback(wrapped):
-    FakeModels.failing = {"gemini-inconnu"}
-    models = FakeModels()
-    for _ in range(3):
-        with pytest.raises(RuntimeError):
-            models.generate_content(model="gemini-inconnu", contents="x")
-    assert FakeModels.seen == ["gemini-inconnu"] * 3
+        assert llm_fallback.unavailable_pause() == expected
 
 
 def test_an_active_fallback_never_redirects_the_fallback_model_itself():
@@ -220,8 +109,6 @@ def test_the_wait_reason_names_the_cause_of_the_pause_429_or_503():
     after_503.note_rate_limited(RuntimeError("429 retry in 60s"), now=2)           # une pause 429 plus longue reprend la main
     assert after_503.reserve_ticket(now=3)[1][2] == "pause après un 429"
 
-
-# --- délai dépassé (504 DEADLINE_EXCEEDED) : le repli démarre dès le premier -------------------------------------------
 
 DEADLINE = "504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'Deadline expired before operation could complete.', 'status': 'DEADLINE_EXCEEDED'}}"
 
@@ -242,27 +129,6 @@ def test_an_immediate_deadline_starts_the_fallback_at_the_first_error_and_says_w
     assert "délai dépassé" in caplog.text
 
 
-def test_a_504_replays_the_failing_call_on_the_fallback_at_once_without_any_pause(wrapped):
-    FakeModels.message = DEADLINE
-    models = FakeModels()
-    assert models.generate_content(model=FLASH, contents="x")                  # servi par le repli dès le premier 504
-    assert FakeModels.seen == [FLASH, LITE]
-    models.generate_content(model=FLASH, contents="x")
-    assert FakeModels.seen[-1] == LITE
-    wait, _ = llm_limiter.limiter_for(FLASH).reserve_ticket(tokens=0)
-    assert wait == 0                                                           # pas de pause de 30 s : le modèle ne répond pas, attendre ne sert à rien
-
-
-def test_a_504_never_triggers_the_fallback_when_it_is_disabled(wrapped, monkeypatch):
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "off")
-    FakeModels.message = DEADLINE
-    with pytest.raises(RuntimeError):
-        FakeModels().generate_content(model=FLASH, contents="x")
-    assert FakeModels.seen == [FLASH]
-
-
-# --- le nom du modèle de repli est normalisé comme les autres noms de modèle ---------------------------------------------
-
 @pytest.mark.parametrize("raw", ["gemini/gemini-3.5-flash-lite", "Models/Gemini-3.5-Flash-Lite", "  gemini-3.5-flash-lite  ", "GEMINI/GEMINI-3.5-FLASH-LITE"])
 def test_the_fallback_model_is_normalised_without_provider_prefix_or_case(monkeypatch, raw):
     monkeypatch.setenv("GEMINI_FALLBACK_MODEL", raw)
@@ -276,24 +142,11 @@ def test_a_prefixed_fallback_equal_to_the_requested_model_never_redirects_a_mode
     assert llm_fallback.replacement_for(LITE, now=1) is None
 
 
-def test_the_api_receives_the_clean_model_name_even_when_the_variable_carries_a_prefix(wrapped, monkeypatch):
-    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini/Gemini-3.5-Flash-Lite")
-    monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", "0")
-    models = FakeModels()
-    with pytest.raises(RuntimeError):
-        models.generate_content(model=FLASH, contents="x")
-    assert models.generate_content(model=FLASH, contents="x")                    # 2e 503 : rejoué sur le repli
-    models.generate_content(model=FLASH, contents="x")                           # repli actif : appel direct
-    assert FakeModels.seen == [FLASH, FLASH, LITE, LITE]                         # jamais « gemini/gemini-3.5-… » envoyé à l'API
-
-
 @pytest.mark.parametrize("raw", ["gemini/", "models/", "GEMINI/"])
 def test_a_fallback_made_only_of_a_prefix_disables_the_fallback(monkeypatch, raw):
     monkeypatch.setenv("GEMINI_FALLBACK_MODEL", raw)
     assert llm_fallback.fallback_model() is None
 
-
-# --- repli dès la première erreur (défaut) --------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw, expected", [("", 1), ("1", 1), ("2", 2), ("5", 5), ("0", 1), ("6", 1), ("-1", 1), ("abc", 1), ("1.5", 1)])
 def test_the_fallback_threshold_defaults_to_one_and_is_bounded(monkeypatch, raw, expected):
@@ -307,31 +160,6 @@ def test_by_default_the_first_unavailable_error_starts_the_fallback_and_says_so(
         assert llm_fallback.note_unavailable(FLASH, now=0) is True
     assert llm_fallback.replacement_for(FLASH, now=1) == LITE
     assert "première erreur" in caplog.text and LITE in caplog.text
-
-
-def test_by_default_the_first_503_is_replayed_on_the_fallback_at_once(wrapped, monkeypatch):
-    monkeypatch.delenv("LLM_FALLBACK_THRESHOLD", raising=False)
-    models = FakeModels()
-    assert models.generate_content(model=FLASH, contents="x")                    # 1er 503 : servi par le repli, rien ne remonte
-    assert FakeModels.seen == [FLASH, LITE]
-    models.generate_content(model=FLASH, contents="x")
-    assert FakeModels.seen[-1] == LITE
-
-
-def test_a_success_still_resets_the_count_when_the_threshold_is_raised(wrapped, monkeypatch):
-    monkeypatch.setenv("LLM_FALLBACK_THRESHOLD", "3")
-    monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", "0")
-    models = FakeModels()
-    for _ in range(2):
-        with pytest.raises(RuntimeError):
-            models.generate_content(model=FLASH, contents="x")
-    FakeModels.failing = set()
-    models.generate_content(model=FLASH, contents="x")                           # succès : compteur à zéro
-    FakeModels.failing = {FLASH}
-    for _ in range(2):
-        with pytest.raises(RuntimeError):
-            models.generate_content(model=FLASH, contents="x")                   # nouvelle série : 2 erreurs seulement, pas encore de repli
-    assert LITE not in FakeModels.seen
 
 
 def test_a_deadline_starts_the_fallback_at_once_whatever_the_raised_threshold(monkeypatch):

@@ -1,18 +1,19 @@
-"""Limiteurs de débit par modèle : RPM, TPM et RPD indépendants d'un modèle à l'autre."""
-import asyncio
+"""Limiteurs de débit par modèle : RPM, TPM et RPD indépendants d'un modèle à l'autre (limiteur seul, registre, estimation, journalisation).
+Les appels enveloppés du client google-genai sont dans test_llm_limiter_wrapped.py."""
 import logging
 from datetime import date
-
 import pytest
-
 import crew_retry
 import llm_limiter
 import llm_models
 import llm_usage
 from errors import ErrorCode, classify_exception
-from llm_limiter import DailyQuotaExceeded, GeminiRateLimiter, install, limiter_for
+from llm_limiter import DailyQuotaExceeded, GeminiRateLimiter, limiter_for
+
 
 FLASH, LITE = "gemini-3.8-flash", "gemini-3.5-flash-lite"
+
+
 QUOTA_TEXT = "429 RESOURCE_EXHAUSTED. Please retry in 30s."
 
 
@@ -22,7 +23,15 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-# --- le limiteur seul ---------------------------------------------------------------------------------------------
+class _Usage:
+    def __init__(self, total):
+        self.total_token_count = total
+
+
+class _Response:
+    def __init__(self, total=None):
+        self.usage_metadata = _Usage(total) if total is not None else None
+
 
 def test_the_token_budget_delays_a_request_until_enough_tokens_leave_the_window():
     limiter = GeminiRateLimiter(100, 60, max_tokens_per_minute=1000)
@@ -94,8 +103,6 @@ def test_no_daily_or_token_cap_by_default():
         assert limiter.reserve(now=0, tokens=10**9) == 0
 
 
-# --- le registre par modèle ---------------------------------------------------------------------------------------
-
 def test_each_model_gets_its_own_limiter_with_its_effective_limits():
     flash, lite = limiter_for("gemini/" + FLASH), limiter_for(LITE)
     assert (flash.max_per_minute, flash.max_tokens_per_minute, flash.max_per_day) == (8, 200_000, 1_200)
@@ -130,141 +137,6 @@ def test_reset_forgets_the_windows_and_the_daily_counters():
     assert limiter_for(FLASH).reserve(now=0) == 0
 
 
-# --- les enveloppes du client google-genai --------------------------------------------------------------------------
-
-class _Usage:
-    def __init__(self, total):
-        self.total_token_count = total
-
-
-class _Response:
-    def __init__(self, total=None):
-        self.usage_metadata = _Usage(total) if total is not None else None
-
-
-class FakeModels:
-    total = 50
-    fail = None
-    seen: list = []
-
-    def generate_content(self, *, model, contents, config=None):
-        self.seen.append(model)
-        if self.fail:
-            raise self.fail
-        return _Response(self.total)
-
-    def generate_content_stream(self, *, model, contents, config=None):
-        self.seen.append(model)
-        yield _Response(None)
-        yield _Response(self.total)
-
-
-class FakeAsyncModels:
-    async def generate_content(self, *, model, contents, config=None):
-        return _Response(70_000)
-
-    async def generate_content_stream(self, *, model, contents, config=None):
-        async def chunks():
-            yield _Response(None)
-            yield _Response(150_000)
-        return chunks()
-
-
-@pytest.fixture()
-def wrapped(monkeypatch):
-    slept: list[float] = []
-    monkeypatch.setattr(llm_limiter.time, "sleep", slept.append)
-    monkeypatch.setattr(llm_limiter, "_installed", set())
-    monkeypatch.setattr(llm_limiter, "limiter", GeminiRateLimiter(100, 60))
-    FakeModels.seen, FakeModels.total, FakeModels.fail = [], 50, None
-    targets = [(FakeModels, "generate_content", "sync"), (FakeModels, "generate_content_stream", "stream"),
-               (FakeAsyncModels, "generate_content", "async"), (FakeAsyncModels, "generate_content_stream", "astream")]
-    originals = {(cls, name): getattr(cls, name) for cls, name, _ in targets}
-    waits: list[float] = []
-    install(on_wait=waits.append, targets=targets)
-    yield slept, waits
-    for (cls, name), original in originals.items():
-        setattr(cls, name, original)
-
-
-def test_every_call_is_throttled_by_the_limiter_of_its_own_model(wrapped):
-    slept, waits = wrapped
-    models = FakeModels()
-    for _ in range(8):
-        models.generate_content(model="gemini-3.8-flash", contents="x")
-    for _ in range(12):
-        models.generate_content(model="gemini-3.5-flash-lite", contents="x")
-    assert slept == []                                                   # 8 sur 8 et 12 sur 12 : aucun n'attend
-    models.generate_content(model="gemini-3.8-flash", contents="x")
-    assert len(slept) == 1 and 0 < slept[0] <= 60 and waits == slept     # 9e du premier modèle seulement
-
-
-def test_real_token_usage_makes_the_next_call_wait(wrapped):
-    slept, _ = wrapped
-    models = FakeModels()
-    models.total = 190_000                                               # la réponse a consommé presque tout le budget (200 000)
-    models.generate_content(model=FLASH, contents="court")
-    assert slept == []
-    models.generate_content(model=FLASH, contents="y" * 80_000)          # ~20 000 tokens estimés : dépasse 200 000 au total
-    assert len(slept) == 1 and slept[0] > 50
-
-
-def test_the_prompt_estimate_counts_when_the_response_has_no_usage(wrapped):
-    slept, _ = wrapped
-    models = FakeModels()
-    models.total = None
-    for _ in range(3):
-        models.generate_content(model=FLASH, contents="z" * 320_000)     # ~80 000 tokens estimés chacun
-    assert len(slept) == 1                                               # la 3e dépasse 200 000 : elle attend
-
-
-def test_streams_settle_with_the_last_reported_usage(wrapped):
-    slept, _ = wrapped
-    models = FakeModels()
-    models.total = 195_000
-    assert len(list(models.generate_content_stream(model=FLASH, contents="x"))) == 2
-    models.generate_content(model=FLASH, contents="y" * 80_000)
-    assert len(slept) == 1
-
-
-def test_async_calls_use_the_model_limiter_and_report_usage(wrapped):
-    slept, _ = wrapped
-    asyncio.run(FakeAsyncModels().generate_content(model=FLASH, contents="x"))
-    assert limiter_for(FLASH)._entries[-1][1] == 70_000
-
-
-def test_the_daily_cap_stops_the_call_before_it_is_sent(wrapped, monkeypatch):
-    models = FakeModels()
-    monkeypatch.setenv("GEMINI_MODEL_LIMITS", '{"gemini-tiny": {"rpm": 5, "tpm": 1000, "rpd": 2}}')
-    monkeypatch.setenv("LLM_RATE_MARGIN", "1")
-    models.generate_content(model="gemini/gemini-tiny", contents="x")
-    models.generate_content(model="gemini-tiny", contents="x")
-    with pytest.raises(DailyQuotaExceeded):
-        models.generate_content(model="gemini-tiny", contents="x")
-    assert models.seen == ["gemini/gemini-tiny", "gemini-tiny"]          # la 3e requête n'est jamais partie
-
-
-def test_a_429_from_one_model_pauses_only_that_model(wrapped):
-    slept, _ = wrapped
-    models = FakeModels()
-    models.fail = RuntimeError(QUOTA_TEXT)
-    with pytest.raises(RuntimeError):
-        models.generate_content(model=FLASH, contents="x")
-    models.fail = None
-    models.generate_content(model=LITE, contents="x")
-    assert slept == []
-    models.generate_content(model=FLASH, contents="x")
-    assert len(slept) == 1 and slept[0] == pytest.approx(31, abs=1.5)
-
-
-def test_calls_without_a_model_keep_using_the_default_limiter(wrapped):
-    slept, _ = wrapped
-    FakeModels().generate_content(model="gemini-unknown", contents="x")
-    assert slept == [] and llm_limiter.limiter._entries
-
-
-# --- estimation des tokens ------------------------------------------------------------------------------------------
-
 def test_the_prompt_estimate_reads_text_from_nested_contents_and_config():
     from google.genai import types
     contents = [types.Content(role="user", parts=[types.Part.from_text(text="a" * 400)]), {"text": "b" * 400}, "c" * 400]
@@ -284,16 +156,6 @@ def test_the_limits_are_those_of_llm_models():
     assert llm_models.limits_for(FLASH).rpm == limiter_for(FLASH).max_per_minute
 
 
-def test_async_streams_settle_with_the_last_reported_usage(wrapped):
-    async def scenario():
-        stream = await FakeAsyncModels().generate_content_stream(model=FLASH, contents="x")
-        return [chunk async for chunk in stream]
-    assert len(asyncio.run(scenario())) == 2
-    assert limiter_for(FLASH)._entries[-1][1] == 150_000     # le total du dernier morceau, pas l'estimation d'entrée
-
-
-# --- journalisation et mémorisation -----------------------------------------------------------------------------
-
 def test_an_unreadable_limits_variable_is_reported_once_not_at_every_call(monkeypatch, caplog):
     llm_models._parse_limits_overrides.cache_clear()
     monkeypatch.setenv("GEMINI_MODEL_LIMITS", "pas du json")
@@ -310,29 +172,6 @@ def test_a_known_limiter_is_found_without_recomputing_the_limits(monkeypatch):
     monkeypatch.setattr(llm_models, "limits_for", lambda model: pytest.fail("limites recalculées"))
     assert limiter_for("gemini/" + FLASH) is first
 
-
-@pytest.mark.parametrize("scenario, expected", [
-    ("rpm", "8 requêtes par minute"), ("tpm", "200000 tokens par minute"), ("429", "pause après un 429"),
-])
-def test_the_wait_log_names_the_constraint_that_caused_it(wrapped, caplog, scenario, expected):
-    models = FakeModels()
-    if scenario == "rpm":
-        for _ in range(8):
-            models.generate_content(model=FLASH, contents="x")
-        call = "x"
-    elif scenario == "tpm":
-        models.total = 199_000
-        models.generate_content(model=FLASH, contents="x")
-        call = "y" * 80_000
-    else:
-        llm_limiter._note_error(RuntimeError(QUOTA_TEXT), limiter_for(FLASH))
-        call = "x"
-    with caplog.at_level(logging.INFO, logger="myiacrew"):
-        models.generate_content(model=FLASH, contents=call)
-    assert "retardée" in caplog.text and expected in caplog.text and FLASH in caplog.text
-
-
-# --- cause d'attente indiquée dans le billet ---------------------------------------------------------------------
 
 def test_the_wait_cause_is_the_constraint_that_really_sets_the_start():
     free = GeminiRateLimiter(100, 60)

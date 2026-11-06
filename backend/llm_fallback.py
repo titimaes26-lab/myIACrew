@@ -46,6 +46,18 @@ def threshold() -> int:
     return value if 1 <= value <= MAX_THRESHOLD else DEFAULT_THRESHOLD
 
 
+DEFAULT_UNAVAILABLE_PAUSE_S, MAX_UNAVAILABLE_PAUSE_S = 30.0, 300.0
+
+
+def unavailable_pause() -> float:
+    """Pause commune d'un modèle après un 503 (LLM_UNAVAILABLE_PAUSE_S, de 0 à 300 s, 30 par défaut ; illisible ou hors bornes : le défaut)."""
+    try:
+        value = float(os.getenv("LLM_UNAVAILABLE_PAUSE_S", ""))
+    except ValueError:
+        return DEFAULT_UNAVAILABLE_PAUSE_S
+    return value if 0 <= value <= MAX_UNAVAILABLE_PAUSE_S else DEFAULT_UNAVAILABLE_PAUSE_S
+
+
 def _ttl() -> float:
     try:
         value = float(os.getenv("LLM_FALLBACK_TTL_S", ""))

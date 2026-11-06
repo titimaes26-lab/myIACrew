@@ -102,18 +102,6 @@ def _announce(wait: float, on_wait: Optional[Callable[[float], None]], lim: Gemi
             log.debug(f"callback d'attente en échec : {type(e).__name__}: {e}")
 
 
-DEFAULT_UNAVAILABLE_PAUSE_S, MAX_UNAVAILABLE_PAUSE_S = 30.0, 300.0
-
-
-def _unavailable_pause() -> float:
-    """Pause commune après un 503 (LLM_UNAVAILABLE_PAUSE_S, de 0 à 300 s, 30 par défaut ; illisible ou hors bornes : le défaut)."""
-    try:
-        value = float(os.getenv("LLM_UNAVAILABLE_PAUSE_S", ""))
-    except ValueError:
-        return DEFAULT_UNAVAILABLE_PAUSE_S
-    return value if 0 <= value <= MAX_UNAVAILABLE_PAUSE_S else DEFAULT_UNAVAILABLE_PAUSE_S
-
-
 def _note_unavailable(error: BaseException, lim: GeminiRateLimiter) -> bool:
     """503 : pause commune du modèle, et True si cette erreur déclenche le repli (l'appel doit être rejoué sur l'autre modèle).
     504 (délai dépassé) : pas de pause (le modèle ne répond pas, attendre n'y change rien) mais repli dès le premier."""
@@ -124,7 +112,7 @@ def _note_unavailable(error: BaseException, lim: GeminiRateLimiter) -> bool:
         return llm_fallback.note_unavailable(lim.name, immediate=True)
     if not is_unavailable_error(error):
         return False
-    pause = _unavailable_pause()
+    pause = llm_fallback.unavailable_pause()
     lim.note_unavailable(pause)
     log.warning(f"{type(error).__name__} Gemini ({lim.name}) : modèle indisponible ou surchargé, pause commune de {pause:.0f} s")
     return llm_fallback.note_unavailable(lim.name)
