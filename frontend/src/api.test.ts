@@ -27,7 +27,7 @@ describe('getExecution', () => {
 
 describe('réveil du serveur (hébergement gratuit)', () => {
   const sleeping = () => new TypeError('Failed to fetch');
-  const response = (body: unknown = []) => new Response(JSON.stringify(body), { status: 200 });
+  const response = (body: unknown = []) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -106,5 +106,15 @@ describe('réveil du serveur (hébergement gratuit)', () => {
     const caught = result.catch((e) => e);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(await caught).toMatchObject({ name: 'AbortError' });
+  });
+
+  it("un 200 HTML au sondage (page d'attente) ne déclenche aucune reprise : message de réveil, une seule requête d'origine", async () => {
+    const waiting = () => new Response('<html>waking</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    const fetchMock = vi.fn((url: string) => (url.endsWith('/api/history') ? Promise.reject(sleeping()) : Promise.resolve(waiting())));
+    vi.stubGlobal('fetch', fetchMock);
+    const caught = apiClient('http://x', 't').listHistory().catch((e) => e);
+    await vi.advanceTimersByTimeAsync(WAKE_TIMEOUT_MS + 6_000);
+    expect(await caught).toMatchObject({ code: 'NETWORK_ERROR', message: expect.stringContaining('réveille') });
+    expect(fetchMock.mock.calls.filter((c) => c[0] === 'http://x/api/history')).toHaveLength(1);
   });
 });

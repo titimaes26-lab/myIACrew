@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROBE_TIMEOUT_MS, WAKE_INTERVAL_MS, WAKE_TIMEOUT_MS, isServerWaking, probeServer, recoverFromSleep, waitForServer, wakeServer } from './serverWake';
 
 const API = 'http://api.test';
-const ok = () => new Response('{}', { status: 200 });
+const ok = () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('probeServer', () => {
   it('est vrai pour un 2xx sur la racine, faux sinon, sans jamais lever', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(ok()).mockResolvedValueOnce(new Response('', { status: 503 })).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const fetchMock = vi.fn().mockResolvedValueOnce(ok()).mockResolvedValueOnce(new Response('', { status: 503, headers: { 'content-type': 'application/json' } })).mockRejectedValueOnce(new TypeError('Failed to fetch'));
     vi.stubGlobal('fetch', fetchMock);
     await expect(probeServer(API)).resolves.toBe(true);
     await expect(probeServer(API)).resolves.toBe(false);
@@ -24,6 +24,17 @@ describe('probeServer', () => {
     const result = probeServer(API);
     await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS + 1);
     await expect(result).resolves.toBe(false);
+  });
+
+  it("refuse un 200 qui n'est pas du JSON (page d'attente HTML, réponse vide)", async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response('<html>waking</html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }))
+      .mockResolvedValueOnce(new Response('', { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(), { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'Application/JSON; charset=utf-8' } })));
+    for (let i = 0; i < 4; i += 1) await expect(probeServer(API)).resolves.toBe(false);   // HTML, vide, 204 sans en-tête, octets sans en-tête
+    await expect(probeServer(API)).resolves.toBe(true);                              // la casse de l'en-tête n'importe pas
   });
 
   it('wakeServer envoie un seul sondage et ignore son échec', async () => {

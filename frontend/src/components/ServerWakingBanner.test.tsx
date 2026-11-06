@@ -13,7 +13,7 @@ describe('ServerWakingBanner', () => {
 
   it("affiche l'information (role=status) pendant l'attente puis la retire", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new TypeError('x')).mockResolvedValue(new Response('{}', { status: 200 })));
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new TypeError('x')).mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })));
     render(<ServerWakingBanner />);
     let pending: Promise<boolean> = Promise.resolve(false);
     await act(async () => { pending = waitForServer('http://api.test'); await vi.advanceTimersByTimeAsync(0); });

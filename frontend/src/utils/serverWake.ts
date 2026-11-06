@@ -32,7 +32,9 @@ function abortError(): DOMException {
   return new DOMException('Attente annulée', 'AbortError');
 }
 
-// Vrai si le serveur répond (HTTP 2xx sur `/`) ; ne lève jamais (échec, délai ou annulation : faux).
+// Vrai si le serveur répond VRAIMENT : HTTP 2xx sur `/` ET contenu JSON (la route du backend renvoie {"status": …}). Une page d'attente
+// HTML, le 200 d'un proxy ou une réponse vide ne comptent pas : rejouer la requête trop tôt échouerait. Ne lève jamais (échec, délai
+// ou annulation : faux).
 export async function probeServer(apiUrl: string, signal?: AbortSignal): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
@@ -40,7 +42,7 @@ export async function probeServer(apiUrl: string, signal?: AbortSignal): Promise
   signal?.addEventListener('abort', relay, { once: true });
   try {
     const res = await fetch(`${apiUrl}/`, { signal: controller.signal, cache: 'no-store' });
-    return res.ok;
+    return res.ok && (res.headers.get('content-type') ?? '').toLowerCase().includes('application/json');
   } catch {
     return false;
   } finally {

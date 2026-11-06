@@ -28,7 +28,7 @@ describe('Studio : réveil du serveur à l\'ouverture', () => {
   it("affiche le bandeau « le serveur se réveille » pendant l'attente", async () => {
     vi.useFakeTimers();
     let up = false;                                                              // les autres appels du Studio ne doivent pas consommer la panne simulée
-    vi.stubGlobal('fetch', vi.fn(async () => { if (!up) throw new TypeError('x'); return new Response('{}', { status: 200 }); }));
+    vi.stubGlobal('fetch', vi.fn(async () => { if (!up) throw new TypeError('x'); return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); }));
     render(<Studio accessToken="t" userEmail="a@b.c" />);
     expect(screen.queryByText(/Le serveur se réveille/)).toBeNull();
     let pending: Promise<boolean> = Promise.resolve(false);

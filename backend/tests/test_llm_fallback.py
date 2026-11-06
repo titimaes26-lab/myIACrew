@@ -257,3 +257,35 @@ def test_a_504_never_triggers_the_fallback_when_it_is_disabled(wrapped, monkeypa
     with pytest.raises(RuntimeError):
         FakeModels().generate_content(model=FLASH, contents="x")
     assert FakeModels.seen == [FLASH]
+
+
+# --- le nom du modèle de repli est normalisé comme les autres noms de modèle ---------------------------------------------
+
+@pytest.mark.parametrize("raw", ["gemini/gemini-3.5-flash-lite", "Models/Gemini-3.5-Flash-Lite", "  gemini-3.5-flash-lite  ", "GEMINI/GEMINI-3.5-FLASH-LITE"])
+def test_the_fallback_model_is_normalised_without_provider_prefix_or_case(monkeypatch, raw):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", raw)
+    assert llm_fallback.fallback_model() == LITE
+
+
+def test_a_prefixed_fallback_equal_to_the_requested_model_never_redirects_a_model_to_itself(monkeypatch):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini/gemini-3.5-flash-lite")
+    assert llm_fallback.note_unavailable(LITE, now=0) is False and llm_fallback.note_unavailable(LITE, now=1) is False
+    llm_fallback._active_until[LITE] = 10_000.0
+    assert llm_fallback.replacement_for(LITE, now=1) is None
+
+
+def test_the_api_receives_the_clean_model_name_even_when_the_variable_carries_a_prefix(wrapped, monkeypatch):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini/Gemini-3.5-Flash-Lite")
+    monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", "0")
+    models = FakeModels()
+    with pytest.raises(RuntimeError):
+        models.generate_content(model=FLASH, contents="x")
+    assert models.generate_content(model=FLASH, contents="x")                    # 2e 503 : rejoué sur le repli
+    models.generate_content(model=FLASH, contents="x")                           # repli actif : appel direct
+    assert FakeModels.seen == [FLASH, FLASH, LITE, LITE]                         # jamais « gemini/gemini-3.5-… » envoyé à l'API
+
+
+@pytest.mark.parametrize("raw", ["gemini/", "models/", "GEMINI/"])
+def test_a_fallback_made_only_of_a_prefix_disables_the_fallback(monkeypatch, raw):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", raw)
+    assert llm_fallback.fallback_model() is None

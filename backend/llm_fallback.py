@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Optional
 
+import llm_models
 from logs import get_logger
 
 log = get_logger("llm_fallback")
@@ -30,7 +31,9 @@ def fallback_model() -> Optional[str]:
     if raw is None:
         return DEFAULT_FALLBACK_MODEL
     value = raw.strip()
-    return None if not value or value.lower() in _DISABLED else value
+    if not value or value.lower() in _DISABLED:
+        return None
+    return llm_models.model_key(value) or None          # sans préfixe « gemini/ » ni « models/ » : le nom part tel quel à l'API Google
 
 
 def _ttl() -> float:
