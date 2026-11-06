@@ -205,3 +205,14 @@ def test_a_model_unknown_to_the_limits_table_never_gets_a_fallback(wrapped):
 def test_an_active_fallback_never_redirects_the_fallback_model_itself():
     llm_fallback._active_until[LITE] = 10_000.0
     assert llm_fallback.replacement_for(LITE, now=1) is None
+
+
+def test_the_wait_reason_names_the_cause_of_the_pause_429_or_503():
+    after_503 = GeminiRateLimiter(100, 60)
+    after_503.note_unavailable(30, now=0)
+    assert after_503.reserve_ticket(now=1)[1][2] == "pause après un 503 (modèle surchargé)"
+    after_429 = GeminiRateLimiter(100, 60)
+    after_429.note_rate_limited(RuntimeError("429 retry in 30s"), now=0)
+    assert after_429.reserve_ticket(now=1)[1][2] == "pause après un 429"
+    after_503.note_rate_limited(RuntimeError("429 retry in 60s"), now=2)           # une pause 429 plus longue reprend la main
+    assert after_503.reserve_ticket(now=3)[1][2] == "pause après un 429"

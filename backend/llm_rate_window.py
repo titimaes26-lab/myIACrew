@@ -56,6 +56,7 @@ class GeminiRateLimiter:
         self._day_count = 0
         self._entries: list[list] = []   # [instant de départ réservé, tokens], triés (peuvent être dans le futur)
         self._cooldown_until = 0.0
+        self._cooldown_reason = "pause après un 429"      # cause de la pause en cours : un 429 (quota) ou un 503 (modèle surchargé)
         self._lock = threading.Lock()
 
     def _count_daily_request(self) -> None:
@@ -87,7 +88,7 @@ class GeminiRateLimiter:
             # Cause de l'attente = la contrainte qui fixe le départ : la pause d'un 429 seulement si elle le fixe vraiment
             # (sinon les réservations déjà faites passent devant) ; aucune cause quand rien ne retarde l'appel. Les fenêtres
             # ci-dessous la précisent (requêtes ou tokens par minute) quand elles repoussent encore le départ.
-            reason = "" if start <= now else ("pause après un 429" if self._cooldown_until >= last else "file d'attente")
+            reason = "" if start <= now else (self._cooldown_reason if self._cooldown_until >= last else "file d'attente")
             while True:
                 # Epsilon : start = slot + fenêtre peut revenir à slot - 1e-13 en flottants ; sans lui, la boucle ne finirait pas.
                 window = [entry for entry in self._entries if entry[0] > start - self.window_seconds + 1e-9]
@@ -130,7 +131,7 @@ class GeminiRateLimiter:
         if pause > MAX_COOLDOWN_SECONDS:
             return 0.0
         with self._lock:
-            self._cooldown_until = max(self._cooldown_until, now + pause)
+            self._cooldown_until, self._cooldown_reason = max(self._cooldown_until, now + pause), "pause après un 429"
         return pause
 
     def note_unavailable(self, pause: float, now: Optional[float] = None) -> None:
@@ -139,4 +140,4 @@ class GeminiRateLimiter:
             return
         now = time.monotonic() if now is None else now
         with self._lock:
-            self._cooldown_until = max(self._cooldown_until, now + pause)
+            self._cooldown_until, self._cooldown_reason = max(self._cooldown_until, now + pause), "pause après un 503 (modèle surchargé)"

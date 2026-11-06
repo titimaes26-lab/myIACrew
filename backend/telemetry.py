@@ -91,8 +91,6 @@ def setup(processor: Any = None) -> bool:
         return False
     try:
         from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-
         if processor is None:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -102,7 +100,7 @@ def setup(processor: Any = None) -> bool:
             exporter = _LoggingExporter(OTLPSpanExporter(endpoint=f"{base}/otel/v1/traces", headers=headers, timeout=10), _host(base))
             processor = BatchSpanProcessor(exporter)  # type: ignore[arg-type]
             _announce(base, headers["Langsmith-Project"])
-        provider = TracerProvider(resource=Resource.create({"service.name": "myiacrew"}))
+        provider = _new_provider(Resource.create({"service.name": "myiacrew"}))
         provider.add_span_processor(processor)
         _tracer = provider.get_tracer("myiacrew")
     except Exception as e:
@@ -110,6 +108,22 @@ def setup(processor: Any = None) -> bool:
         return False
     log.info("traces OpenTelemetry activées (contenu des sorties : " + ("envoyé" if capture_content() else "non envoyé") + ")")
     return True
+
+
+def _new_provider(resource: Any) -> Any:
+    """Fournisseur de traces INDÉPENDANT de OTEL_SDK_DISABLED : cette variable (souvent posée pour couper la télémétrie de CrewAI) rend
+    silencieusement NUL tout fournisseur créé tant qu'elle vaut « true » : aucun span, aucun envoi, aucune erreur. Nos traces sont
+    demandées explicitement (LANGSMITH_TRACING + clé) : la variable n'est donc ignorée que le temps de la création, puis rétablie."""
+    from opentelemetry.sdk.trace import TracerProvider
+
+    saved = os.environ.pop("OTEL_SDK_DISABLED", None)
+    try:
+        return TracerProvider(resource=resource)
+    finally:
+        if saved is not None:
+            os.environ["OTEL_SDK_DISABLED"] = saved
+            if saved.strip().lower() == "true":
+                log.info("OTEL_SDK_DISABLED=true est ignorée pour les traces LangSmith (la télémétrie de CrewAI reste coupée)")
 
 
 def _announce(base: str, project: str) -> None:

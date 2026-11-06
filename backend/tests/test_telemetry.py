@@ -391,3 +391,53 @@ def test_only_the_first_span_failure_is_a_warning(spans, monkeypatch, caplog):
         telemetry.record_span("b", 1.0)
     levels = [r.levelno for r in caplog.records if "non enregistré" in r.getMessage()]
     assert levels == [logging.WARNING, logging.DEBUG]
+
+
+# --- OTEL_SDK_DISABLED ne doit pas rendre nos traces silencieusement nulles ---------------------------------------------
+
+def _fake_receiver():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    hits = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length", 0)))
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("content-length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, hits
+
+
+@pytest.mark.parametrize("disabled", [None, "true", "TRUE", "false"])
+def test_a_real_batch_export_reaches_the_receiver_whatever_otel_sdk_disabled_says(monkeypatch, disabled):
+    import time
+    server, hits = _fake_receiver()
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", f"http://127.0.0.1:{server.server_address[1]}")
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    if disabled is not None:
+        monkeypatch.setenv("OTEL_SDK_DISABLED", disabled)
+    monkeypatch.setenv("OTEL_BSP_SCHEDULE_DELAY", "200")                         # envoi par lots toutes les 200 ms (5 s par défaut)
+    telemetry.reset()
+    try:
+        assert telemetry.setup() is True
+        with telemetry.span("crew.run"):
+            telemetry.record_span("llm.call", 1.0, model="m")
+        deadline = time.time() + 10
+        while time.time() < deadline and not hits:
+            time.sleep(0.1)
+        assert hits == ["/otel/v1/traces"]
+        import os
+        assert os.environ.get("OTEL_SDK_DISABLED") == disabled                   # la variable est rétablie telle quelle (CrewAI la lit)
+    finally:
+        telemetry.reset()
+        server.shutdown()
