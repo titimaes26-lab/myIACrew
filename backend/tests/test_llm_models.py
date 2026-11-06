@@ -3,7 +3,7 @@ import pytest
 
 import crew_llms
 import llm_models
-from llm_models import GEMINI_3_5_FLASH_LITE, GEMINI_3_8_FLASH, ModelLimits
+from llm_models import GEMINI_3_5_FLASH_LITE, ModelLimits
 
 
 @pytest.fixture(autouse=True)
@@ -15,12 +15,13 @@ def clean_env(monkeypatch):
 def test_each_agent_uses_the_requested_model():
     assert llm_models.AGENT_MODELS == {
         "qualification_agent": "gemini-3.5-flash-lite",
-        "product_designer_agent": "gemini-3.8-flash",
-        "architect_agent": "gemini-3.8-flash",
-        "diagnostic_agent": "gemini-3.8-flash",
+        "product_designer_agent": "gemini-3.5-flash-lite",
+        "architect_agent": "gemini-3.5-flash-lite",
+        "diagnostic_agent": "gemini-3.5-flash-lite",
         "developer_agent": "gemini-3.5-flash-lite",
-        "qa_agent": "gemini-3.8-flash",
+        "qa_agent": "gemini-3.5-flash-lite",
     }
+    assert llm_models.GEMINI_3_8_FLASH not in llm_models.AGENT_MODELS.values()     # remplacé partout (il ne répondait plus depuis des jours)
 
 
 def test_official_limits_per_model():
@@ -32,9 +33,9 @@ def test_official_limits_per_model():
 
 def test_the_crew_llms_really_use_their_agent_model():
     expected = [
-        (crew_llms.qualification_llm, GEMINI_3_5_FLASH_LITE), (crew_llms.designer_llm, GEMINI_3_8_FLASH),
-        (crew_llms.architect_llm, GEMINI_3_8_FLASH), (crew_llms.diagnostic_llm, GEMINI_3_8_FLASH),
-        (crew_llms.developer_llm, GEMINI_3_5_FLASH_LITE), (crew_llms.qa_llm, GEMINI_3_8_FLASH),
+        (crew_llms.qualification_llm, GEMINI_3_5_FLASH_LITE), (crew_llms.designer_llm, GEMINI_3_5_FLASH_LITE),
+        (crew_llms.architect_llm, GEMINI_3_5_FLASH_LITE), (crew_llms.diagnostic_llm, GEMINI_3_5_FLASH_LITE),
+        (crew_llms.developer_llm, GEMINI_3_5_FLASH_LITE), (crew_llms.qa_llm, GEMINI_3_5_FLASH_LITE),
         (crew_llms.summary_llm, GEMINI_3_5_FLASH_LITE),
     ]
     for llm, model in expected:
@@ -89,8 +90,8 @@ def test_an_unreadable_override_is_ignored(monkeypatch, raw):
 
 
 def test_model_names_use_the_crewai_provider_prefix_and_gemini_model_forces_one_model(monkeypatch):
-    assert llm_models.model_for_agent("architect_agent") == "gemini/gemini-3.8-flash"
+    assert llm_models.model_for_agent("architect_agent") == "gemini/gemini-3.5-flash-lite"
     assert llm_models.model_for_agent("developer_agent") == "gemini/gemini-3.5-flash-lite"
     assert llm_models.summary_model() == "gemini/gemini-3.5-flash-lite"
-    monkeypatch.setenv("GEMINI_MODEL", "gemini/gemini-3.5-flash-lite")
-    assert llm_models.model_for_agent("architect_agent") == llm_models.summary_model() == "gemini/gemini-3.5-flash-lite"
+    monkeypatch.setenv("GEMINI_MODEL", "gemini/gemini-3.8-flash")                  # GEMINI_MODEL peut toujours le forcer, si Google le rétablit
+    assert llm_models.model_for_agent("architect_agent") == llm_models.summary_model() == "gemini/gemini-3.8-flash"

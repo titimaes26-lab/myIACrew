@@ -13,11 +13,11 @@ from run_support import _new_execution
 
 ROLES = {
     "Senior Product Owner / Specialist en Qualification": "gemini-3.5-flash-lite",
-    "Lead Product / Game Designer": "gemini-3.8-flash",
-    "Architecte Logiciel React / TypeScript": "gemini-3.8-flash",
-    "Analyste Diagnostic Technique": "gemini-3.8-flash",
+    "Lead Product / Game Designer": "gemini-3.5-flash-lite",
+    "Architecte Logiciel React / TypeScript": "gemini-3.5-flash-lite",
+    "Analyste Diagnostic Technique": "gemini-3.5-flash-lite",
     "Développeur Fullstack React / TypeScript": "gemini-3.5-flash-lite",
-    "QA Engineer / Automated Tester": "gemini-3.8-flash",
+    "QA Engineer / Automated Tester": "gemini-3.5-flash-lite",
 }
 
 
@@ -43,9 +43,9 @@ def test_the_forced_model_is_the_one_reported(monkeypatch):
 
 def test_a_section_carries_the_duration_and_the_model_markers_after_its_heading():
     section = crew_workflow.format_agent_section("Lead Product / Game Designer", "texte", 12.5)
-    assert section == "## Lead Product / Game Designer\n<!--agent-duration:12.50-->\n<!--agent-model:gemini-3.8-flash-->\n\ntexte"
+    assert section == "## Lead Product / Game Designer\n<!--agent-duration:12.50-->\n<!--agent-model:gemini-3.5-flash-lite-->\n\ntexte"
     assert crew_workflow.format_agent_section("Lead Product / Game Designer", "texte") == (
-        "## Lead Product / Game Designer\n<!--agent-model:gemini-3.8-flash-->\n\ntexte")
+        "## Lead Product / Game Designer\n<!--agent-model:gemini-3.5-flash-lite-->\n\ntexte")
 
 
 def test_a_section_without_a_known_agent_keeps_the_previous_format():
@@ -61,7 +61,7 @@ def test_the_final_result_gives_every_agent_section_its_model():
         raw="x", tasks_output=[output("Lead Product / Game Designer"), output("Développeur Fullstack React / TypeScript")],
     )
     text = crew_workflow._format_crew_result(result, {"Lead Product / Game Designer": 3.0})
-    assert "## Lead Product / Game Designer\n<!--agent-duration:3.00-->\n<!--agent-model:gemini-3.8-flash-->" in text
+    assert "## Lead Product / Game Designer\n<!--agent-duration:3.00-->\n<!--agent-model:gemini-3.5-flash-lite-->" in text
     assert "## Développeur Fullstack React / TypeScript\n<!--agent-model:gemini-3.5-flash-lite-->" in text
 
 
@@ -70,19 +70,19 @@ def test_the_progressive_persistence_writes_the_model_marker(engine):
     execution_persistence.persist_completed_agent(execution_id, "Architecte Logiciel React / TypeScript", "plan", 4.0)
     with Session(engine) as db:
         result = db.get(ExecutionHistory, execution_id).result
-    assert result == "## Architecte Logiciel React / TypeScript\n<!--agent-duration:4.00-->\n<!--agent-model:gemini-3.8-flash-->\n\nplan"
+    assert result == "## Architecte Logiciel React / TypeScript\n<!--agent-duration:4.00-->\n<!--agent-model:gemini-3.5-flash-lite-->\n\nplan"
     sections = execution_context.parse_completed_agents(result)
-    assert "<!--agent-model:gemini-3.8-flash-->" in sections["Architecte Logiciel React / TypeScript"]
+    assert "<!--agent-model:gemini-3.5-flash-lite-->" in sections["Architecte Logiciel React / TypeScript"]
 
 
 def test_only_the_header_markers_are_removed_from_the_plan_given_to_the_next_turn():
     strip = execution_context.AGENT_HEADER_MARKERS
-    assert strip.sub("", "<!--agent-duration:1.00-->\n<!--agent-model:gemini-3.8-flash-->\n\nplan", count=1) == "plan"
+    assert strip.sub("", "<!--agent-duration:1.00-->\n<!--agent-model:gemini-3.5-flash-lite-->\n\nplan", count=1) == "plan"
     assert strip.sub("", "plan sans marqueur") == "plan sans marqueur"
     # Un marqueur cité dans le texte de l'agent (ou en tête de son texte, après la ligne vide) reste dans le texte.
     quoted = "intro <!--agent-model:gemini-fake--> fin"
     assert strip.sub("", quoted) == quoted
     on_its_own_line = "intro\n<!--agent-model:gemini-fake-->\nsuite"
     assert strip.sub("", on_its_own_line) == on_its_own_line      # pas en tête : jamais retiré
-    assert strip.sub("", "<!--agent-model:gemini-3.8-flash-->\n\n<!--agent-model:gemini-fake-->\nsuite", count=1) == (
+    assert strip.sub("", "<!--agent-model:gemini-3.5-flash-lite-->\n\n<!--agent-model:gemini-fake-->\nsuite", count=1) == (
         "<!--agent-model:gemini-fake-->\nsuite")

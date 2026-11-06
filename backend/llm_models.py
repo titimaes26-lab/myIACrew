@@ -57,11 +57,11 @@ MODEL_LIMITS: dict[str, ModelLimits] = {
 # Modèle de chaque agent (clés = noms des méthodes d'agent de `AppDevelopmentCrew`, voir agentsquestion.yaml).
 AGENT_MODELS: dict[str, str] = {
     "qualification_agent": GEMINI_3_5_FLASH_LITE,
-    "product_designer_agent": GEMINI_3_8_FLASH,
-    "architect_agent": GEMINI_3_8_FLASH,
-    "diagnostic_agent": GEMINI_3_8_FLASH,
+    "product_designer_agent": GEMINI_3_5_FLASH_LITE,
+    "architect_agent": GEMINI_3_5_FLASH_LITE,
+    "diagnostic_agent": GEMINI_3_5_FLASH_LITE,
     "developer_agent": GEMINI_3_5_FLASH_LITE,
-    "qa_agent": GEMINI_3_8_FLASH,
+    "qa_agent": GEMINI_3_5_FLASH_LITE,
 }
 
 # Appels qui ne sont pas un agent (résumé final de l'exécution) : le modèle le plus léger.

@@ -152,13 +152,13 @@ def test_each_agent_reports_the_model_served_during_its_own_task(monkeypatch):
     assert [extra for _, extra in calls] == [{"model": m} for m in ("srv-design", "srv-archi", "srv-diag", "srv-dev", "srv-qa")]
     for model in ("srv-design", "srv-archi", "srv-diag", "srv-dev", "srv-qa"):
         assert f"<!--agent-model:{model}-->" in result
-    assert "gemini-3.8-flash-->" not in result and "flash-lite-->" not in result   # plus le modèle configuré quand l'API en a dit un
+    assert "gemini-3.5-flash-lite-->" not in result                                # plus le modèle configuré quand l'API en a dit un
 
 
 def test_without_any_reported_model_the_configured_one_is_used(monkeypatch):
     calls, result = _run(monkeypatch, [])
     assert all(extra == {} for _, extra in calls)
-    assert result.count("<!--agent-model:gemini-3.8-flash-->") == 4 and result.count("<!--agent-model:gemini-3.5-flash-lite-->") == 1
+    assert result.count("<!--agent-model:gemini-3.5-flash-lite-->") == 5          # les cinq étapes : tous les agents sont sur le modèle léger
 
 
 def test_a_resumed_step_keeps_the_model_that_produced_it(monkeypatch):
@@ -174,7 +174,7 @@ def test_a_resumed_step_keeps_the_model_that_produced_it(monkeypatch):
 def test_a_resumed_step_without_a_saved_model_falls_back_to_the_configured_one(monkeypatch):
     calls, result = _run(monkeypatch, ["srv-diag", "srv-dev", "srv-qa"], {"design": "a", "architecture": "b"})
     assert calls[0][1] == {} and calls[1][1] == {}
-    assert result.count("<!--agent-model:gemini-3.8-flash-->") == 2          # design et architecture, modèle configuré
+    assert result.count("<!--agent-model:gemini-3.5-flash-lite-->") == 2     # design et architecture, modèle configuré
 
 
 # --- points de reprise -------------------------------------------------------------------------------------------------
@@ -186,7 +186,7 @@ def test_checkpoints_store_the_served_model_and_give_it_back(engine):
     with Session(engine) as db:
         loaded = execution_persistence.load_checkpoints(db, execution_id)
     assert dict(loaded) == {"design": "conception", "architecture": "plan"}
-    assert loaded.models == {"design": "srv-design", "architecture": "gemini-3.8-flash"}
+    assert loaded.models == {"design": "srv-design", "architecture": "gemini-3.5-flash-lite"}
     chosen = execution_persistence.select_outputs(loaded, ["design"])
     assert dict(chosen) == {"design": "conception"} and chosen.models == {"design": "srv-design"}
     assert execution_persistence.select_outputs({"design": "x"}, ["design"]).models == {}      # dict ordinaire accepté
