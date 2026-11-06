@@ -7,6 +7,27 @@ import crew_summary
 import crew_workflow
 
 
+class ResultIntegrityError(RuntimeError):
+    """Les sorties réunies ne correspondent pas aux étapes du workflow (étape manquante, sortie d'un autre rôle)."""
+
+
+def check_outputs(step_keys: list[str], completed_outputs: dict[str, Any], tasks_by_key: dict[str, Any]) -> None:
+    """Chaque étape a SA sortie, produite par le rôle de SA tâche. Sinon l'exécution échoue au lieu d'être marquée réussie
+    avec un résultat tronqué ou dupliqué (une sortie perdue ne se voit pas : le résumé annoncerait quand même toutes les étapes)."""
+    problems = []
+    for key in step_keys:
+        output = completed_outputs.get(key)
+        if output is None:
+            problems.append(f"étape « {key} » sans sortie")
+            continue
+        expected = str(getattr(getattr(tasks_by_key.get(key), "agent", None), "role", "") or "").strip()
+        produced = str(getattr(output, "agent", "") or "").strip()
+        if expected and produced and expected != produced:
+            problems.append(f"étape « {key} » : sortie de « {produced} » au lieu de « {expected} »")
+    if problems:
+        raise ResultIntegrityError("Résultat incohérent : " + " ; ".join(problems))
+
+
 class CombinedCrewResult:
     """Résultat final reconstruit depuis les sorties accumulées par on_task_complete au fil de TOUTES les tentatives
     (et pas depuis le CrewOutput de la seule DERNIÈRE, qui ne couvrirait que les tâches de ce sous-crew en cas de

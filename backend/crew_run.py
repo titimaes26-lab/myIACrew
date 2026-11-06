@@ -151,12 +151,16 @@ class CrewRun:
                 self.crew._not_extracted = {}
 
             if not remaining:
-                # Toutes les tâches déjà terminées lors d'une tentative précédente : ne peut
-                # arriver que si l'échec précédent survenait APRÈS la dernière (agrégation
-                # CrewAI) et était retryable — plus rien à exécuter.
+                # Tout était déjà terminé : l'échec précédent est survenu APRÈS la dernière tâche (agrégation CrewAI).
                 return
 
             self.attempt_completed = 0
+
+            # CrewAI ne pose le callback du crew que sur les tâches qui n'en ont PAS : sans cette remise à zéro, une tâche gardait
+            # le callback de la tentative précédente et CrewAI appelait les DEUX (même TaskOutput) : le second était rangé à
+            # l'étape suivante dont la vraie sortie était ignorée (exécution 135 : Designer en double, Architecte perdu).
+            for _, pending in remaining:
+                pending.callback = None
 
             def on_task_complete(task_output, _remaining=remaining):
                 self._on_task_complete(task_output, _remaining)
@@ -172,10 +176,8 @@ class CrewRun:
                 tasks=[t for _, t in remaining],
                 process=Process.sequential,
                 task_callback=on_task_complete,
-                # 13 (pas 3) : partagé par TOUS les agents en séquence ; la QA, dernière et au max_iter le plus
-                # élevé, hérite le plus de la latence cumulée d'un plafond trop bas. Le retry résumable absorbe
-                # les 429 si cette valeur est trop optimiste face au quota Gemini réel. Les plafonds propres à chaque modèle
-                # (8 à 12 requêtes/min effectives) sont appliqués par llm_limiter ; celui-ci ne borne que le total du crew.
+                # 13 (pas 3) : plafond partagé par TOUS les agents en séquence ; les plafonds propres à chaque modèle
+                # (8 à 12 requêtes/min effectives) sont appliqués par llm_limiter, celui-ci ne borne que le total du crew.
                 max_rpm=13,
                 # Journal CrewAI (prompts et sorties complets de chaque agent) : désactivé par défaut, il grossissait sans
                 # limite sur le disque du service ; CREW_LOG_FILE=<chemin> l'active pour un diagnostic ponctuel.
@@ -198,6 +200,9 @@ class CrewRun:
                 await self._raise_step_error(e, remaining)
 
     def _on_task_complete(self, task_output, remaining) -> None:
+        # Un TaskOutput déjà enregistré est un second appel pour la MÊME fin de tâche (défense en profondeur).
+        if any(task_output is done for done in self.completed_outputs.values()):
+            return
         self.attempt_completed += 1
         crew_retry.quota_mgr.adaptive_pause(task_output)
 
@@ -271,12 +276,8 @@ class CrewRun:
             step_index = self.total_steps
             agent_role = crew_workflow.FINALIZATION_ROLE
         if self.on_step_change is not None:
-            # Plus aucune étape n'est réellement en cours à cet instant : sans ce
-            # nettoyage, ExecutionHistory.current_step resterait affiché comme "suivi
-            # en direct" (StepIndicator.tsx) sur la dernière étape connue alors que
-            # rien n'est concrètement en train de s'exécuter — le message "Échec à
-            # l'étape X/Y" (step_index/agent_role ci-dessus) indique déjà où ça s'est arrêté
-            # (voir crew_workflow.CrewStepError, parseFailureDetail côté frontend).
+            # Plus aucune étape n'est réellement en cours : sans ce nettoyage, ExecutionHistory.current_step resterait affiché
+            # comme « suivi en direct » (StepIndicator.tsx) ; « Échec à l'étape X/Y » indique déjà où ça s'est arrêté.
             await asyncio.to_thread(self.on_step_change, None)
         raise crew_workflow.CrewStepError(step_index, self.total_steps, agent_role, error) from error
 
@@ -290,6 +291,7 @@ class CrewRun:
         crew_cache.release_run(self.crew, self.selected_tasks)   # une SEULE fois pour toute l'exécution, pas à chaque tentative
 
     async def _final_result(self) -> str:
+        crew_result.check_outputs(self.step_keys, self.completed_outputs, self.tasks_by_key)   # jamais de faux « succès »
         return await crew_result.build_final_result(
             self.inputs, self.request_type, self.scope, self.step_keys, self.completed_outputs, self.selected_tasks,
             self.agent_models,
