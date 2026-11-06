@@ -1,6 +1,6 @@
 """Modèle de repli quand le modèle principal est surchargé (503 « high demand » de Gemini).
 
-Après `THRESHOLD` erreurs d'indisponibilité CONSÉCUTIVES sur un modèle, les appels suivants passent sur le modèle de repli
+Dès la première (`LLM_FALLBACK_THRESHOLD`, 1 par défaut) erreur d'indisponibilité sur un modèle, les appels suivants passent sur le modèle de repli
 (`GEMINI_FALLBACK_MODEL`, défaut `gemini-3.5-flash-lite`) pendant `LLM_FALLBACK_TTL_S` secondes (600 par défaut), puis le modèle
 principal est réessayé. Un succès remet le compteur à zéro. Module pur (aucune E/S) : jamais le texte échangé dans les journaux.
 """
@@ -14,7 +14,7 @@ from logs import get_logger
 
 log = get_logger("llm_fallback")
 
-THRESHOLD = 2
+DEFAULT_THRESHOLD, MAX_THRESHOLD = 1, 5
 DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_TTL_S = 600.0
 MAX_TTL_S = 86_400.0
@@ -34,6 +34,16 @@ def fallback_model() -> Optional[str]:
     if not value or value.lower() in _DISABLED:
         return None
     return llm_models.model_key(value) or None          # sans préfixe « gemini/ » ni « models/ » : le nom part tel quel à l'API Google
+
+
+def threshold() -> int:
+    """Erreurs d'indisponibilité CONSÉCUTIVES avant le repli (LLM_FALLBACK_THRESHOLD, de 1 à 5, 1 par défaut ; illisible ou hors bornes :
+    le défaut). 1 : le modèle principal ne répond plus depuis des jours et chaque essai coûtait jusqu'à 3 minutes (essai suivant compris)."""
+    try:
+        value = int(os.getenv("LLM_FALLBACK_THRESHOLD", ""))
+    except ValueError:
+        return DEFAULT_THRESHOLD
+    return value if 1 <= value <= MAX_THRESHOLD else DEFAULT_THRESHOLD
 
 
 def _ttl() -> float:
@@ -62,13 +72,14 @@ def note_unavailable(model_key: str, now: Optional[float] = None, immediate: boo
         return False
     now = time.monotonic() if now is None else now
     with _lock:
-        count = THRESHOLD if immediate else _consecutive.get(model_key, 0) + 1
+        needed = threshold()
+        count = needed if immediate else _consecutive.get(model_key, 0) + 1
         _consecutive[model_key] = count
-        if count < THRESHOLD or _active_until.get(model_key, 0.0) > now:
+        if count < needed or _active_until.get(model_key, 0.0) > now:
             return False
         _active_until[model_key] = now + _ttl()
         _consecutive[model_key] = 0
-    cause = "délai dépassé" if immediate else f"{THRESHOLD} erreurs de suite"
+    cause = "délai dépassé" if immediate else (f"{needed} erreurs de suite" if needed > 1 else "première erreur")
     log.warning(f"modèle {model_key} surchargé ({cause}) : repli sur {target} pendant {_ttl():.0f} s")
     return True
 

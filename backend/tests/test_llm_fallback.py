@@ -23,6 +23,8 @@ class CodedError(Exception):
 def clean_env(monkeypatch):
     for name in ("GEMINI_MODEL", "GEMINI_MODEL_LIMITS", "LLM_RATE_MARGIN", "GEMINI_FALLBACK_MODEL", "LLM_FALLBACK_TTL_S", "LLM_UNAVAILABLE_PAUSE_S"):
         monkeypatch.delenv(name, raising=False)
+    # Les scénarios de ce fichier décrivent le repli « à la deuxième erreur » : réglage EXPLICITE (le défaut est 1, voir la fin du fichier).
+    monkeypatch.setenv("LLM_FALLBACK_THRESHOLD", "2")
 
 
 # --- détection ---------------------------------------------------------------------------------------------------
@@ -289,3 +291,50 @@ def test_the_api_receives_the_clean_model_name_even_when_the_variable_carries_a_
 def test_a_fallback_made_only_of_a_prefix_disables_the_fallback(monkeypatch, raw):
     monkeypatch.setenv("GEMINI_FALLBACK_MODEL", raw)
     assert llm_fallback.fallback_model() is None
+
+
+# --- repli dès la première erreur (défaut) --------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw, expected", [("", 1), ("1", 1), ("2", 2), ("5", 5), ("0", 1), ("6", 1), ("-1", 1), ("abc", 1), ("1.5", 1)])
+def test_the_fallback_threshold_defaults_to_one_and_is_bounded(monkeypatch, raw, expected):
+    monkeypatch.setenv("LLM_FALLBACK_THRESHOLD", raw)
+    assert llm_fallback.threshold() == expected
+
+
+def test_by_default_the_first_unavailable_error_starts_the_fallback_and_says_so(monkeypatch, caplog):
+    monkeypatch.delenv("LLM_FALLBACK_THRESHOLD", raising=False)
+    with caplog.at_level(logging.WARNING):
+        assert llm_fallback.note_unavailable(FLASH, now=0) is True
+    assert llm_fallback.replacement_for(FLASH, now=1) == LITE
+    assert "première erreur" in caplog.text and LITE in caplog.text
+
+
+def test_by_default_the_first_503_is_replayed_on_the_fallback_at_once(wrapped, monkeypatch):
+    monkeypatch.delenv("LLM_FALLBACK_THRESHOLD", raising=False)
+    models = FakeModels()
+    assert models.generate_content(model=FLASH, contents="x")                    # 1er 503 : servi par le repli, rien ne remonte
+    assert FakeModels.seen == [FLASH, LITE]
+    models.generate_content(model=FLASH, contents="x")
+    assert FakeModels.seen[-1] == LITE
+
+
+def test_a_success_still_resets_the_count_when_the_threshold_is_raised(wrapped, monkeypatch):
+    monkeypatch.setenv("LLM_FALLBACK_THRESHOLD", "3")
+    monkeypatch.setenv("LLM_UNAVAILABLE_PAUSE_S", "0")
+    models = FakeModels()
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            models.generate_content(model=FLASH, contents="x")
+    FakeModels.failing = set()
+    models.generate_content(model=FLASH, contents="x")                           # succès : compteur à zéro
+    FakeModels.failing = {FLASH}
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            models.generate_content(model=FLASH, contents="x")                   # nouvelle série : 2 erreurs seulement, pas encore de repli
+    assert LITE not in FakeModels.seen
+
+
+def test_a_deadline_starts_the_fallback_at_once_whatever_the_raised_threshold(monkeypatch):
+    monkeypatch.setenv("LLM_FALLBACK_THRESHOLD", "5")
+    assert llm_fallback.note_unavailable(FLASH, now=0) is False                  # un 503 isolé : pas encore
+    assert llm_fallback.note_unavailable(FLASH, now=1, immediate=True) is True   # un délai dépassé coûte tout le délai : repli tout de suite
