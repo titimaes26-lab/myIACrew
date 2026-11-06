@@ -26,6 +26,8 @@ export function failureHint(code: string | null | undefined): string | null {
       return 'L\'exécution a duré trop longtemps et a été arrêtée pour libérer le service : « Relancer » reprend les étapes déjà réussies ; simplifier la demande aide.';
     case 'TOKEN_BUDGET_EXCEEDED':
       return 'L\'exécution a consommé son budget de tokens et a été arrêtée : simplifiez la demande ou découpez-la en plusieurs tours ; « Relancer » reprend les étapes déjà réussies.';
+    case 'RESULT_INCONSISTENT':
+      return 'Une étape n\'a pas produit de sortie valide : le résultat a été écarté plutôt qu\'affiché tronqué. « Relancer » relance la demande telle quelle.';
     case 'RATE_LIMITED':
       return 'Limite atteinte : attendez la fin d\'une exécution en cours (ou quelques minutes), puis relancez.';
     case 'INTERRUPTED':

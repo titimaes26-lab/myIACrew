@@ -97,6 +97,14 @@ describe('TOKEN_BUDGET_EXCEEDED', () => {
   });
 });
 
+describe('RESULT_INCONSISTENT', () => {
+  it('a sa propre cause, distincte de l\'erreur interne, et se relance (retryable fourni par le serveur)', () => {
+    expect(failureCause('RESULT_INCONSISTENT').title).toContain('Résultat incomplet');
+    expect(failureCause('RESULT_INCONSISTENT')).not.toEqual(failureCause('INTERNAL_ERROR'));
+    expect(isTransientFailure(true, 'RESULT_INCONSISTENT')).toBe(true);
+  });
+});
+
 describe('RATE_LIMITED', () => {
   it('est une panne passagère avec sa propre cause', () => {
     expect(isTransientFailure(null, 'RATE_LIMITED')).toBe(true);

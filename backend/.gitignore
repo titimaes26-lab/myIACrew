@@ -6,3 +6,8 @@ workspace/
 crew_execution.log*
 *.log.txt
 docs/qualification_report.md
+docs/specs_design.md
+docs/architecture_spec.md
+docs/diagnostic_plan.md
+docs/implementation_log.md
+tests/reports/

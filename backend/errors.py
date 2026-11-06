@@ -17,12 +17,18 @@ from run_budget import TokenBudgetExceeded
 from logs import get_logger
 
 
+class ResultIntegrityError(RuntimeError):
+    """Les sorties réunies ne correspondent pas aux étapes du workflow (étape manquante, sortie d'un autre rôle) : jamais un succès.
+    Définie ici (module feuille) pour que `classify_exception` la reconnaisse sans cycle d'import avec crew_result."""
+
+
 class ErrorCode:
     QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
     LLM_TIMEOUT = "LLM_TIMEOUT"
     EXECUTION_TIMEOUT = "EXECUTION_TIMEOUT"
     TOKEN_BUDGET_EXCEEDED = "TOKEN_BUDGET_EXCEEDED"
+    RESULT_INCONSISTENT = "RESULT_INCONSISTENT"
     GITHUB_UNAVAILABLE = "GITHUB_UNAVAILABLE"
     GUARDRAIL_FAILED = "GUARDRAIL_FAILED"
     DELIVERY_FAILED = "DELIVERY_FAILED"
@@ -66,6 +72,7 @@ _USER_MESSAGES = {
     ErrorCode.QUOTA_EXHAUSTED: "Le quota du modèle IA est épuisé pour le moment. Réessayez dans quelques minutes.",
     ErrorCode.LLM_UNAVAILABLE: "Le modèle IA est momentanément indisponible ou surchargé. Réessayez dans quelques minutes.",
     ErrorCode.LLM_TIMEOUT: "Le modèle IA a mis trop de temps à répondre. Réessayez.",
+    ErrorCode.RESULT_INCONSISTENT: "Le résultat de l'exécution est incomplet (une étape n'a pas de sortie valide) : il n'a pas été affiché pour ne pas vous induire en erreur. Relancez la demande.",
     ErrorCode.TOKEN_BUDGET_EXCEEDED: "L'exécution a atteint son budget de tokens et a été arrêtée pour limiter la consommation. Simplifiez la demande ou découpez-la en plusieurs tours.",
     ErrorCode.EXECUTION_TIMEOUT: "L'exécution a dépassé sa durée maximale et a été arrêtée pour libérer le service. Réessayez, ou simplifiez la demande.",
     ErrorCode.GITHUB_UNAVAILABLE: "GitHub est momentanément injoignable : la livraison n'a pas pu être vérifiée. Réessayez.",
@@ -176,6 +183,8 @@ def _classify_single(exc: BaseException) -> ErrorInfo:
         return ErrorInfo(ErrorCode.QUOTA_EXHAUSTED, False, _DAILY_QUOTA_MESSAGE)
     if isinstance(exc, TokenBudgetExceeded):
         return ErrorInfo(ErrorCode.TOKEN_BUDGET_EXCEEDED, False, _USER_MESSAGES[ErrorCode.TOKEN_BUDGET_EXCEEDED])
+    if isinstance(exc, ResultIntegrityError):
+        return ErrorInfo(ErrorCode.RESULT_INCONSISTENT, True, _USER_MESSAGES[ErrorCode.RESULT_INCONSISTENT])
     if isinstance(exc, ExecutionTimeoutError):
         message = _QUOTA_TIMEOUT_MESSAGE if exc.quota_wait_seconds > 0 and exc.quota_dominant else _USER_MESSAGES[ErrorCode.EXECUTION_TIMEOUT]
         return ErrorInfo(ErrorCode.EXECUTION_TIMEOUT, True, message)

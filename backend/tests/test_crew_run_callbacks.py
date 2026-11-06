@@ -16,6 +16,7 @@ import crew_run
 import crew_summary
 import crew_workflow
 import crewquestion as cq
+from errors import ErrorCode, classify_exception
 
 
 INPUTS = {name: "x" for name in (
@@ -74,7 +75,8 @@ def test_crewai_keeps_the_previous_callback_on_a_reused_task_and_calls_both():
 # --- CrewRun de bout en bout avec de vrais Crew et des LLM factices -------------------------------------------------------
 
 @pytest.fixture
-def fake_crew(monkeypatch):
+def fake_crew(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)          # les tâches écrivent leur sortie dans `docs/…` (output_file) : jamais dans le dépôt
     monkeypatch.setattr(crew_retry.quota_mgr, "adaptive_pause", lambda *a, **k: None)
     monkeypatch.setattr(crew_retry, "_compute_backoff_wait", lambda *a, **k: 0)
     monkeypatch.setattr(crew_cache, "evict_memoized_cache_entries", lambda crew: None)
@@ -155,8 +157,11 @@ def test_a_duplicated_output_fails_the_run_instead_of_succeeding(fake_crew, monk
     build, run = fake_crew
     monkeypatch.setattr(crew_run.CrewRun, "_on_task_complete", lambda self, output, remaining: self.completed_outputs.update(
         {"design": output, "architecture": output}) or self.completed_keys.extend(["design", "architecture"]))
-    with pytest.raises(Exception, match="Résultat incohérent|ResultIntegrityError|incohérent"):
+    with pytest.raises(crew_result.ResultIntegrityError, match="Résultat incohérent") as raised:
         run(build())
+    info = classify_exception(raised.value)                                  # jamais un « Erreur interne » générique
+    assert info.code == ErrorCode.RESULT_INCONSISTENT and info.retryable is True
+    assert "incomplet" in info.message and "Résultat incohérent" not in info.message   # le détail reste dans le journal
 
 
 def test_workflow_steps_for_analysis_are_design_then_architecture():
@@ -213,3 +218,9 @@ def test_every_attempt_starts_with_the_crew_callback_on_its_pending_tasks(monkey
     run = _run_object([])
     asyncio.run(run.execute())
     assert attempts == [[True, True], [True, True]]                         # 2e tentative : le callback de la 2e tentative, pas celui de la 1re
+
+
+def test_the_task_outputs_are_written_under_the_temporary_directory_not_the_repository(fake_crew, tmp_path):
+    build, run = fake_crew
+    run(build())
+    assert (tmp_path / "docs" / "specs_design.md").exists() and (tmp_path / "docs" / "architecture_spec.md").exists()

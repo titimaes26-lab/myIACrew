@@ -5,10 +5,7 @@ from typing import Any, Optional
 import crew_retry
 import crew_summary
 import crew_workflow
-
-
-class ResultIntegrityError(RuntimeError):
-    """Les sorties réunies ne correspondent pas aux étapes du workflow (étape manquante, sortie d'un autre rôle)."""
+from errors import ResultIntegrityError
 
 
 def check_outputs(step_keys: list[str], completed_outputs: dict[str, Any], tasks_by_key: dict[str, Any]) -> None:

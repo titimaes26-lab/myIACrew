@@ -48,3 +48,24 @@ def test_a_deadline_error_wrapped_by_crewai_is_still_recognised():
 @pytest.mark.parametrize("message", ["Critère KO : ligne 504 du fichier", "page_504.tsx introuvable", "HTTP 504 Gateway du proxy du dépôt cible"])
 def test_a_bare_504_in_a_message_is_not_taken_for_a_model_timeout(message):
     assert classify_exception(RuntimeError(message)).code == ErrorCode.INTERNAL_ERROR
+
+
+# --- résultat incohérent (garde-fou de crew_result.check_outputs) ----------------------------------------------------------
+
+def test_an_inconsistent_result_has_its_own_code_message_and_is_retryable():
+    from errors import ResultIntegrityError, http_status_for
+    info = classify_exception(ResultIntegrityError("Résultat incohérent : étape « architecture » sans sortie"))
+    assert info.code == ErrorCode.RESULT_INCONSISTENT and info.retryable is True
+    assert "incomplet" in info.message and "architecture" not in info.message          # le détail reste dans le journal
+    assert http_status_for(ErrorCode.RESULT_INCONSISTENT) == 500
+
+
+def test_an_inconsistent_result_is_recognised_inside_a_wrapped_exception_chain():
+    from errors import ResultIntegrityError
+    try:
+        try:
+            raise ResultIntegrityError("Résultat incohérent : x")
+        except ResultIntegrityError as inner:
+            raise RuntimeError("enveloppe") from inner
+    except RuntimeError as wrapped:
+        assert classify_exception(wrapped).code == ErrorCode.RESULT_INCONSISTENT
