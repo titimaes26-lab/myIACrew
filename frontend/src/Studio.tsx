@@ -1,11 +1,13 @@
 import ErrorBanner from './components/ErrorBanner';
 import Button from './components/ui/Button';
 import ConnectionLostBanner from './components/ConnectionLostBanner';
-import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
+import ServerWakingBanner from './components/ServerWakingBanner';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useConversation } from './hooks/useConversation';
 import { useCompletionNotice } from './hooks/useCompletionNotice';
 import { useNotifyPreference } from './hooks/useNotifyPreference';
 import { MetricsApiContext } from './hooks/metricsApi';
+import { wakeServer } from './utils/serverWake';
 import StudioHeader from './components/StudioHeader';
 import ChatThread from './components/ChatThread';
 import ChatInput from './components/ChatInput';
@@ -21,6 +23,8 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
   const [showMetrics, setShowMetrics] = useState(false);
   const [retryDraft, setRetryDraft] = useState<{ text: string; nonce: number } | null>(null);
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  // Hébergement gratuit : réveille le serveur dès l'ouverture, pendant que l'utilisateur lit ou écrit.
+  useEffect(() => { wakeServer(API_URL); }, [API_URL]);
   const metricsApi = useMemo(() => ({ apiUrl: API_URL, accessToken }), [API_URL, accessToken]);
   const { turns, sending, hasRunningTurn, error, connectionLost, prepareRetry, pendingClarification, pendingLaunch, confirmBeforeLaunch, setConfirmBeforeLaunch, confirmLaunch, cancelLaunch, workflowType, setWorkflowType, conversationResetSignal, sendMessage, cancelSending, startNewConversation, loadConversation } = useConversation(accessToken, API_URL);
   // `sending` seul (envoi en vol DANS cette session) ne suffit pas : un tour repris depuis
@@ -120,6 +124,7 @@ export default function Studio({ accessToken, userEmail }: { accessToken: string
         <HistoryPanel apiUrl={API_URL} accessToken={accessToken} onResumeConversation={handleResumeConversation} />
       )}
 
+      <ServerWakingBanner />
       {connectionLost && <ConnectionLostBanner />}
 
       {error && (

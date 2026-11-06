@@ -1,4 +1,5 @@
 import type { AgentRunView, BulkDeleteResult, ExecutionSortKey, ExecutionsPage, ExecutionHistoryEntry, HistoryListEntry, MetricsSummary, MetricsWorkflowFilter, QualificationReport, RepoTargetSuggestion } from './types';
+import { recoverFromSleep } from './utils/serverWake';
 
 // /api/execute répond désormais IMMÉDIATEMENT (l'exécution réelle du crew tourne en tâche de
 // fond côté backend, voir execution.execute_crew_and_persist) : ce corps de réponse ne
@@ -31,17 +32,33 @@ export class ApiError extends Error {
   }
 }
 
+const NETWORK_MESSAGE = 'Impossible de joindre le serveur. Vérifiez votre connexion puis réessayez.';
+const SLEEPING_MESSAGE = "Le serveur ne répond pas (il se réveille peut-être encore, hébergement gratuit). Réessayez dans une minute.";
+
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
+}
+
 // fetch qui transforme un échec réseau (TypeError « Failed to fetch ») en ApiError lisible ;
 // une annulation (AbortError) est relancée telle quelle : ce n'est pas une erreur à afficher.
-async function request(url: string, init?: RequestInit): Promise<Response> {
+// `wakeApiUrl` : pour les requêtes SANS effet de bord (lectures, qualification) seulement. Si le serveur dormait (hébergement
+// gratuit), on attend son réveil (≤ 90 s, bandeau affiché) puis on rejoue la requête UNE fois. Jamais pour /api/execute : une
+// exécution rejouée automatiquement pourrait être lancée deux fois (le bouton « Relancer » reste le chemin).
+async function request(url: string, init?: RequestInit, wakeApiUrl?: string): Promise<Response> {
   try {
     return await fetch(url, init);
   } catch (err: unknown) {
-    if (err instanceof DOMException && err.name === 'AbortError') throw err;
-    throw new ApiError('Impossible de joindre le serveur. Vérifiez votre connexion puis réessayez.', {
-      code: 'NETWORK_ERROR',
-      retryable: true,
-    });
+    if (isAbort(err)) throw err;
+    if (!wakeApiUrl) throw new ApiError(NETWORK_MESSAGE, { code: 'NETWORK_ERROR', retryable: true });
+    const outcome = await recoverFromSleep(wakeApiUrl, init?.signal ?? undefined);
+    if (outcome === 'woke') {
+      try {
+        return await fetch(url, init);
+      } catch (retryErr: unknown) {
+        if (isAbort(retryErr)) throw retryErr;
+      }
+    }
+    throw new ApiError(outcome === 'awake' ? NETWORK_MESSAGE : SLEEPING_MESSAGE, { code: 'NETWORK_ERROR', retryable: true });
   }
 }
 
@@ -83,7 +100,7 @@ export function apiClient(apiUrl: string, accessToken: string) {
         headers: authHeaders(accessToken),
         body: JSON.stringify({ user_request, conversation_id: conversation_id ?? undefined, has_repo_target }),
         signal,
-      }).then((res) => parseJsonOrThrow<QualificationReport>(res)),
+      }, apiUrl).then((res) => parseJsonOrThrow<QualificationReport>(res)),
 
     execute: (payload: Record<string, unknown>, signal?: AbortSignal) =>
       request(`${apiUrl}/api/execute`, {
@@ -94,12 +111,12 @@ export function apiClient(apiUrl: string, accessToken: string) {
       }).then((res) => parseJsonOrThrow<ExecuteAcceptedResponse>(res)),
 
     listHistory: () =>
-      request(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/history`, { headers: authHeaders(accessToken) }, apiUrl)
         .then((res) => parseJsonOrThrow<HistoryListEntry[]>(res)),
 
     // Une exécution avec son résultat complet ; null si elle n'existe plus (ou n'est pas à cet utilisateur).
     getExecution: (executionId: number) =>
-      request(`${apiUrl}/api/executions/${executionId}`, { headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/executions/${executionId}`, { headers: authHeaders(accessToken) }, apiUrl)
         .then(async (res) => {
           // Seul le 404 de l'application (code NOT_FOUND) prouve que la ligne n'existe plus : un 404 du
           // proxy ou de l'hébergeur (redéploiement en cours) est une panne passagère, pas une suppression.
@@ -111,7 +128,7 @@ export function apiClient(apiUrl: string, accessToken: string) {
         }),
 
     getConversationMessages: (conversationId: number) =>
-      request(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/conversations/${conversationId}/messages`, { headers: authHeaders(accessToken) }, apiUrl)
         .then((res) => parseJsonOrThrow<ExecutionHistoryEntry[]>(res)),
 
     // `known` : nombre d'agents terminés déjà reçus, pour ne pas retransmettre leur texte à chaque sondage.
@@ -120,7 +137,7 @@ export function apiClient(apiUrl: string, accessToken: string) {
         .then((res) => parseJsonOrThrow<ConversationProgress>(res)),
 
     listRepoTargets: () =>
-      request(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) })
+      request(`${apiUrl}/api/repo-targets`, { headers: authHeaders(accessToken) }, apiUrl)
         .then((res) => parseJsonOrThrow<RepoTargetSuggestion[]>(res)),
 
     getMetricsSummary: (days: number, workflow: MetricsWorkflowFilter, signal?: AbortSignal) => {
