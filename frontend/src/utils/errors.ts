@@ -27,7 +27,7 @@ export function failureHint(code: string | null | undefined): string | null {
     case 'TOKEN_BUDGET_EXCEEDED':
       return 'L\'exécution a consommé son budget de tokens et a été arrêtée : simplifiez la demande ou découpez-la en plusieurs tours ; « Relancer » reprend les étapes déjà réussies.';
     case 'RESULT_INCONSISTENT':
-      return 'Une étape n\'a pas produit de sortie valide : le résultat a été écarté plutôt qu\'affiché tronqué. « Relancer » relance la demande telle quelle.';
+      return 'Une étape n\'a pas produit de sortie valide : le résultat a été écarté plutôt qu\'affiché tronqué. « Relancer » repart depuis le début (les étapes déjà faites ne sont pas reprises, leur sortie est suspecte).';
     case 'RATE_LIMITED':
       return 'Limite atteinte : attendez la fin d\'une exécution en cours (ou quelques minutes), puis relancez.';
     case 'INTERRUPTED':

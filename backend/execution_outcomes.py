@@ -166,7 +166,10 @@ async def persist_failure(
     execution_state.safe_refresh(session, db_entry, "échec")
     # Travail déjà accompli : les sections des agents terminés sont dans `result` jusqu'à ce qu'il soit écrasé
     # ci-dessous. Ajouté APRÈS le bloc GitHub : le frontend le retire en premier (splitPartialWork).
-    completed = [(name, text) for name, text in execution_context.parse_completed_agents(db_entry.result or "").items()]
+    # Résultat incohérent : ces sections (et leurs points de reprise) sont justement suspectes, ni affichées comme « travail
+    # accompli » ni reprises par « Relancer » (voir la purge plus bas).
+    inconsistent = info.code == ErrorCode.RESULT_INCONSISTENT
+    completed = [] if inconsistent else [(name, text) for name, text in execution_context.parse_completed_agents(db_entry.result or "").items()]
     partial = partial_work_block(completed)
     if partial:
         detail += "\n\n" + partial
@@ -179,6 +182,9 @@ async def persist_failure(
     db_entry.error_retryable = info.retryable
     record_run_metrics(session, db_entry, state)
     commit_outcome(session, db_entry, conversation)
+    if inconsistent:
+        # Les sorties déjà enregistrées ne sont plus fiables : « Relancer » repart de zéro au lieu de les reprendre.
+        await asyncio.to_thread(execution_persistence.delete_checkpoints_for, db_entry.id)
     execution_persistence.cleanup_persisted_agents(db_entry.id)
 
 async def retry_outputs_if_transient(

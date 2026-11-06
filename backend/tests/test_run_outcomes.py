@@ -163,3 +163,52 @@ def test_a_small_feature_failure_is_judged_against_its_own_steps():
     assert before_dev is True and in_dev is False
     # Même rang d'étape dans le parcours complet : c'est l'architecture (reprenable) pour 1, le diagnostic pour 2.
     assert execution_resume.failed_before_development(CrewStepError(2, 4, "Analyste", RuntimeError("x")), "FEATURE") is True
+
+
+# --- un résultat incohérent n'est ni présenté comme « travail accompli » ni repris par « Relancer » ----------------------
+
+def _persist_with_error(monkeypatch, error, previous_result):
+    deleted = []
+
+    async def fake_block(*args):
+        return "--- Travail déjà présent sur GitHub ---\n- Rien n'a été poussé"
+    monkeypatch.setattr(execution_outcomes, "partial_delivery_block", fake_block)
+    monkeypatch.setattr(execution_state, "safe_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(execution_persistence, "cleanup_persisted_agents", lambda *a: None)
+    monkeypatch.setattr(execution_persistence, "delete_checkpoints_for", deleted.append)
+
+    class Session:
+        def add(self, *a):
+            pass
+
+        def commit(self):
+            pass
+
+        def refresh(self, *a):
+            pass
+
+    entry = SimpleNamespace(id=7, result=previous_result, status="running", current_step="qa", error_code=None,
+                            error_retryable=None, updated_at=None, api_calls_count=None)
+    asyncio.run(execution_outcomes.persist_failure(
+        Session(), entry, SimpleNamespace(updated_at=None), error, classify_exception(error), _data(), "crewai/b", "main",
+        True, execution_context.RunState(),
+    ))
+    return entry, deleted
+
+
+PREVIOUS = "## Lead Product / Game Designer\n\nSpec\n\n---\n\n## Lead Product / Game Designer\n\nSpec"
+
+
+def test_an_inconsistent_result_purges_the_checkpoints_and_hides_the_suspect_sections(monkeypatch):
+    from errors import ErrorCode, ResultIntegrityError
+    entry, deleted = _persist_with_error(monkeypatch, ResultIntegrityError("Résultat incohérent : étape « architecture » sans sortie"), PREVIOUS)
+    assert deleted == [7]
+    assert entry.status == "failed" and entry.error_code == ErrorCode.RESULT_INCONSISTENT and entry.error_retryable is True
+    assert "Déjà réalisé" not in entry.result and "étapes terminées avant l'échec" not in entry.result
+    assert "incomplet" in entry.result and "architecture" in entry.result          # cause lisible + détail technique
+
+
+def test_any_other_failure_keeps_its_checkpoints_and_its_partial_work(monkeypatch):
+    entry, deleted = _persist_with_error(monkeypatch, RuntimeError("boum"), PREVIOUS)
+    assert deleted == []                                                              # « Relancer » reprend les étapes réussies
+    assert "Déjà réalisé avant l'échec" in entry.result
