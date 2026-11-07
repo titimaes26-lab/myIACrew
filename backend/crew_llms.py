@@ -124,7 +124,16 @@ def _architect_max_tokens() -> int:
 
 architect_llm = _make_llm("architect_agent", 0.3, request_timeout=180, max_tokens=_architect_max_tokens())  # ~1000 mots + une ligne de contrat par fichier
 
-diagnostic_llm = _make_llm("diagnostic_agent", 0.2, request_timeout=300)     # génère le code source COMPLET des fichiers : le plus volumineux
+def _diagnostic_timeout() -> int:
+    """Délai d'UN appel de l'Analyste (DIAGNOSTIC_TIMEOUT_S, de 60 à 600 s, 150 par défaut ; illisible ou hors bornes : le défaut). Exécution 138 :
+    gemini-3.8-flash a mis 91 s puis 47 s, puis ne répondait plus : 298 s perdues avant le 504 et le repli (300 s). Au-delà de 150 s on bascule."""
+    try:
+        value = int(os.getenv("DIAGNOSTIC_TIMEOUT_S", ""))
+    except ValueError:
+        return 150
+    return value if 60 <= value <= 600 else 150
+
+diagnostic_llm = _make_llm("diagnostic_agent", 0.2, request_timeout=_diagnostic_timeout())     # génère le code source COMPLET des fichiers : le plus volumineux
 
 developer_llm = _make_llm("developer_agent", 0.0, request_timeout=180)       # appels d'outils, mais reçoit en CONTEXTE le code
 

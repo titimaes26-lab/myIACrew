@@ -9,7 +9,7 @@ def _http_timeout_ms(llm):
 
 
 @pytest.mark.parametrize("name, seconds", [
-    ("qualification_llm", 90), ("designer_llm", 180), ("architect_llm", 180), ("diagnostic_llm", 300),
+    ("qualification_llm", 90), ("designer_llm", 180), ("architect_llm", 180), ("diagnostic_llm", 150),
     ("developer_llm", 180), ("qa_llm", 180), ("summary_llm", 45),
 ])
 def test_each_llm_applies_its_own_call_timeout_on_the_http_client(name, seconds):
@@ -25,7 +25,8 @@ def test_google_enforces_the_call_timeout_so_it_must_leave_room_for_a_thinking_m
     """Le client google-genai envoie ce délai à Google (X-Server-Timeout) : un 90 s coupait le designer en « 504 DEADLINE_EXCEEDED » sur le vrai modèle."""
     for name in ("designer_llm", "architect_llm", "developer_llm", "qa_llm"):
         assert _http_timeout_ms(getattr(crew_llms, name)) >= 180_000
-    assert _http_timeout_ms(crew_llms.diagnostic_llm) >= 300_000        # génère le code complet : le plus long
+    # Le plus long (code complet), mais 150 s depuis l'exécution 138 : gemini-3.8-flash a mis 91 s, puis 298 s perdues avant le repli (DIAGNOSTIC_TIMEOUT_S).
+    assert _http_timeout_ms(crew_llms.diagnostic_llm) >= 150_000
     import google.genai._api_client as api_client
     source = open(api_client.__file__, encoding="utf-8").read()
     assert "X-Server-Timeout" in source                                    # le mécanisme décrit ci-dessus existe toujours dans la version épinglée

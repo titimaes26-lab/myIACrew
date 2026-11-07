@@ -139,19 +139,22 @@ def test_a_resumed_architecture_step_briefs_the_analyst_too():
     ({"src/App.tsx", "src/x.ts"}, {"src/x.ts", "src/autre.ts"}, False),    # au moins UN fichier du plan
     ({"src/engine/powerUpEngine.ts"}, {"frontend/src/Studio.tsx"}, True),  # exécution 137 : aucun recoupement
     (set(), {"src/x.ts"}, False), ({"src/x.ts"}, set(), False),            # pas de plan / rien de livré : rien à comparer ici
+    ({"a.ts", "b.ts", "c.ts", "d.ts"}, {"a.ts", "b.ts"}, False),           # la moitié : suffisant
+    ({"a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"}, {"e.ts"}, True),    # exécution 138 : 1 fichier sur 6
 ])
 def test_the_plan_mismatch_is_flagged_only_when_no_delivered_file_is_in_the_plan(planned, delivered, flagged):
     issue = crew_plan.plan_mismatch_issue(planned, delivered)
     assert (issue is not None) is flagged
     if flagged:
-        assert "src/engine/powerUpEngine.ts" in issue and "plan de l'Architecte" in issue
+        assert "plan de l'Architecte" in issue
 
 
 def test_the_analyst_guardrail_sees_the_architect_plan_of_this_run():
     crew = cq.AppDevelopmentCrew()
     crew._architecture_task_ref = type("T", (), {"output": type("O", (), {"raw": ARCHITECT_PLAN})()})()
     assert "src/engine/powerUpEngine.ts" in crew._plan_mismatch({"frontend/src/Studio.tsx"})
-    assert crew._plan_mismatch({"src/App.tsx"}) is None
+    assert crew._plan_mismatch({"src/App.tsx", "src/engine/powerUpEngine.ts"}) is None
+    assert "LevelSelector" in crew._plan_mismatch({"src/App.tsx"})                    # 1 fichier sur 3 : couverture insuffisante
     crew._architecture_task_ref = None                                      # BUGFIX : pas d'architecte, aucun contrôle
     assert crew._plan_mismatch({"frontend/src/Studio.tsx"}) is None
 
@@ -182,5 +185,29 @@ def test_the_guardrail_accepts_an_analyst_output_that_follows_the_plan():
     from crew_support import output, _edit_block
     crew = _plan_crew()
     crew._base_readers = (lambda path: ("export const a = 1;\n", None), lambda d: None)
-    ok, _ = crew._diagnostic_guardrail(output(_edit_block("src/App.tsx", "export const a = 1;", "export const a = 2;")))
+    both = _edit_block("src/App.tsx", "export const a = 1;", "export const a = 2;") + "\n\n" + _edit_block("src/engine/powerUpEngine.ts", "export const a = 1;", "export const a = 3;")
+    ok, _ = crew._diagnostic_guardrail(output(both))
     assert ok
+
+
+def test_a_partial_delivery_names_the_missing_files_and_withdrawn_files_count_as_handled():
+    planned = {"a.ts", "b.ts", "c.ts", "d.ts"}
+    issue = crew_plan.plan_mismatch_issue(planned, {"a.ts"})
+    assert issue and "1 fichier(s) du plan" in issue and "b.ts, c.ts, d.ts" in issue and "NON réalisé" in issue
+    assert crew_plan.plan_mismatch_issue(planned, {"a.ts"}, {"b.ts"}) is None                    # 2 sur 4 traités
+    assert crew_plan.plan_mismatch_issue(planned, {"a.ts"}, {"zzz.ts"}) is not None             # un chemin hors plan ne compte pas
+
+
+def test_the_guardrail_asks_once_for_the_missing_planned_files_then_accepts_and_a_withdrawal_in_the_answer_counts():
+    from crew_support import output, _edit_block
+    crew = _plan_crew()
+    only_app = output(_edit_block("src/App.tsx", "export const a = 1;", "export const a = 2;"))
+    ok, message = crew._diagnostic_guardrail(only_app)
+    assert not ok and "1 fichier(s) du plan de l'Architecte sur 3" in message and "src/engine/powerUpEngine.ts" in message
+    ok, _ = crew._diagnostic_guardrail(only_app)
+    assert ok
+    crew = _plan_crew()
+    withdrawn = output(_edit_block("src/App.tsx", "export const a = 1;", "export const a = 2;")
+                       + "\n\nsrc/engine/powerUpEngine.ts NON réalisé : hors périmètre.")
+    ok, _ = crew._diagnostic_guardrail(withdrawn)
+    assert ok                                                                               # 2 fichiers sur 3 traités

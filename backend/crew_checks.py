@@ -75,7 +75,9 @@ class CrewChecksMixin(CrewExecutionState):
 
     def _plan_mismatch(self, delivered_paths) -> Optional[str]:
         plan = getattr(getattr(self._architecture_task_ref, "output", None), "raw", "") or ""
-        return crew_plan.plan_mismatch_issue(crew_guardrails._planned_paths(plan), set(delivered_paths))
+        planned = crew_guardrails._planned_paths(plan)
+        withdrawn = crew_guardrails._withdrawn_paths(getattr(self, "_analyst_raw", "") or "", sorted(planned)) if planned else set()
+        return crew_plan.plan_mismatch_issue(planned, set(delivered_paths), withdrawn)
 
     def _diagnostic_retry_context(self) -> str:
         """Specs/architecture reçues par diagnostic_task : CrewAI ne les repasse PAS à l'agent

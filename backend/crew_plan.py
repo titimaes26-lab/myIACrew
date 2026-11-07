@@ -18,11 +18,22 @@ def plan_briefing(architecture_raw: str) -> str:
     return (f"{PLAN_BRIEFING_TITLE} (non négociable : produis CES fichiers, sur le repository cible, sans ajouter d'autre amélioration) :\n{body}")
 
 
-def plan_mismatch_issue(planned: set[str], delivered: set[str]) -> Optional[str]:
-    """Message si AUCUN fichier livré ne figure dans le plan de l'Architecte (même chemin, ou même fin de chemin), sinon None."""
+def _covers(delivered: str, planned: str) -> bool:
+    return delivered == planned or delivered.endswith("/" + planned) or planned.endswith("/" + delivered)
+
+
+def plan_mismatch_issue(planned: set[str], delivered: set[str], withdrawn: frozenset[str] | set[str] = frozenset()) -> Optional[str]:
+    """Message si l'Analyste s'écarte du plan de l'Architecte, sinon None : AUCUN fichier livré n'y figure (même chemin ou même fin de
+    chemin), ou MOINS DE LA MOITIÉ des fichiers du plan sont livrés (exécution 138 : 1 fichier sur 6). Un fichier déclaré « NON réalisé »
+    (`withdrawn`) compte comme traité : l'Analyste peut renoncer, pas se taire."""
     if not planned or not delivered:
         return None
-    if any(d == p or d.endswith("/" + p) or p.endswith("/" + d) for d in delivered for p in planned):
+    done = {p for p in planned if any(_covers(d, p) for d in delivered)}
+    if not done:
+        return ("Aucun fichier livré ne figure dans le plan de l'Architecte. Fichiers attendus : " + ", ".join(sorted(planned))
+                + ". Reprends ce plan (repository cible), sans ajouter d'autre amélioration.")
+    handled = done | (set(withdrawn) & planned)
+    if len(handled) * 2 >= len(planned):
         return None
-    return ("Aucun fichier livré ne figure dans le plan de l'Architecte. Fichiers attendus : " + ", ".join(sorted(planned))
-            + ". Reprends ce plan (repository cible), sans ajouter d'autre amélioration.")
+    return (f"{len(done)} fichier(s) du plan de l'Architecte sur {len(planned)} seulement. Manquants : " + ", ".join(sorted(planned - handled))
+            + ". Livre-les aussi, ou écris « NON réalisé » pour ceux que tu abandonnes.")
