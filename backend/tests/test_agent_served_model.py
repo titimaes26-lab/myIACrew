@@ -158,7 +158,7 @@ def test_each_agent_reports_the_model_served_during_its_own_task(monkeypatch):
 def test_without_any_reported_model_the_configured_one_is_used(monkeypatch):
     calls, result = _run(monkeypatch, [])
     assert all(extra == {} for _, extra in calls)
-    assert result.count("<!--agent-model:gemini-3.5-flash-lite-->") == 5          # les cinq étapes : tous les agents sont sur le modèle léger
+    assert result.count("<!--agent-model:gemini-3.5-flash-lite-->") == 4 and result.count("<!--agent-model:gemini-3.8-flash-->") == 1     # l'Analyste seul est sur 3.8
 
 
 def test_a_resumed_step_keeps_the_model_that_produced_it(monkeypatch):

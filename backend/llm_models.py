@@ -17,6 +17,8 @@ heure du Pacifique). Le limiteur applique ces plafonds AVEC UNE MARGE (`LLM_RATE
 Réglages d'exploitation (variables d'environnement) :
 - `GEMINI_MODEL` : force UN SEUL modèle pour tous les agents et le résumé (repli quand un modèle n'est pas disponible sur la
   clé) ; absent, la carte `AGENT_MODELS` s'applique.
+- `GEMINI_DIAGNOSTIC_MODEL` : modèle de l'Analyste (diagnostic_agent) SEUL, sous `GEMINI_MODEL`. Il est sur `gemini-3.8-flash` ; si ce
+  modèle ne répond plus sur la clé, `GEMINI_DIAGNOSTIC_MODEL=gemini-3.5-flash-lite` sur Render y revient sans redéployer.
 - `GEMINI_MODEL_LIMITS` : JSON qui remplace ou ajoute des limites, par exemple pour une offre payante :
   `{"gemini-3.8-flash": {"rpm": 60, "tpm": 1000000, "rpd": 10000}}`. Une entrée illisible est ignorée.
 - `LLM_RATE_MARGIN` : part des plafonds réellement utilisée, entre 0,1 et 1 (0,8 par défaut).
@@ -59,7 +61,7 @@ AGENT_MODELS: dict[str, str] = {
     "qualification_agent": GEMINI_3_5_FLASH_LITE,
     "product_designer_agent": GEMINI_3_5_FLASH_LITE,
     "architect_agent": GEMINI_3_5_FLASH_LITE,
-    "diagnostic_agent": GEMINI_3_5_FLASH_LITE,
+    "diagnostic_agent": GEMINI_3_8_FLASH,       # l'Analyste : code complet, 45 appels (exécution 137) ; repli sur le léger (llm_fallback)
     "developer_agent": GEMINI_3_5_FLASH_LITE,
     "qa_agent": GEMINI_3_5_FLASH_LITE,
 }
@@ -129,8 +131,11 @@ def limits_for(model: Optional[str]) -> Optional[ModelLimits]:
 
 
 def model_for_agent(agent: str) -> str:
-    """Modèle d'un agent, au format attendu par CrewAI (« gemini/<modèle> »). `GEMINI_MODEL` le remplace pour tous."""
+    """Modèle d'un agent, au format attendu par CrewAI (« gemini/<modèle> »). Priorité : `GEMINI_MODEL` (tous les agents), puis
+    `GEMINI_DIAGNOSTIC_MODEL` (l'Analyste seul : retour au modèle léger depuis Render sans déploiement), puis la carte."""
     forced = os.getenv("GEMINI_MODEL", "").strip()
+    if not forced and agent == "diagnostic_agent":
+        forced = os.getenv("GEMINI_DIAGNOSTIC_MODEL", "").strip()
     return forced if forced else f"gemini/{AGENT_MODELS[agent]}"
 
 

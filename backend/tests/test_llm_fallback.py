@@ -33,6 +33,8 @@ def clean_env(monkeypatch):
     (CodedError(503), True), (CodedError(500), True), (CodedError(502), True), (CodedError(504, "DEADLINE_EXCEEDED"), False),
     (CodedError(429, "RESOURCE_EXHAUSTED"), False), (RuntimeError(OVERLOAD), True), (RuntimeError("model overloaded"), True),
     (RuntimeError("ligne 503 du rapport"), False), (RuntimeError("504 DEADLINE_EXCEEDED"), False), (ValueError("autre"), False),
+    (RuntimeError("404 NOT_FOUND. models/gemini-3.8-flash is not found for API version v1beta"), True),     # modèle retiré de la clé
+    (RuntimeError("404 NOT_FOUND. The requested URL /x was not found on this server"), False),               # pas un modèle
 ])
 def test_unavailable_errors_are_recognised_by_code_or_text(error, expected):
     assert is_unavailable_error(error) is expected

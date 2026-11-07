@@ -15,7 +15,7 @@ ROLES = {
     "Senior Product Owner / Specialist en Qualification": "gemini-3.5-flash-lite",
     "Lead Product / Game Designer": "gemini-3.5-flash-lite",
     "Architecte Logiciel React / TypeScript": "gemini-3.5-flash-lite",
-    "Analyste Diagnostic Technique": "gemini-3.5-flash-lite",
+    "Analyste Diagnostic Technique": "gemini-3.8-flash",
     "Développeur Fullstack React / TypeScript": "gemini-3.5-flash-lite",
     "QA Engineer / Automated Tester": "gemini-3.5-flash-lite",
 }
