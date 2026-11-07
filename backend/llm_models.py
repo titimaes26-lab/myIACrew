@@ -12,7 +12,7 @@ Limites (offre gratuite / quota standard) :
 
 RPM = requêtes par minute, TPM = tokens par minute (entrée + sortie), RPD = requêtes par jour (remise à zéro à minuit,
 heure du Pacifique). Le limiteur applique ces plafonds AVEC UNE MARGE (`LLM_RATE_MARGIN`, 0,8 par défaut : 8 RPM sur 10,
-12 sur 15), car l'estimation des tokens avant l'appel est approximative et plusieurs process peuvent partager une clé.
+12 sur 15 ; `gemini-3.8-flash` : 10 sur 10, `MODEL_MARGINS`, car ses ~45 appels d'Analyste y attendraient sinon plus de 5 minutes), car l'estimation des tokens avant l'appel est approximative et plusieurs process peuvent partager une clé.
 
 Réglages d'exploitation (variables d'environnement) :
 - `GEMINI_MODEL` : force UN SEUL modèle pour tous les agents et le résumé (repli quand un modèle n'est pas disponible sur la
@@ -70,6 +70,7 @@ AGENT_MODELS: dict[str, str] = {
 SUMMARY_MODEL = GEMINI_3_5_FLASH_LITE
 
 DEFAULT_RATE_MARGIN = 0.8
+MODEL_MARGINS: dict[str, float] = {GEMINI_3_8_FLASH: 1.0}
 _PROVIDER_PREFIXES = ("gemini/", "models/")
 
 
@@ -122,7 +123,8 @@ def limits_for(model: Optional[str]) -> Optional[ModelLimits]:
     official = official_limits(model)
     if official is None:
         return None
-    margin = rate_margin()
+    # Marge par défaut propre au modèle (3.8 : 10 RPM pleins, le plus bas plafond et l'Analyste fait ~45 appels) ; LLM_RATE_MARGIN l'emporte.
+    margin = rate_margin() if os.getenv("LLM_RATE_MARGIN", "").strip() else MODEL_MARGINS.get(model_key(model), DEFAULT_RATE_MARGIN)
     return ModelLimits(
         rpm=max(1, math.floor(official.rpm * margin)),
         tpm=max(1, math.floor(official.tpm * margin)),
@@ -135,7 +137,8 @@ def model_for_agent(agent: str) -> str:
     `GEMINI_DIAGNOSTIC_MODEL` (l'Analyste seul : retour au modèle léger depuis Render sans déploiement), puis la carte."""
     forced = os.getenv("GEMINI_MODEL", "").strip()
     if not forced and agent == "diagnostic_agent":
-        forced = os.getenv("GEMINI_DIAGNOSTIC_MODEL", "").strip()
+        analyst = os.getenv("GEMINI_DIAGNOSTIC_MODEL", "").strip()
+        forced = analyst if "/" in analyst or not analyst else f"gemini/{analyst}"      # « gemini-3.5-flash-lite » sans préfixe accepté
     return forced if forced else f"gemini/{AGENT_MODELS[agent]}"
 
 

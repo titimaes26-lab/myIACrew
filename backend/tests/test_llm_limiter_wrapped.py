@@ -4,6 +4,7 @@ import asyncio
 import logging
 import pytest
 import llm_limiter
+import llm_models
 from llm_limiter import DailyQuotaExceeded, GeminiRateLimiter, install, limiter_for
 
 
@@ -17,6 +18,7 @@ QUOTA_TEXT = "429 RESOURCE_EXHAUSTED. Please retry in 30s."
 def clean_env(monkeypatch):
     for name in ("GEMINI_MODEL", "GEMINI_MODEL_LIMITS", "LLM_RATE_MARGIN"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(llm_models, "MODEL_MARGINS", {})        # ces tests décrivent la marge COMMUNE (0,8) ; les marges par modèle : test_llm_model_margins.py
 
 
 class _Usage:

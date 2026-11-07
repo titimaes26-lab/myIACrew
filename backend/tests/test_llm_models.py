@@ -10,6 +10,7 @@ from llm_models import GEMINI_3_5_FLASH_LITE, ModelLimits
 def clean_env(monkeypatch):
     for name in ("GEMINI_MODEL", "GEMINI_DIAGNOSTIC_MODEL", "GEMINI_MODEL_LIMITS", "LLM_RATE_MARGIN"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(llm_models, "MODEL_MARGINS", {})        # ces tests décrivent la marge COMMUNE (0,8) ; les marges par modèle : test_llm_model_margins.py
 
 
 def test_each_agent_uses_the_requested_model():
@@ -101,7 +102,10 @@ def test_model_names_use_the_crewai_provider_prefix_and_gemini_model_forces_one_
 def test_the_analyst_model_can_be_set_alone_and_the_global_override_wins(monkeypatch):
     assert llm_models.model_for_agent("diagnostic_agent") == "gemini/gemini-3.8-flash"
     monkeypatch.setenv("GEMINI_DIAGNOSTIC_MODEL", "gemini-3.5-flash-lite")
-    assert llm_models.model_for_agent("diagnostic_agent") == "gemini-3.5-flash-lite"
+    assert llm_models.model_for_agent("diagnostic_agent") == "gemini/gemini-3.5-flash-lite"      # préfixe ajouté au nom nu
+    monkeypatch.setenv("GEMINI_DIAGNOSTIC_MODEL", "gemini/gemini-3.5-flash-lite")
+    assert llm_models.model_for_agent("diagnostic_agent") == "gemini/gemini-3.5-flash-lite"      # déjà préfixé : inchangé
     assert llm_models.model_for_agent("architect_agent") == "gemini/gemini-3.5-flash-lite"      # les autres agents ne bougent pas
     monkeypatch.setenv("GEMINI_MODEL", "gemini/autre")
     assert llm_models.model_for_agent("diagnostic_agent") == "gemini/autre"
+

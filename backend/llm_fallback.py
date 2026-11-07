@@ -1,8 +1,8 @@
-"""Modèle de repli quand le modèle principal est surchargé (503 « high demand » de Gemini).
+"""Modèle de repli quand le modèle principal est surchargé (503 « high demand »), ne répond pas (504) ou n'existe plus sur la clé (404).
 
 Dès la première (`LLM_FALLBACK_THRESHOLD`, 1 par défaut) erreur d'indisponibilité sur un modèle, les appels suivants passent sur le modèle de repli
 (`GEMINI_FALLBACK_MODEL`, défaut `gemini-3.5-flash-lite`) pendant `LLM_FALLBACK_TTL_S` secondes (600 par défaut), puis le modèle
-principal est réessayé. Un succès remet le compteur à zéro. Module pur (aucune E/S) : jamais le texte échangé dans les journaux.
+principal est réessayé (404 « modèle introuvable » : au moins `MODEL_MISSING_TTL_S`, une heure, car définitif). Un succès remet le compteur à zéro. Module pur (aucune E/S) : jamais le texte échangé dans les journaux.
 """
 import os
 import threading
@@ -17,6 +17,7 @@ log = get_logger("llm_fallback")
 DEFAULT_THRESHOLD, MAX_THRESHOLD = 1, 5
 DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_TTL_S = 600.0
+MODEL_MISSING_TTL_S = 3600.0
 MAX_TTL_S = 86_400.0
 _DISABLED = {"off", "none", "false", "0", "non"}
 
@@ -93,6 +94,23 @@ def note_unavailable(model_key: str, now: Optional[float] = None, immediate: boo
         _consecutive[model_key] = 0
     cause = "délai dépassé" if immediate else (f"{needed} erreurs de suite" if needed > 1 else "première erreur")
     log.warning(f"modèle {model_key} surchargé ({cause}) : repli sur {target} pendant {_ttl():.0f} s")
+    return True
+
+
+def note_model_missing(model_key: str, now: Optional[float] = None) -> bool:
+    """404 « modèle introuvable » : repli immédiat et DURABLE (pas de pause commune ni de réessai toutes les 10 minutes), avec un message
+    d'exploitation clair. True quand l'appel doit être rejoué sur le modèle de repli."""
+    target = fallback_model()
+    if target is None or target == model_key:
+        return False
+    now = time.monotonic() if now is None else now
+    with _lock:
+        if _active_until.get(model_key, 0.0) > now:
+            return False
+        _active_until[model_key] = now + max(_ttl(), MODEL_MISSING_TTL_S)
+        _consecutive[model_key] = 0
+    log.error(f"modèle {model_key} INTROUVABLE (404) sur cette clé : repli sur {target} pendant {max(_ttl(), MODEL_MISSING_TTL_S):.0f} s. "
+              "Pour un retour durable sans erreur, posez GEMINI_DIAGNOSTIC_MODEL (Analyste) ou GEMINI_MODEL sur un modèle disponible.")
     return True
 
 

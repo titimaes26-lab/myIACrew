@@ -30,18 +30,14 @@ def retry_delay_seconds(error: BaseException) -> Optional[float]:
 
 
 _UNAVAILABLE_TEXT = re.compile(r"\bunavailable\b|high demand|overloaded", re.IGNORECASE)
-# Modèle retiré ou absent de la clé : « 404 NOT_FOUND : models/<nom> is not found for API version … ». Un 404 qui ne parle pas d'un MODÈLE
-# (une URL, une ressource) n'en est pas un.
-_MODEL_MISSING_TEXT = re.compile(r"models?/[\w.\-]+ is not found|model [\w.\-/]+ (?:is )?not found", re.IGNORECASE)
 _UNAVAILABLE_CODES = (500, 502, 503)    # PAS 504 : c'est le délai que nous imposons à l'appel (DEADLINE_EXCEEDED)
 
 
 def is_unavailable_error(error: BaseException) -> bool:
-    """Modèle surchargé, en panne ou introuvable côté Google (503 « high demand », 500, 502, 404 « model is not found ») : un autre modèle peut répondre."""
+    """Modèle surchargé ou en panne côté Google (503 « high demand », 500, 502) : un autre modèle peut répondre."""
     if any(getattr(error, attr, None) in _UNAVAILABLE_CODES for attr in ("code", "status_code")):
         return True
-    text = str(error)
-    return _UNAVAILABLE_TEXT.search(text) is not None or _MODEL_MISSING_TEXT.search(text) is not None
+    return _UNAVAILABLE_TEXT.search(str(error)) is not None
 
 
 _DEADLINE_TEXT = re.compile(r"deadline[_ ]exceeded|deadline expired", re.IGNORECASE)
@@ -52,3 +48,15 @@ def is_deadline_error(error: BaseException) -> bool:
     if any(getattr(error, attr, None) == 504 for attr in ("code", "status_code")):
         return True
     return _DEADLINE_TEXT.search(str(error)) is not None
+
+
+# Modèle retiré ou absent de la clé : « 404 NOT_FOUND : models/<nom> is not found for API version … ». Définitif (contrairement à une
+# surcharge) et reconnu sur le CODE 404 / le statut NOT_FOUND ET sur un texte qui parle d'un MODÈLE : un 400/403 ou un 404 sur une URL n'en est pas un.
+_MODEL_MISSING_TEXT = re.compile(r"models?/[\w.\-]+ is not found|model [\w.\-/]+ (?:is )?not found", re.IGNORECASE)
+_NOT_FOUND_STATUS = re.compile(r"\b404\b|\bNOT_FOUND\b")
+
+
+def is_model_missing_error(error: BaseException) -> bool:
+    text = str(error)
+    not_found = 404 in (getattr(error, "code", None), getattr(error, "status_code", None)) or _NOT_FOUND_STATUS.search(text) is not None
+    return not_found and _MODEL_MISSING_TEXT.search(text) is not None

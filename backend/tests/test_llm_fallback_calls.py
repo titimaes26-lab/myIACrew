@@ -186,3 +186,32 @@ def test_a_success_still_resets_the_count_when_the_threshold_is_raised(wrapped, 
         with pytest.raises(RuntimeError):
             models.generate_content(model=FLASH, contents="x")                   # nouvelle série : 2 erreurs seulement, pas encore de repli
     assert LITE not in FakeModels.seen
+
+
+MISSING = "404 NOT_FOUND. {'error': {'code': 404, 'message': 'models/gemini-3.8-flash is not found for API version v1beta', 'status': 'NOT_FOUND'}}"
+
+
+def test_a_missing_model_is_replayed_on_the_fallback_at_once_and_for_much_longer_than_an_overload(wrapped, caplog):
+    FakeModels.message = MISSING
+    models = FakeModels()
+    assert models.generate_content(model=FLASH, contents="x")                  # servi par le repli dès le premier 404
+    assert FakeModels.seen == [FLASH, LITE]
+    assert "INTROUVABLE" in caplog.text and "GEMINI_DIAGNOSTIC_MODEL" in caplog.text
+    wait, _ = llm_limiter.limiter_for(FLASH).reserve_ticket(tokens=0)
+    assert wait == 0                                                           # pas de pause de 30 s : le modèle n'existe plus
+    assert llm_fallback.replacement_for(FLASH, now=__import__("time").monotonic() + 1_800) == LITE     # un surcharge aurait expiré à 600 s
+
+
+def test_a_near_miss_text_with_another_code_is_not_replayed(wrapped):
+    FakeModels.message = "400 INVALID_ARGUMENT. model foo not found in the tuned models list"
+    with pytest.raises(RuntimeError):
+        FakeModels().generate_content(model=FLASH, contents="x")
+    assert FakeModels.seen == [FLASH]
+
+
+def test_a_missing_model_never_triggers_the_fallback_when_it_is_disabled(wrapped, monkeypatch):
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "off")
+    FakeModels.message = MISSING
+    with pytest.raises(RuntimeError):
+        FakeModels().generate_content(model=FLASH, contents="x")
+    assert FakeModels.seen == [FLASH]
