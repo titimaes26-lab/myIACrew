@@ -20,7 +20,7 @@ from tools import check_syntax
 
 log = get_logger("crew")
 from github_write import github_create_branch, github_write_file, github_write_files
-from github_read import github_read_file, github_list_directory
+import crew_read_tools
 from metrics_collect import record_served_model, register_event_listeners
 
 # --- MÉTRIQUES & PAUSES ---
@@ -51,7 +51,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             config=self.agents_config['product_designer_agent'],
             # Sans file_write_tool : son livrable est le texte de sa réponse (sauvegardé via
             # output_file), un outil d'écriture ne faisait que le distraire de son raisonnement.
-            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
+            tools=[self._build_local_read_tool(), *crew_read_tools.pinned_github_readers(self)],
             llm=crew_llms.designer_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=3, verbose=True,
         )
 
@@ -59,7 +59,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
     def architect_agent(self) -> Agent:
         return Agent(
             config=self.agents_config['architect_agent'],
-            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
+            tools=[self._build_local_read_tool(), *crew_read_tools.pinned_github_readers(self)],
             llm=crew_llms.architect_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=5, verbose=True,
         )
 
@@ -76,7 +76,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # l'autre (auparavant une seule tâche/agent partageait un budget unique entre les
             # deux, et un diagnostic un peu long pouvait épuiser tout le budget avant même le
             # premier commit — voir l'historique de max_iter sur developer_agent ci-dessous).
-            tools=[self._build_local_read_tool(), github_read_file, github_list_directory],
+            tools=[self._build_local_read_tool(), *crew_read_tools.pinned_github_readers(self)],
             llm=crew_llms.diagnostic_llm, max_retry_limit=crew_llms.agent_max_retries(), max_iter=7, verbose=True,
             # Planification interne (hypothèses, lectures à faire) avant d'agir : l'agent le plus critique du pipeline,
             # dont tout le code livré dépend. Un seul appel de plan ; en effort « low », l'observation de chaque étape
@@ -137,7 +137,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
             # exact, check_syntax), ce qui libère le budget pour la conformité fonctionnelle.
             tools=[
                 self._build_qa_verify_tool(),
-                self._build_local_read_tool(), check_syntax, github_read_file, github_list_directory,
+                self._build_local_read_tool(), check_syntax, *crew_read_tools.pinned_github_readers(self),
             ],
             # 10 et non 5 : lire un fichier PUIS le vérifier avec check_syntax est déjà 2 appels
             # par fichier modifié, avant même le rapport final — 5 ne couvrait donc que ~2

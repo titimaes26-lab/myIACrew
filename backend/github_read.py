@@ -133,6 +133,9 @@ def github_read_file(owner: str, repo: str, path: str, branch: str = "main") -> 
         path (str): chemin du fichier dans le repo (ex: 'src/App.tsx').
         branch (str): branche à lire (défaut 'main').
     """
+    return read_file_text(owner, repo, path, branch)
+
+def read_file_text(owner: str, repo: str, path: str, branch: str) -> str:
     content = read_file_cached(owner, repo, path, branch)
     # Le CONTENU d'un fichier est une donnée non fiable ; les messages d'erreur du studio, eux, restent tels quels.
     return content if content.startswith("ERREUR") else input_guards.guard_untrusted(content, f"{owner}/{repo}:{path}")

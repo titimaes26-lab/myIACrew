@@ -2,6 +2,7 @@
 from typing import Optional
 
 import crew_guardrails
+import crew_plan
 import crew_workspace
 from crew_state import CrewExecutionState
 from analyst_output import review_diagnostic_output
@@ -59,11 +60,22 @@ class CrewChecksMixin(CrewExecutionState):
         self._edit_scope = {}
         # Tâche d'architecture de CETTE exécution (None sans architecte, ex. BUGFIX) : la QA y lit le plan.
         self._architecture_task_ref = None
+        self._diagnostic_task_ref = None
         self._pull_request_urls = []
         self._analyst_raw = ""
         self._request_type = ""
         self._user_request = extract_user_request(str(inputs.get("user_request") or ""))
         self._commit_tool_used = False
+
+    def _brief_analyst(self, architecture_raw: str) -> None:
+        """Ajoute (une seule fois) le plan de l'Architecte à la description de la tâche de l'Analyste, AVANT sa planification."""
+        task, brief = self._diagnostic_task_ref, crew_plan.plan_briefing(architecture_raw)
+        if task is not None and brief and crew_plan.PLAN_BRIEFING_TITLE not in (task.description or ""):
+            task.description = f"{task.description}\n\n{brief}"
+
+    def _plan_mismatch(self, delivered_paths) -> Optional[str]:
+        plan = getattr(getattr(self._architecture_task_ref, "output", None), "raw", "") or ""
+        return crew_plan.plan_mismatch_issue(crew_guardrails._planned_paths(plan), set(delivered_paths))
 
     def _diagnostic_retry_context(self) -> str:
         """Specs/architecture reçues par diagnostic_task : CrewAI ne les repasse PAS à l'agent
@@ -102,6 +114,9 @@ class CrewChecksMixin(CrewExecutionState):
             issue = f"{issue}\n\n{clarification}" if issue else clarification
         self._analyst_files = list(merged.values())
         self._not_extracted = not_extracted
+        mismatch = self._plan_mismatch(merged)
+        if mismatch:
+            issue = f"{issue}\n\n{mismatch}" if issue else mismatch
         if issue is None:
             return True, task_output
         self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1

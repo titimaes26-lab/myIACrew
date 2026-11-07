@@ -90,14 +90,12 @@ class CrewRun:
     def _reset_state(self) -> None:
         self.crew._reset_execution_state(self.inputs)
         self.crew._request_type = self.request_type
-        self.crew._architecture_task_ref = self.tasks_by_key.get('architecture')
+        self.crew._architecture_task_ref, self.crew._diagnostic_task_ref = self.tasks_by_key.get('architecture'), self.tasks_by_key.get('diagnostic')
 
     async def execute(self) -> str:
         try:
-            # Hors boucle asyncio : le rejeu du contrôle de l'Analyste lit le dépôt (appels GitHub bloquants) et
-            # chaque étape reprise écrit en base — comme pour on_step_change, jamais directement sur la boucle.
-            # DANS le try : le finally purge le cache mémoïsé de CrewAI même si ce rejeu échoue.
-            # Strictement séquentiel (await) : rien d'autre ne touche cette instance de crew pendant ce temps.
+            # Hors boucle asyncio (rejeu du contrôle de l'Analyste = lectures GitHub bloquantes, écritures en base) ; DANS le try :
+            # le finally purge le cache de CrewAI même si ce rejeu échoue. Strictement séquentiel (await).
             if self.resume_outputs:
                 await asyncio.to_thread(self._apply_resume)
             await self._run_attempts()
@@ -105,9 +103,8 @@ class CrewRun:
             self._release()
         return await self._final_result()
 
-    # Reprise d'une exécution précédente : les étapes déjà réussies (préfixe, voir crew_workflow.resumable_prefix)
-    # sont posées comme TERMINÉES, exactement comme si on_task_complete les avait vues passer — leur
-    # sortie reste donc le contexte des étapes suivantes sans être recalculée (ni repayée en quota).
+    # Reprise : les étapes déjà réussies (préfixe, voir crew_workflow.resumable_prefix) sont posées TERMINÉES comme si on_task_complete
+    # les avait vues passer : leur sortie reste le contexte des suivantes sans être recalculée (ni repayée en quota).
     def _apply_resume(self) -> None:
         resume_outputs = self.resume_outputs or {}
         for key in crew_workflow.resumable_prefix(self.step_keys, resume_outputs):
@@ -132,6 +129,8 @@ class CrewRun:
                     break
             self.completed_keys.append(key)
             self.completed_outputs[key] = reused
+            if key == 'architecture':
+                self.crew._brief_analyst(raw)
             if self.on_task_output_complete is not None:
                 try:
                     self.on_task_output_complete(role, raw, None, **self._model_kwargs(role, reused_model))
@@ -214,6 +213,8 @@ class CrewRun:
         key, task_obj = remaining[self.attempt_completed - 1]
         self.completed_keys.append(key)
         self.completed_outputs[key] = task_output
+        if key == 'architecture':
+            self.crew._brief_analyst(getattr(task_output, "raw", "") or "")   # l'Analyste planifie avec le plan sous les yeux
 
         # Persister la sortie complétée de l'agent pour affichage progressif
         agent_name = (task_obj.agent.role or "Agent").strip()
