@@ -215,3 +215,9 @@ def test_a_missing_model_never_triggers_the_fallback_when_it_is_disabled(wrapped
     with pytest.raises(RuntimeError):
         FakeModels().generate_content(model=FLASH, contents="x")
     assert FakeModels.seen == [FLASH]
+
+
+def test_a_second_404_while_the_fallback_is_already_active_is_replayed_too(wrapped):
+    assert llm_fallback.note_model_missing(FLASH, now=0) is True            # 1er 404 : active le repli
+    assert llm_fallback.note_model_missing(FLASH, now=1) is True            # appel déjà en vol au même moment : rejoué lui aussi
+    assert llm_fallback.note_model_missing(FLASH, now=10_000) is True       # repli expiré (> 1 h) : réactivé, rejoué

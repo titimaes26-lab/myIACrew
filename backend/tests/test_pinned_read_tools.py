@@ -33,10 +33,18 @@ def test_another_repository_is_refused_with_the_right_name_and_never_fetched(cal
     assert calls == []
 
 
-def test_without_a_target_repository_nothing_is_restricted(calls):
-    read, _ = crew_read_tools.pinned_github_readers(_Crew(None))
-    read.run(owner="x", repo="y", path="p")
-    assert calls and calls[0][1:3] == ("x", "y")
+def test_without_a_target_repository_every_github_read_is_refused_in_favour_of_the_local_reader(calls):
+    read, listing = crew_read_tools.pinned_github_readers(_Crew(None))
+    for out in (read.run(owner="x", repo="y", path="p"), listing.run(owner="x", repo="y")):
+        assert out.startswith("ERREUR") and "lecture local" in out
+    assert calls == []
+
+
+@pytest.mark.parametrize("owner, repo", [(None, "game"), ("acme", None), ("", ""), (42, ["x"])])
+def test_non_text_arguments_are_refused_with_the_guided_message_instead_of_raising(calls, owner, repo):
+    read = crew_read_tools.pinned_github_readers(_Crew(("acme", "game")))[0]
+    out = read.func(owner=owner, repo=repo, path="p")
+    assert out.startswith("ERREUR") and "acme/game" in out and calls == []
 
 
 def test_the_reading_agents_use_pinned_tools():

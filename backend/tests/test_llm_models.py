@@ -106,6 +106,11 @@ def test_the_analyst_model_can_be_set_alone_and_the_global_override_wins(monkeyp
     monkeypatch.setenv("GEMINI_DIAGNOSTIC_MODEL", "gemini/gemini-3.5-flash-lite")
     assert llm_models.model_for_agent("diagnostic_agent") == "gemini/gemini-3.5-flash-lite"      # déjà préfixé : inchangé
     assert llm_models.model_for_agent("architect_agent") == "gemini/gemini-3.5-flash-lite"      # les autres agents ne bougent pas
+    for raw in ("models/Gemini-3.5-Flash-Lite", " gemini/gemini-3.5-flash-lite "):
+        monkeypatch.setenv("GEMINI_DIAGNOSTIC_MODEL", raw)
+        assert llm_models.model_for_agent("diagnostic_agent") == "gemini/gemini-3.5-flash-lite"
+    monkeypatch.setenv("GEMINI_DIAGNOSTIC_MODEL", "openai/gpt-x")
+    assert llm_models.model_for_agent("diagnostic_agent") == "openai/gpt-x"                      # autre fournisseur : tel quel
     monkeypatch.setenv("GEMINI_MODEL", "gemini/autre")
     assert llm_models.model_for_agent("diagnostic_agent") == "gemini/autre"
 

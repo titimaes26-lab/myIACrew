@@ -61,6 +61,7 @@ class CrewChecksMixin(CrewExecutionState):
         # Tâche d'architecture de CETTE exécution (None sans architecte, ex. BUGFIX) : la QA y lit le plan.
         self._architecture_task_ref = None
         self._diagnostic_task_ref = None
+        self._plan_withdrawn: set[str] = set()
         self._pull_request_urls = []
         self._analyst_raw = ""
         self._request_type = ""
@@ -72,11 +73,19 @@ class CrewChecksMixin(CrewExecutionState):
         task, brief = self._diagnostic_task_ref, crew_plan.plan_briefing(architecture_raw)
         if task is not None and brief and crew_plan.PLAN_BRIEFING_TITLE not in (task.description or ""):
             task.description = f"{task.description}\n\n{brief}"
+            # CrewAI reconstruit la description depuis `_original_description` à CHAQUE kickoff : sans ceci, un nouvel essai de l'équipe
+            # (Analyste en échec après l'Architecte) perdrait le rappel.
+            original = getattr(task, "_original_description", None)
+            if original is not None and crew_plan.PLAN_BRIEFING_TITLE not in original:
+                task._original_description = f"{original}\n\n{brief}"
 
     def _plan_mismatch(self, delivered_paths) -> Optional[str]:
         plan = getattr(getattr(self._architecture_task_ref, "output", None), "raw", "") or ""
         planned = crew_guardrails._planned_paths(plan)
-        withdrawn = crew_guardrails._withdrawn_paths(getattr(self, "_analyst_raw", "") or "", sorted(planned)) if planned else set()
+        withdrawn = set(getattr(self, "_plan_withdrawn", ()))      # retraits « NON réalisé » de TOUTES les tentatives, pas seulement la dernière
+        if planned:
+            withdrawn |= crew_guardrails._withdrawn_paths(getattr(self, "_analyst_raw", "") or "", sorted(planned))
+        self._plan_withdrawn = withdrawn
         return crew_plan.plan_mismatch_issue(planned, set(delivered_paths), withdrawn)
 
     def _diagnostic_retry_context(self) -> str:

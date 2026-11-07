@@ -211,3 +211,37 @@ def test_the_guardrail_asks_once_for_the_missing_planned_files_then_accepts_and_
                        + "\n\nsrc/engine/powerUpEngine.ts NON réalisé : hors périmètre.")
     ok, _ = crew._diagnostic_guardrail(withdrawn)
     assert ok                                                                               # 2 fichiers sur 3 traités
+
+
+def test_the_briefing_survives_a_new_kickoff_of_the_crew():
+    """CrewAI reconstruit la description depuis `_original_description` à chaque kickoff : un nouvel essai de l'équipe (Analyste en échec
+    après l'Architecte) ne doit pas perdre le rappel du plan."""
+    crew = cq.AppDevelopmentCrew()
+    task = crew.diagnostic_task()
+    crew._diagnostic_task_ref = task
+    task.interpolate_inputs_and_add_conversation_history(INPUTS)            # 1er kickoff : l'original est figé SANS le rappel
+    crew._brief_analyst(ARCHITECT_PLAN)                                         # l'Architecte finit pendant ce kickoff
+    task.interpolate_inputs_and_add_conversation_history(INPUTS)            # nouvel essai de l'équipe
+    assert crew_plan.PLAN_BRIEFING_TITLE in task.description and "src/engine/powerUpEngine.ts" in task.description
+
+
+@pytest.mark.parametrize("planned, delivered, flagged", [
+    ({"src/a/index.ts", "src/b/index.ts", "src/c/index.ts", "src/d/index.ts"}, {"index.ts"}, True),       # 1 fichier ne couvre pas 4 homonymes
+    ({"src/a/index.ts", "src/b/index.ts"}, {"src/a/index.ts", "src/b/index.ts"}, False),
+    ({"src/App.tsx", "src/admin/App.tsx"}, {"App.tsx"}, False),                                            # 1 sur 2 : la moitié
+    ({"src/App.tsx"}, {"frontend/src/App.tsx"}, False),
+])
+def test_one_delivered_file_covers_only_one_planned_file(planned, delivered, flagged):
+    assert (crew_plan.plan_mismatch_issue(planned, delivered) is not None) is flagged
+
+
+def test_withdrawals_of_an_earlier_attempt_still_count_in_the_next_one():
+    from crew_support import output, _edit_block
+    crew = _plan_crew()
+    first = output(_edit_block("src/App.tsx", "export const a = 1;", "export const a = 2;")
+                   + "\n\nsrc/engine/powerUpEngine.ts NON réalisé : hors périmètre.")
+    ok, _ = crew._diagnostic_guardrail(first)
+    assert ok and "src/engine/powerUpEngine.ts" in crew._plan_withdrawn
+    second = output(_edit_block("src/App.tsx", "export const a = 1;", "export const a = 3;"))      # ne répète pas le retrait
+    ok, message = crew._diagnostic_guardrail(second)                                              # sans cumul : 1 fichier sur 3 → refus
+    assert ok, message

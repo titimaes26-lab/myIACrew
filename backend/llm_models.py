@@ -83,13 +83,13 @@ def model_key(name: Optional[str]) -> str:
     return key
 
 
-def rate_margin() -> float:
-    """Part des plafonds réellement utilisée (LLM_RATE_MARGIN, entre 0,1 et 1) ; 0,8 par défaut ou si illisible."""
+def rate_margin(default: float = DEFAULT_RATE_MARGIN) -> float:
+    """Part des plafonds réellement utilisée (LLM_RATE_MARGIN, entre 0,1 et 1) ; `default` (0,8, ou la marge propre au modèle) si absente ou illisible."""
     try:
         value = float(os.getenv("LLM_RATE_MARGIN", ""))
     except ValueError:
-        return DEFAULT_RATE_MARGIN
-    return value if 0.1 <= value <= 1.0 else DEFAULT_RATE_MARGIN
+        return default
+    return value if 0.1 <= value <= 1.0 else default
 
 
 def _limits_overrides() -> dict[str, ModelLimits]:
@@ -124,7 +124,7 @@ def limits_for(model: Optional[str]) -> Optional[ModelLimits]:
     if official is None:
         return None
     # Marge par défaut propre au modèle (3.8 : 10 RPM pleins, le plus bas plafond et l'Analyste fait ~45 appels) ; LLM_RATE_MARGIN l'emporte.
-    margin = rate_margin() if os.getenv("LLM_RATE_MARGIN", "").strip() else MODEL_MARGINS.get(model_key(model), DEFAULT_RATE_MARGIN)
+    margin = rate_margin(MODEL_MARGINS.get(model_key(model), DEFAULT_RATE_MARGIN))
     return ModelLimits(
         rpm=max(1, math.floor(official.rpm * margin)),
         tpm=max(1, math.floor(official.tpm * margin)),
@@ -138,7 +138,8 @@ def model_for_agent(agent: str) -> str:
     forced = os.getenv("GEMINI_MODEL", "").strip()
     if not forced and agent == "diagnostic_agent":
         analyst = os.getenv("GEMINI_DIAGNOSTIC_MODEL", "").strip()
-        forced = analyst if "/" in analyst or not analyst else f"gemini/{analyst}"      # « gemini-3.5-flash-lite » sans préfixe accepté
+        key = model_key(analyst)                                          # sans « gemini/ » ni « models/ », en minuscules
+        forced = analyst if "/" in key or not key else f"gemini/{key}"    # un autre fournisseur (« openai/… ») reste tel quel
     return forced if forced else f"gemini/{AGENT_MODELS[agent]}"
 
 

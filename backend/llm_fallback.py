@@ -106,7 +106,7 @@ def note_model_missing(model_key: str, now: Optional[float] = None) -> bool:
     now = time.monotonic() if now is None else now
     with _lock:
         if _active_until.get(model_key, 0.0) > now:
-            return False
+            return True            # repli déjà actif (appel parti AVANT le 1er 404) : il doit lui aussi être rejoué, pas échouer
         _active_until[model_key] = now + max(_ttl(), MODEL_MISSING_TTL_S)
         _consecutive[model_key] = 0
     log.error(f"modèle {model_key} INTROUVABLE (404) sur cette clé : repli sur {target} pendant {max(_ttl(), MODEL_MISSING_TTL_S):.0f} s. "

@@ -7,10 +7,12 @@ import github_read
 def pinned_github_readers(crew):
     """(github_read_file, github_list_directory) de CETTE exécution : owner/repo sont choisis par le modèle, et un modèle léger
     lit alors un autre dépôt accessible avec le jeton (le studio lui-même) puis livre son code (exécution 137). Un autre
-    repository est refusé avec le bon nom ; sans repository cible, les outils d'origine servent tels quels."""
+    repository est refusé avec le bon nom ; sans repository cible, toute lecture GitHub est refusée (lecture locale seulement)."""
     def refusal(owner: str, repo: str) -> str | None:
         target = getattr(crew, "_repo_target", None)
-        if target is None or (owner.strip().lower(), repo.strip().lower()) == (target[0].lower(), target[1].lower()):
+        if target is None:
+            return "ERREUR : aucun repository cible pour cette exécution : lis les fichiers avec l'outil de lecture local."
+        if (str(owner or "").strip().lower(), str(repo or "").strip().lower()) == (target[0].lower(), target[1].lower()):
             return None
         return (f"ERREUR : lecture refusée sur {owner}/{repo}. Le repository de cette exécution est {target[0]}/{target[1]} : "
                 f"relis ce fichier avec owner='{target[0]}' et repo='{target[1]}'.")
