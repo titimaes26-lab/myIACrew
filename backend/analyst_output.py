@@ -26,6 +26,7 @@ import analyst_blocks
 import analyst_edits
 import analyst_imports
 import analyst_placeholders
+import analyst_recovery
 from tools import check_syntax_content
 
 
@@ -64,7 +65,8 @@ def _no_file_problem(text: str, files: list[dict], broken: dict[str, str]) -> st
         "'<<<FICHIER: chemin/relatif/du/fichier>>>' et une ligne '<<<FIN_FICHIER>>>', avec son "
         "contenu COMPLET entre les deux (ou, pour modifier un fichier existant, un bloc "
         "'<<<MODIFICATION: chemin>>>'). Si tu ne peux livrer aucun fichier, dis-le "
-        "explicitement en le marquant 'NON réalisé' avec la raison."
+        "explicitement en le marquant 'NON réalisé' avec la raison. Les balises sont chacune SEULE sur sa ligne, "
+        "et le contenu n'est PAS entouré d'un bloc de code (pas de ```) : un bloc de code ordinaire n'est pas un fichier livré."
     )
 
 
@@ -98,6 +100,8 @@ def review_diagnostic_output(
     files, broken = analyst_blocks.parse_file_sections(text)
     edits, edit_broken = analyst_edits.parse_edit_sections(text)
     broken.update(edit_broken)
+    if not files and not edits and not broken:
+        files = analyst_recovery.untagged_files(text)           # code livré dans des blocs ``` sans balises : récupéré seulement s'il est sans ambiguïté
     edited_paths: set[str] = set()
     replaced_text: list[dict] = []
     for path, blocks in edits.items():

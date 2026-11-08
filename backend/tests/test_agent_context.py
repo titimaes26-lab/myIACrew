@@ -245,3 +245,16 @@ def test_withdrawals_of_an_earlier_attempt_still_count_in_the_next_one():
     second = output(_edit_block("src/App.tsx", "export const a = 1;", "export const a = 3;"))      # ne répète pas le retrait
     ok, message = crew._diagnostic_guardrail(second)                                              # sans cumul : 1 fichier sur 3 → refus
     assert ok, message
+
+
+def test_untagged_code_of_the_analyst_is_recovered_by_the_guardrail_then_checked_against_the_plan():
+    """Exécution 139 : App.tsx dans un bloc ``` sans balises → plus « aucun fichier exploitable » ; 1 fichier sur 3 du plan → refus unique."""
+    from crew_support import output
+    crew = _plan_crew()
+    code = "import React from 'react';\nconst a = 1;\nexport default a;"
+    untagged = output(f"### Rapport\n\nVoici le code mis à jour de `src/App.tsx` :\n\n```tsx\n{code}\n```\n")
+    ok, message = crew._diagnostic_guardrail(untagged)
+    assert not ok and "Aucun fichier exploitable" not in message and "1 fichier(s) du plan de l'Architecte sur 3" in message
+    assert [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]
+    ok, _ = crew._diagnostic_guardrail(untagged)
+    assert ok and [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]
