@@ -256,6 +256,12 @@ diagnostic_task:
 
 development_task:
   description: >
+    Demande de l'utilisateur (rappelée UNIQUEMENT pour nommer le commit et la Pull Request ; le code à
+    committer reste exclusivement celui de l'Analyste) :
+    ---
+    {user_request}
+    ---
+
     L'Analyste Diagnostic Technique (tâche précédente, disponible dans ton contexte) a déjà déterminé
     la cause du problème et rédigé le code source complet, fichier par fichier, de ce qu'il faut
     créer ou modifier. Ce N'EST PAS ton rôle de le revérifier, le redériver ou le questionner —

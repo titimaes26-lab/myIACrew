@@ -22,13 +22,13 @@ log = get_logger("crew")
 # Contexte EXPLICITE par tâche au lieu du défaut CrewAI (toutes les sorties précédentes) :
 # chaque agent reçoit ce dont il a besoin pour raisonner, et pas plus. Le Développeur ne
 # reçoit que le code de l'Analyste (specs/architecture ne feraient que diluer ce qu'il doit
-# committer) ; la QA reçoit les critères d'acceptation du Designer en plus du code et du
-# rapport de commit, pour juger la conformité fonctionnelle.
+# committer) ; la QA reçoit les critères d'acceptation du Designer et le plan de l'Architecte en plus du
+# code et du rapport de commit, pour juger la conformité fonctionnelle ET le périmètre.
 CONTEXT_PLAN = {
     'architecture': ['design'],
     'diagnostic': ['design', 'architecture'],
     'development': ['diagnostic'],
-    'qa': ['design', 'diagnostic', 'development'],
+    'qa': ['design', 'architecture', 'diagnostic', 'development'],
 }
 
 MAX_RETRIES = 5

@@ -14,8 +14,9 @@ import crew_run
 import crewquestion as cq
 
 INPUTS = {name: "x" for name in (
-    "user_request", "conversation_context", "work_branch", "repo_instructions", "base_branch", "repo_owner", "repo_name", "repo_snapshot", "previous_plan",
+    "conversation_context", "work_branch", "repo_instructions", "base_branch", "repo_owner", "repo_name", "repo_snapshot", "previous_plan",
 )}
+INPUTS["user_request"] = "DEMANDE_UNIQUE_DE_CETTE_EXECUTION"
 ARCHITECT_PLAN = """PLAN_ARCHITECTE_UNIQUE : power-ups et niveaux
 
 ## Fichiers à créer ou modifier
@@ -258,3 +259,29 @@ def test_untagged_code_of_the_analyst_is_recovered_by_the_guardrail_then_checked
     assert [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]
     ok, _ = crew._diagnostic_guardrail(untagged)
     assert ok and [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]
+
+
+def test_the_context_plan_gives_every_step_the_outputs_it_needs():
+    import crew_run
+    assert crew_run.CONTEXT_PLAN == {
+        "architecture": ["design"], "diagnostic": ["design", "architecture"], "development": ["diagnostic"],
+        "qa": ["design", "architecture", "diagnostic", "development"],
+    }
+
+
+@pytest.mark.parametrize("request_type", ["FEATURE", "DESIGN_AND_DEV", "BUGFIX"])
+def test_the_developer_sees_the_current_request_and_the_qa_sees_the_request_and_the_architect_plan(run_workflow, request_type):
+    llms = run_workflow(request_type)
+    request = INPUTS["user_request"]
+    developer, qa = llms["developer_agent"], llms["qa_agent"]
+    assert developer.prompts and any(request in prompt for prompt in developer.prompts)
+    assert qa.prompts and any(request in prompt for prompt in qa.prompts)
+    if request_type == "BUGFIX":                                              # pas d'étape d'architecture : rien à transmettre, et aucune erreur
+        assert all(ARCHITECT_PLAN not in prompt for prompt in qa.prompts)
+    else:
+        assert any(ARCHITECT_PLAN in prompt for prompt in qa.prompts)
+
+
+def test_the_developer_does_not_receive_the_design_or_the_architect_plan():
+    import crew_run
+    assert crew_run.CONTEXT_PLAN["development"] == ["diagnostic"]               # le code de l'Analyste seul : ni design ni plan ne diluent le commit
