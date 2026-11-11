@@ -70,17 +70,28 @@ class CrewChecksMixin(CrewExecutionState):
         self._user_request = extract_user_request(str(inputs.get("user_request") or ""))
         self._commit_tool_used = False
 
+    def _reset_for_replay(self, remaining_keys: set[str]) -> None:
+        """Étapes rejouées depuis zéro après une tentative avortée : budget de refus intact (sinon le premier souci constaté serait accepté avec
+        un simple avertissement) et, pour l'Analyste, sans les fichiers fusionnés par la tentative avortée (voir _diagnostic_guardrail)."""
+        if "design" in remaining_keys:
+            self._design_guardrail_failures = 0
+        if "diagnostic" in remaining_keys:
+            self._diagnostic_guardrail_failures = 0
+            self._analyst_files, self._not_extracted = [], {}
+
     def _design_guardrail(self, task_output):
         """Refuse UNE fois des specs dont un défaut BLOQUANT est vérifiable en Python (titre manquant, « Must » sans critère, identifiant en double,
         composant renvoyant à une fonctionnalité inexistante) : le Designer les corrige avec la liste exacte. Ensuite, ou pour les défauts non bloquants
         (critères vagues), la note ajoutée en fin de document est lue par les étapes suivantes (comme avant)."""
         raw = getattr(task_output, "raw", "") or ""
-        blocking = design_spec.blocking_issues(raw)
-        if blocking and getattr(self, "_design_guardrail_failures", 0) < 1:
-            self._design_guardrail_failures = getattr(self, "_design_guardrail_failures", 0) + 1
+        with_components = getattr(self, "_request_type", "") != "ANALYSE_ONLY"        # une analyse seule n'a pas forcément d'interface
+        blocking = design_spec.blocking_issues(raw, with_components)
+        if blocking and self._design_guardrail_failures < 1:
+            self._design_guardrail_failures += 1
             return False, ("Specs à corriger avant de continuer :\n" + "\n".join(f"- {issue}" for issue in blocking)
                            + "\n\nRenvoie le document COMPLET et corrigé (mêmes titres \"##\", mêmes identifiants F/AC).")
-        return crew_guardrails._design_spec_guardrail(task_output)
+        note = crew_guardrails._make_issue_note_guardrail(lambda text: design_spec.spec_issues(text, with_components), "Contrôle automatique des specs")
+        return note(task_output)
 
     def _brief_analyst(self, architecture_raw: str) -> None:
         """Ajoute (une seule fois) le plan de l'Architecte à la description de la tâche de l'Analyste, AVANT sa planification."""

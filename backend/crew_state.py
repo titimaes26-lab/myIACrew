@@ -10,6 +10,8 @@ class CrewExecutionState:
     _write_rejections: dict[str, str]
     # Faits de livraison constatés par les OUTILS.
     _committed_paths: set[str]
+    # Refus déjà faits par le garde-fou des specs du Designer (UN seul par exécution, remis à zéro quand l'étape est rejouée).
+    _design_guardrail_failures: int
     _edit_scope: dict[str, str]
     _pull_request_urls: list[str]
     # Tâche de diagnostic (méthode @task de la classe concrète), lue par le rappel de contexte.

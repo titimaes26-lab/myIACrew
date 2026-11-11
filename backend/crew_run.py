@@ -141,13 +141,7 @@ class CrewRun:
         while True:
             remaining = [(k, t) for k, t in self.selected if k not in self.completed_keys]
 
-            # diagnostic_task rejouée depuis zéro : elle repart avec un budget guardrail intact (sinon le premier
-            # souci constaté serait accepté avec un simple avertissement) et sans les fichiers fusionnés par une
-            # tentative avortée (`_analyst_files`/`_not_extracted`, voir _diagnostic_guardrail).
-            if any(k == 'diagnostic' for k, _ in remaining):
-                self.crew._diagnostic_guardrail_failures = 0
-                self.crew._analyst_files = []
-                self.crew._not_extracted = {}
+            self.crew._reset_for_replay({k for k, _ in remaining})       # design / diagnostic rejoués depuis zéro : budgets guardrail intacts
 
             if not remaining:
                 # Tout était déjà terminé : l'échec précédent est survenu APRÈS la dernière tâche (agrégation CrewAI).

@@ -7,10 +7,12 @@ from typing import List
 
 from md_sections import markdown_section, missing_heading_issues
 
+# Titres dont l'absence justifie un refus ; « Composants d'interface » n'a de sens que pour une demande avec interface (pas pour une analyse seule).
 DESIGN_REQUIRED_HEADINGS = (
-    "Besoin", "Utilisateurs", "Fonctionnalités", "Règles et cas limites",
-    "Critères d'acceptation", "Composants d'interface", "Hypothèses retenues", "Contrôle",
+    "Besoin", "Utilisateurs", "Fonctionnalités", "Règles et cas limites", "Critères d'acceptation", "Composants d'interface", "Hypothèses retenues",
 )
+# Titre seulement NOTÉ (jamais cause de relance) : la section « Contrôle » est une auto-évaluation de l'agent, invérifiable.
+DESIGN_NOTED_HEADINGS = ("Contrôle",)
 
 _DESIGN_VAGUE_TERMS = re.compile(
     r"\b(rapide(?:ment)?|fluide|intuitif|intuitive|simple|convivial|ergonomique|joli|moderne)\b", re.IGNORECASE
@@ -19,8 +21,8 @@ _DESIGN_FEATURE_ID = r"(?<![A-Za-z-])F(\d+)\b"
 _DESIGN_MUST_BEFORE = re.compile(_DESIGN_FEATURE_ID + r"[^\n]*\[\s*Must\s*\]", re.IGNORECASE)
 _DESIGN_MUST_AFTER = re.compile(r"\[\s*Must\s*\][^\n]*?" + _DESIGN_FEATURE_ID, re.IGNORECASE)
 _DESIGN_CRITERION_ID = re.compile(r"\bAC-F(\d+)[-.](\d+)")
-# Ligne de fonctionnalité MoSCoW : « - F1 [Must] titre » (identifiant AVANT la priorité entre crochets).
-_FEATURE_LINE = re.compile(_DESIGN_FEATURE_ID + r"[^\n\[]*\[\s*(?:Must|Should|Could|Won'?t)\s*\]", re.IGNORECASE)
+# Définition d'une fonctionnalité : identifiant EN TÊTE de ligne (puce, gras ou ligne de tableau facultatifs), quel que soit le format de la priorité.
+_FEATURE_DEF = re.compile(r"^[^\S\n]*+\|?+[^\S\n]*+(?:[-*][^\S\n]*+)?+\**+[^\S\n]*+F(\d+)\b", re.MULTILINE)    # possessif et [^\S\n] : temps linéaire
 _FEATURE_REF = re.compile(_DESIGN_FEATURE_ID)
 
 
@@ -29,8 +31,9 @@ def _normalize(raw: str) -> str:
     return raw.replace("’", "'").replace("‘", "'")
 
 
-def _feature_ids(raw: str) -> List[str]:
-    return [m.group(1) for m in _FEATURE_LINE.finditer(raw)]
+def _features_text(raw: str) -> str:
+    """Section « Fonctionnalités » (sinon tout le document) : ni la section « Contrôle » ni les hypothèses ne définissent de fonctionnalité."""
+    return markdown_section(raw, "Fonctionnalités") or raw
 
 
 def _component_issues(raw: str, known: set[str]) -> List[str]:
@@ -38,7 +41,7 @@ def _component_issues(raw: str, known: set[str]) -> List[str]:
     section = markdown_section(raw, "Composants d'interface")
     issues = []
     for line in (section or "").splitlines():
-        if not re.match(r"^\s*[-*]\s", line) or line.strip(" -*") == "":
+        if not re.match(r"^[-*]\s", line) or line.strip(" -*") == "":          # puces de PREMIER niveau seulement : les états imbriqués ne sont pas des composants
             continue
         refs = {m.group(1) for m in _FEATURE_REF.finditer(line)}
         name = line.strip(" -*")[:60]
@@ -49,25 +52,29 @@ def _component_issues(raw: str, known: set[str]) -> List[str]:
     return issues
 
 
-def blocking_issues(raw: str) -> List[str]:
+def blocking_issues(raw: str, with_components: bool = True) -> List[str]:
+    """Défauts qui justifient UN refus. `with_components` : False pour une demande sans interface (le titre et ses renvois ne sont pas exigés)."""
     raw = _normalize(raw)
-    issues = missing_heading_issues(raw, DESIGN_REQUIRED_HEADINGS)
-    ids = _feature_ids(raw)
+    headings = [h for h in DESIGN_REQUIRED_HEADINGS if with_components or h != "Composants d'interface"]
+    issues = missing_heading_issues(raw, headings)
+    features = _features_text(raw)
+    ids = [m.group(1) for m in _FEATURE_DEF.finditer(features)]
     for number in sorted({i for i in ids if ids.count(i) > 1}, key=int):
         issues.append(f"Identifiant F{number} utilisé par plusieurs fonctionnalités.")
-    must_numbers = {m.group(1) for m in _DESIGN_MUST_BEFORE.finditer(raw)} | {m.group(1) for m in _DESIGN_MUST_AFTER.finditer(raw)}
+    must_numbers = {m.group(1) for m in _DESIGN_MUST_BEFORE.finditer(features)} | {m.group(1) for m in _DESIGN_MUST_AFTER.finditer(features)}
     covered = {m.group(1) for m in _DESIGN_CRITERION_ID.finditer(raw)}
     for number in sorted(must_numbers - covered, key=int):
         issues.append(f"F{number} [Must] n'a aucun critère d'acceptation AC-F{number}-n.")
-    if ids:                                         # sans liste lisible de fonctionnalités, le titre manquant est déjà signalé : pas de bruit en plus
-        issues += _component_issues(raw, set(ids) | must_numbers)
+    if with_components and ids:                       # sans liste lisible de fonctionnalités, le titre manquant est déjà signalé : pas de bruit en plus
+        known = set(ids) | must_numbers
+        issues += _component_issues(raw, known)
     return issues
 
 
-def spec_issues(raw: str) -> List[str]:
-    """Tous les défauts vérifiables : bloquants d'abord, puis critères vagues sans seuil mesurable."""
+def spec_issues(raw: str, with_components: bool = True) -> List[str]:
+    """Tous les défauts vérifiables : bloquants d'abord, puis titres seulement notés, puis critères vagues sans seuil mesurable."""
     raw = _normalize(raw)
-    issues = blocking_issues(raw)
+    issues = blocking_issues(raw, with_components) + missing_heading_issues(raw, DESIGN_NOTED_HEADINGS)
     for line in raw.splitlines():
         criterion = _DESIGN_CRITERION_ID.search(line)
         if criterion:

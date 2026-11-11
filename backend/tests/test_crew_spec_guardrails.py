@@ -226,3 +226,49 @@ def test_the_refusal_budget_is_reset_for_each_execution():
 def test_the_designer_task_is_wired_to_the_retrying_guardrail():
     task = cq.AppDevelopmentCrew().design_task()
     assert task.guardrail_max_retries == 1
+
+
+# --- revue : faux refus et budget de refus ---------------------------------------------------------------------------------
+
+def test_nested_state_bullets_under_a_component_are_not_components():
+    spec = GOOD_SPEC.replace("- ListeTâches (F1) : états : vide, chargement, erreur, succès", "- ListeTâches (F1) :\n  - états : vide\n  - états : erreur")
+    assert crew_guardrails._design_spec_issues(spec) == []
+
+
+def test_control_and_hypothesis_lines_never_redefine_a_feature():
+    spec = GOOD_SPEC.replace("- Chaque Must a un critère : OUI", "- F1 [Must] a un critère AC : OUI\n- F2 [Should] sans objet : OUI")
+    assert crew_guardrails._design_spec_issues(spec) == []
+
+
+def test_any_feature_format_defines_an_identifier_for_component_references():
+    spec = (GOOD_SPEC.replace("- F2 [Should] Filtrer", "- **F2** — Filtrer (Should)\n- F3 (Could) Trier").replace("(F1) : états", "(F3) : états"))
+    assert crew_guardrails._design_spec_issues(spec) == []
+    assert any("F9" in i for i in crew_guardrails._design_spec_issues(spec.replace("(F3) : états", "(F9) : états")))
+
+
+def test_control_section_is_only_noted_and_components_are_not_required_for_an_analysis_only_request():
+    no_control = GOOD_SPEC.replace("## Contrôle\n- Chaque Must a un critère : OUI\n", "")
+    crew = new_crew()
+    crew._request_type = "DESIGN_AND_DEV"
+    ok, result = crew._design_guardrail(output(no_control))
+    assert ok and "Section « Contrôle » absente." in str(result)             # noté, jamais refusé
+    assert crew._design_guardrail_failures == 0
+    no_components = GOOD_SPEC.replace("## Composants d'interface\n- ListeTâches (F1) : états : vide, chargement, erreur, succès\n", "")
+    analysis = new_crew()
+    analysis._request_type = "ANALYSE_ONLY"
+    ok, result = analysis._design_guardrail(output(no_components))
+    assert ok and analysis._design_guardrail_failures == 0 and "Composants d'interface" not in str(result)
+    app = new_crew()
+    app._request_type = "DESIGN_AND_DEV"
+    ok, _ = app._design_guardrail(output(no_components))
+    assert not ok and app._design_guardrail_failures == 1
+
+
+def test_the_refusal_budget_is_restored_when_the_design_step_is_replayed():
+    crew = new_crew()
+    crew._design_guardrail_failures, crew._diagnostic_guardrail_failures = 1, 1
+    crew._analyst_files = [{"path": "a.ts", "content": "x"}]
+    crew._reset_for_replay({"architecture", "qa"})                               # design et diagnostic déjà terminés : rien à remettre à zéro
+    assert crew._design_guardrail_failures == 1 and crew._diagnostic_guardrail_failures == 1 and crew._analyst_files
+    crew._reset_for_replay({"design", "diagnostic"})
+    assert (crew._design_guardrail_failures, crew._diagnostic_guardrail_failures, crew._analyst_files, crew._not_extracted) == (0, 0, [], {})
