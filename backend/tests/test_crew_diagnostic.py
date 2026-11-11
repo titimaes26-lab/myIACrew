@@ -47,7 +47,8 @@ def test_guardrail_refuses_once_on_inconsistent_imports_then_accepts_with_a_note
     assert not ok and "imports" in message and "'total'" in message
     ok, result = crew._diagnostic_guardrail(output(bad))
     assert ok and "Incohérences entre fichiers" in result
-    assert {f["path"] for f in crew._analyst_files} == {"src/App.tsx", "src/cart.ts"}
+    # Depuis l'exécution 139 : App.tsx importe un nom que cart.ts n'exporte pas (le build échouerait) → il n'est plus committé.
+    assert {f["path"] for f in crew._analyst_files} == {"src/cart.ts"} and "imports cassés" in crew._not_extracted["src/App.tsx"]
 
 
 def test_diagnostic_guardrail_excludes_shortcut_files_on_final_accept():
@@ -182,3 +183,68 @@ def test_file_withdrawn_in_the_same_response_is_not_committed():
     ok, out = crew._diagnostic_guardrail(raw)
     assert ok and [f["path"] for f in crew._analyst_files] == ["src/b.ts"]
     assert "src/App.tsx" in crew._not_extracted and "src/App.tsx" in out
+
+
+# --- exécution 139 : un fichier dont les imports ne mènent à rien n'est PAS committé -------------------------------------------
+
+def _file_block(path: str, body: str) -> str:
+    return f"<<<FICHIER: {path}>>>\n{body}\n<<<FIN_FICHIER>>>\n"
+
+
+APP_MISSING = "import { GameStatsPanel } from './components/GameStatsPanel';\nexport default function App() { return GameStatsPanel; }"
+GOOD_COMPONENT = "export const GameStatsPanel = 1;\nexport const other = 2;\nexport const third = 3;"
+
+
+def _crew_with_empty_repo():
+    crew = new_crew()
+    crew._base_readers = (lambda path: (None, "FILE_ABSENT"), lambda directory: set())     # aucun fichier existant : tout import doit être livré
+    return crew
+
+
+def test_an_accepted_answer_with_a_missing_import_target_is_not_committed_and_is_listed_as_not_delivered():
+    crew = _crew_with_empty_repo()
+    answer = output(_file_block("src/App.tsx", APP_MISSING))
+    ok, message = crew._diagnostic_guardrail(answer)
+    assert not ok and "GameStatsPanel" in message                                       # 1er passage : refus avec le défaut
+    ok, result = crew._diagnostic_guardrail(answer)                                     # 2e passage : accepté, mais App.tsx n'est pas committable
+    assert ok and crew._analyst_files == []
+    assert "imports cassés" in crew._not_extracted["src/App.tsx"] and "exclu du commit" in result
+
+
+def test_files_whose_imports_resolve_are_kept():
+    crew = _crew_with_empty_repo()
+    answer = output(_file_block("src/App.tsx", APP_MISSING) + _file_block("src/components/GameStatsPanel.tsx", GOOD_COMPONENT))
+    ok, _ = crew._diagnostic_guardrail(answer)
+    assert ok and {f["path"] for f in crew._analyst_files} == {"src/App.tsx", "src/components/GameStatsPanel.tsx"}
+    assert crew._not_extracted == {}
+
+
+def test_dropping_a_file_cascades_to_the_files_that_depended_on_it():
+    crew = _crew_with_empty_repo()
+    page = "import { Panel } from './Panel';\nexport const Page = Panel;\nexport const x = 1;"
+    panel = "import { nothing } from './Missing';\nexport const Panel = nothing;\nexport const y = 2;"
+    answer = output(_file_block("src/Page.tsx", page) + _file_block("src/Panel.tsx", panel))
+    crew._diagnostic_guardrail(answer)
+    ok, _ = crew._diagnostic_guardrail(answer)
+    assert ok and crew._analyst_files == [] and set(crew._not_extracted) == {"src/Page.tsx", "src/Panel.tsx"}
+
+
+def test_an_unknown_directory_never_drops_a_file():
+    crew = new_crew()
+    crew._base_readers = (lambda path: (None, "FILE_ABSENT"), lambda directory: None)  # panne GitHub : dans le doute, on ne retire rien
+    answer = output(_file_block("src/App.tsx", APP_MISSING))
+    ok, _ = crew._diagnostic_guardrail(answer)
+    assert ok and [f["path"] for f in crew._analyst_files] == ["src/App.tsx"]
+
+
+def test_a_targeted_edit_is_judged_on_the_added_text_only_not_on_imports_already_in_the_original_file():
+    crew = new_crew()
+    original = "import { old } from './legacy';\nexport const a = 1;\nexport const b = old;\n"
+    crew._base_readers = (lambda path: (original, None) if path == "src/a.ts" else (None, "ABSENT"), lambda directory: set())
+    answer = output(                                                                       # './legacy' manque, mais il était DÉJÀ dans le fichier d'origine
+        _edit_block("src/a.ts", "export const a = 1;", "export const a = 2;")
+        + _file_block("src/b.ts", "import { z } from './nope';\nexport const b = z;\nexport const c = 1;")     # défaut réel : force le chemin « accepté malgré le problème »
+    )
+    assert crew._diagnostic_guardrail(answer)[0] is False
+    ok, _ = crew._diagnostic_guardrail(answer)
+    assert ok and [f["path"] for f in crew._analyst_files] == ["src/a.ts"] and set(crew._not_extracted) == {"src/b.ts"}

@@ -6,6 +6,7 @@ import design_spec
 import crew_plan
 import crew_workspace
 from crew_state import CrewExecutionState
+import analyst_imports
 from analyst_output import review_diagnostic_output
 from analyst_edits import parse_edit_sections
 from delivery import extract_user_request, render_delivery_block, unconfirmed_pr_urls
@@ -164,10 +165,23 @@ class CrewChecksMixin(CrewExecutionState):
         for path in ambiguous:
             merged.pop(path, None)
             not_extracted[path] = "livré mais déclaré NON réalisé, ambiguïté non levée"
+        self._drop_files_with_broken_imports(merged, not_extracted)
         self._analyst_files = list(merged.values())
         self._not_extracted = not_extracted
         excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
         return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
+
+    def _drop_files_with_broken_imports(self, merged: dict[str, dict], not_extracted: dict[str, str]) -> None:
+        """Sortie ACCEPTÉE malgré des imports qui ne mènent à rien (exécution 139 : App.tsx importait deux composants jamais livrés, le build de
+        PlatformGame a échoué) : ces fichiers ne sont PAS committés, ils sont listés NON LIVRÉS. Répété jusqu'à stabilité : retirer un fichier
+        peut en priver un autre de sa cible."""
+        while True:
+            broken = analyst_imports.files_with_import_problems(list(merged.values()), self._list_base_dir, dict(self._edit_scope))
+            if not broken:
+                return
+            for path, messages in broken.items():
+                merged.pop(path, None)
+                not_extracted[path] = f"imports cassés : {messages[0]}"[:240]
 
     def _merge_analyst_attempt(
         self, raw: str, files: list[dict], faulty_paths: set[str], broken: dict[str, str],

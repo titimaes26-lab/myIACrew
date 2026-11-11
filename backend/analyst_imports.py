@@ -110,13 +110,13 @@ def _export_problems(
     return problems
 
 
-def find_import_problems(
+def _problems_by_path(
     files: list[dict],
     list_dir: Callable[[str], set[str] | None] | None = None,
     context_files: list[dict] | None = None,
     import_scope: dict[str, str] | None = None,
-) -> list[str]:
-    """Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un
+) -> list[tuple[str, str]]:
+    """[(fichier fautif, message)] — voir find_import_problems. Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un
     fichier existant, et import nommé (ou par défaut) absent des exports d'un fichier LIVRÉ.
 
     list_dir(dossier) -> noms des entrées, ou None si inconnu (erreur réseau, dossier absent) :
@@ -136,7 +136,7 @@ def find_import_problems(
             dir_cache[directory] = list_dir(directory)
         return dir_cache[directory]
 
-    problems: list[str] = []
+    problems: list[tuple[str, str]] = []
     scanned = {f["path"]: f["content"] for f in files}
     scanned.update({p: t for p, t in (import_scope or {}).items() if p in scanned})
     for path, content in scanned.items():
@@ -148,9 +148,29 @@ def find_import_problems(
             if resolved is None:
                 missing = _missing_import_problem(path, spec, candidates, entries)
                 if missing:
-                    problems.append(missing)
+                    problems.append((path, missing))
                 continue
             if analyst_blocks.extension(resolved) not in CODE_EXTENSIONS:
                 continue
-            problems += _export_problems(path, spec, resolved, default_name, named, delivered[resolved])
+            problems += [(path, message) for message in _export_problems(path, spec, resolved, default_name, named, delivered[resolved])]
     return list(dict.fromkeys(problems))
+
+
+def find_import_problems(
+    files: list[dict],
+    list_dir: Callable[[str], set[str] | None] | None = None,
+    context_files: list[dict] | None = None,
+    import_scope: dict[str, str] | None = None,
+) -> list[str]:
+    """Messages des incohérences d'imports entre fichiers (voir _problems_by_path pour les paramètres et les cas signalés)."""
+    return list(dict.fromkeys(message for _, message in _problems_by_path(files, list_dir, context_files, import_scope)))
+
+
+def files_with_import_problems(
+    files: list[dict], list_dir: Callable[[str], set[str] | None] | None = None, import_scope: dict[str, str] | None = None,
+) -> dict[str, list[str]]:
+    """{fichier fautif: messages} : les fichiers livrés dont un import ne mène à rien (ils ne compileraient pas)."""
+    grouped: dict[str, list[str]] = {}
+    for path, message in _problems_by_path(files, list_dir, None, import_scope):
+        grouped.setdefault(path, []).append(message)
+    return grouped

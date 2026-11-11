@@ -16,3 +16,5 @@ class CrewExecutionState:
     _pull_request_urls: list[str]
     # Tâche de diagnostic (méthode @task de la classe concrète), lue par le rappel de contexte.
     diagnostic_task: Callable[[], Any]
+    # Liste d'un dossier du code d'origine (posée par CrewToolsMixin), lue par le contrôle des imports.
+    _list_base_dir: Callable[[str], set[str] | None]
