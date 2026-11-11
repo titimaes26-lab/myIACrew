@@ -7,7 +7,7 @@ import pytest
 cq = pytest.importorskip("crewquestion")
 import qa_report
 import crew_guardrails
-from crew_support import output, GOOD_SPEC
+from crew_support import output, GOOD_SPEC, new_crew
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -174,3 +174,55 @@ def test_is_withdrawn_with_full_candidate_set():
 ])
 def test_incidental_verdict_mentions_are_not_verdicts(text):
     assert qa_report.QA_VERDICT.search(text) is None
+
+
+# --- refus unique des specs avec défaut bloquant (CrewChecksMixin._design_guardrail) et contrôles ajoutés --------------------------
+
+def test_missing_interface_components_and_control_sections_are_now_required():
+    spec = GOOD_SPEC.replace("## Composants d'interface\n- ListeTâches (F1) : états : vide, chargement, erreur, succès\n", "").replace("## Contrôle\n- Chaque Must a un critère : OUI\n", "")
+    issues = crew_guardrails._design_spec_issues(spec)
+    assert "Section « Composants d'interface » absente." in issues and "Section « Contrôle » absente." in issues
+
+
+def test_duplicate_feature_ids_and_dangling_component_references_are_flagged():
+    spec = GOOD_SPEC.replace("- F2 [Should] Filtrer", "- F1 [Should] Filtrer").replace("(F1) : états", "(F9) : états")
+    issues = crew_guardrails._design_spec_issues(spec)
+    assert "Identifiant F1 utilisé par plusieurs fonctionnalités." in issues
+    assert any("renvoie à F9, qui n'existe pas" in issue for issue in issues)
+
+
+def test_a_component_without_any_feature_is_flagged():
+    spec = GOOD_SPEC.replace("ListeTâches (F1) : états", "ListeTâches : états")
+    assert any("Composant sans fonctionnalité" in issue for issue in crew_guardrails._design_spec_issues(spec))
+
+
+def test_the_design_guardrail_refuses_once_with_the_exact_list_then_accepts_with_a_note():
+    crew = new_crew()
+    bad = output(GOOD_SPEC.replace("- F2 [Should] Filtrer", "- F1 [Should] Filtrer"))
+    ok, message = crew._design_guardrail(bad)
+    assert not ok and "Identifiant F1 utilisé par plusieurs fonctionnalités." in message and "COMPLET" in message
+    ok, result = crew._design_guardrail(bad)                                       # 2e passage : accepté, défauts notés pour les étapes suivantes
+    assert ok and "Contrôle automatique des specs" in result and "plusieurs fonctionnalités" in result
+
+
+def test_the_design_guardrail_accepts_good_specs_and_only_notes_vague_criteria_without_a_retry():
+    crew = new_crew()
+    ok, result = crew._design_guardrail(output(GOOD_SPEC))
+    assert ok and "Contrôle automatique" not in str(getattr(result, "raw", result))
+    vague = output(GOOD_SPEC + "- AC-F1-2 Alors l'écran s'affiche rapidement\n")
+    ok, result = crew._design_guardrail(vague)
+    assert ok and "Critère vague" in str(result)                                  # non bloquant : pas de refus
+    assert crew._design_guardrail_failures == 0
+
+
+def test_the_refusal_budget_is_reset_for_each_execution():
+    crew = new_crew()
+    crew._design_guardrail(output("## Besoin\nseulement ça"))
+    assert crew._design_guardrail_failures == 1
+    crew._reset_execution_state({})
+    assert crew._design_guardrail_failures == 0
+
+
+def test_the_designer_task_is_wired_to_the_retrying_guardrail():
+    task = cq.AppDevelopmentCrew().design_task()
+    assert task.guardrail_max_retries == 1

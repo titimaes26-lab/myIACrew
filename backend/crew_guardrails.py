@@ -1,10 +1,13 @@
 """Contrôles automatiques de la sortie des agents : specs, architecture, verdict QA, fichiers retirés, périmètre."""
 import re
-from typing import List, Optional
+from typing import List
 
 from analyst_blocks import NOT_DELIVERED_MARKER
 from analyst_blocks import normalize_path, strip_file_blocks
 from qa_report import QA_VERDICT
+import design_spec
+from design_spec import DESIGN_REQUIRED_HEADINGS  # noqa: F401  (réexporté)
+from md_sections import markdown_section as _markdown_section, missing_heading_issues as _missing_heading_issues
 
 _NEGATION_BEFORE = re.compile(r"\b(rien|aucun|pas|nothing|no)\s+(de\s+|d'\s*)?$", re.IGNORECASE)
 
@@ -126,13 +129,6 @@ def _qa_verdict_guardrail(task_output):
         "comme NO_GO tant qu'une vérification humaine n'a pas eu lieu."
     )
 
-def _missing_heading_issues(raw: str, headings) -> List[str]:
-    return [
-        f"Section « {heading} » absente."
-        for heading in headings
-        if not re.search(rf"^#+\s*.*{re.escape(heading)}", raw, re.IGNORECASE | re.MULTILINE)
-    ]
-
 def _make_issue_note_guardrail(issues_fn, title: str):
     """Guardrail qui signale les anomalies SANS relancer l'agent (une relance coûterait un appel
     LLM de plus sous un quota serré) : la note ajoutée est lue par les tâches suivantes."""
@@ -144,46 +140,7 @@ def _make_issue_note_guardrail(issues_fn, title: str):
         return True, f"{raw}\n\n## {title}\n" + "\n".join(f"- {issue}" for issue in issues)
     return guardrail
 
-DESIGN_REQUIRED_HEADINGS = (
-    "Besoin", "Utilisateurs", "Fonctionnalités", "Règles et cas limites",
-    "Critères d'acceptation", "Hypothèses retenues",
-)
-
-_DESIGN_VAGUE_TERMS = re.compile(
-    r"\b(rapide(?:ment)?|fluide|intuitif|intuitive|simple|convivial|ergonomique|joli|moderne)\b", re.IGNORECASE
-)
-
-_DESIGN_FEATURE_ID = r"(?<![A-Za-z-])F(\d+)\b"
-
-_DESIGN_MUST_BEFORE = re.compile(_DESIGN_FEATURE_ID + r"[^\n]*\[\s*Must\s*\]", re.IGNORECASE)
-
-_DESIGN_MUST_AFTER = re.compile(r"\[\s*Must\s*\][^\n]*?" + _DESIGN_FEATURE_ID, re.IGNORECASE)
-
-_DESIGN_CRITERION_ID = re.compile(r"\bAC-F(\d+)[-.](\d+)")
-
-def _design_spec_issues(raw: str) -> List[str]:
-    """Anomalies vérifiables d'un document de specs du designer (titres, identifiants, termes vagues)."""
-    # Apostrophes typographiques courantes dans une sortie LLM : sans normalisation, un titre
-    # « Critères d’acceptation » serait signalé absent à tort.
-    raw = raw.replace("\u2019", "'").replace("\u2018", "'")
-    issues = _missing_heading_issues(raw, DESIGN_REQUIRED_HEADINGS)
-    must_numbers = {m.group(1) for m in _DESIGN_MUST_BEFORE.finditer(raw)}
-    must_numbers |= {m.group(1) for m in _DESIGN_MUST_AFTER.finditer(raw)}
-    covered = {m.group(1) for m in _DESIGN_CRITERION_ID.finditer(raw)}
-    for number in sorted(must_numbers - covered, key=int):
-        issues.append(f"F{number} [Must] n'a aucun critère d'acceptation AC-F{number}-n.")
-    for line in raw.splitlines():
-        criterion = _DESIGN_CRITERION_ID.search(line)
-        if criterion:
-            body = line[criterion.end():]
-            # Seuil attendu dans le résultat observable ("Alors ..."), pas dans le contexte
-            # ("Étant donné 3 tâches") : un chiffre de contexte ne rend pas mesurable un « fluide ».
-            outcome = re.search(r"\bAlors\b", body, re.IGNORECASE)
-            outcome_text = body[outcome.end():] if outcome else body
-            if _DESIGN_VAGUE_TERMS.search(outcome_text) and not re.search(r"\d", outcome_text):
-                issues.append(f"Critère vague sans seuil mesurable : « {line.strip()[:90]} ».")
-    return issues
-
+_design_spec_issues = design_spec.spec_issues
 _design_spec_guardrail = _make_issue_note_guardrail(_design_spec_issues, "Contrôle automatique des specs")
 
 ARCHITECTURE_REQUIRED_HEADINGS = (
@@ -197,19 +154,6 @@ _ARCH_FILE_LINE = re.compile(r"^[^\S\n]*[-*]\s*+\**+\s*+(?:CRÉER|CREER|MODIFIER
 _ARCH_FILE_ENTRY = re.compile(r"^`?([^\s`:]+)`?\s*:\s*\S")
 
 _ARCH_CODE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx")
-
-def _markdown_section(raw: str, keyword: str) -> Optional[str]:
-    """Corps de la première section dont le titre contient `keyword`, jusqu'au titre suivant."""
-    lines = raw.splitlines()
-    for index, line in enumerate(lines):
-        if re.match(r"^#+\s", line) and keyword.lower() in line.lower():
-            body = []
-            for following in lines[index + 1:]:
-                if re.match(r"^#+\s", following):
-                    break
-                body.append(following)
-            return "\n".join(body)
-    return None
 
 def _truncation_issues(raw: str) -> List[str]:
     """Signes qu'une sortie a été coupée par la limite de tokens : dernière section vide, dernière ligne qui

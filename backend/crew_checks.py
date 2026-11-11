@@ -2,6 +2,7 @@
 from typing import Optional
 
 import crew_guardrails
+import design_spec
 import crew_plan
 import crew_workspace
 from crew_state import CrewExecutionState
@@ -52,6 +53,7 @@ class CrewChecksMixin(CrewExecutionState):
         # concernait : un commit ultérieur réussi efface leur entrée.
         self._write_rejections = {}
         self._diagnostic_guardrail_failures = 0
+        self._design_guardrail_failures = 0
         # Faits de livraison constatés par les OUTILS (voir _development_report_guardrail) : chemins
         # réellement committés, URLs de PR renvoyées par l'outil, dernière réponse de l'Analyste.
         self._committed_paths = set()
@@ -67,6 +69,18 @@ class CrewChecksMixin(CrewExecutionState):
         self._request_type = ""
         self._user_request = extract_user_request(str(inputs.get("user_request") or ""))
         self._commit_tool_used = False
+
+    def _design_guardrail(self, task_output):
+        """Refuse UNE fois des specs dont un défaut BLOQUANT est vérifiable en Python (titre manquant, « Must » sans critère, identifiant en double,
+        composant renvoyant à une fonctionnalité inexistante) : le Designer les corrige avec la liste exacte. Ensuite, ou pour les défauts non bloquants
+        (critères vagues), la note ajoutée en fin de document est lue par les étapes suivantes (comme avant)."""
+        raw = getattr(task_output, "raw", "") or ""
+        blocking = design_spec.blocking_issues(raw)
+        if blocking and getattr(self, "_design_guardrail_failures", 0) < 1:
+            self._design_guardrail_failures = getattr(self, "_design_guardrail_failures", 0) + 1
+            return False, ("Specs à corriger avant de continuer :\n" + "\n".join(f"- {issue}" for issue in blocking)
+                           + "\n\nRenvoie le document COMPLET et corrigé (mêmes titres \"##\", mêmes identifiants F/AC).")
+        return crew_guardrails._design_spec_guardrail(task_output)
 
     def _brief_analyst(self, architecture_raw: str) -> None:
         """Ajoute (une seule fois) le plan de l'Architecte à la description de la tâche de l'Analyste, AVANT sa planification."""

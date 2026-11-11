@@ -27,8 +27,12 @@ y
 z
 ## Critères d'acceptation
 - AC-F1-1 Étant donné une liste vide / Quand j'ajoute / Alors elle s'affiche en moins de 1 seconde
+## Composants d'interface
+- ListeTâches (F1) : états : vide, chargement, erreur, succès
 ## Hypothèses retenues
 h
+## Contrôle
+- Chaque Must a un critère : OUI
 """
 
 

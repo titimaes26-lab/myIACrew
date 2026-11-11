@@ -153,7 +153,7 @@ class AppDevelopmentCrew(crew_checks.CrewChecksMixin, crew_tools.CrewToolsMixin)
     @task
     def design_task(self) -> Task:
         return Task(config=self.tasks_config['design_task'], agent=self.product_designer_agent(), output_file='docs/specs_design.md',
-                    guardrail=crew_guardrails._design_spec_guardrail, guardrail_max_retries=0)
+                    guardrail=self._design_guardrail, guardrail_max_retries=1)
 
     @task
     def architecture_task(self) -> Task:
