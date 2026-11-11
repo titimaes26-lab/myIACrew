@@ -248,3 +248,100 @@ def test_a_targeted_edit_is_judged_on_the_added_text_only_not_on_imports_already
     assert crew._diagnostic_guardrail(answer)[0] is False
     ok, _ = crew._diagnostic_guardrail(answer)
     assert ok and [f["path"] for f in crew._analyst_files] == ["src/a.ts"] and set(crew._not_extracted) == {"src/b.ts"}
+
+
+# --- revue de l'exclusion des imports cassés ----------------------------------------------------------------------------------
+
+import analyst_imports  # noqa: E402
+
+
+@pytest.mark.parametrize("spec, present", [
+    ("./styles", "src/styles.scss"), ("./styles", "src/styles.less"), ("./util", "src/util.mjs"), ("./Panel", "src/Panel.vue"),
+    ("./icon.svg?react", "src/icon.svg"), ("./data.json?url", "src/data.json"), ("./font.woff2", "src/font.woff2"), ("./sound.mp3", "src/sound.mp3"),
+])
+def test_valid_relative_imports_outside_the_basic_extensions_are_never_reported(spec, present):
+    files = [{"path": "src/App.tsx", "content": f"import x from '{spec}';\nexport default x;\nexport const a = 1;"}]
+    names = {present.rsplit("/", 1)[1]}
+    assert analyst_imports.files_with_import_problems(files, lambda directory: names) == {}
+
+
+def test_a_withdrawn_file_that_was_already_imported_makes_the_importers_from_a_previous_attempt_broken():
+    """Tentative 1 : A importe B, tout est livré. Tentative 2 : B retiré (« NON réalisé »), rien d'autre n'est renvoyé → le contrôle ne portait plus que
+    sur les fichiers de la tentative en cours : A restait commité avec un import sans cible."""
+    crew = _crew_with_empty_repo()
+    first = output(_file_block("src/A.tsx", "import { b } from './B';\nexport const a = b;\nexport const z = 1;")
+                   + _file_block("src/B.ts", "export const b = 1;\nexport const c = 2;\nexport const d = 3;"))
+    assert crew._diagnostic_guardrail(first)[0] is True
+    second = output("src/B.ts NON réalisé : abandonné.")
+    ok, message = crew._diagnostic_guardrail(second)
+    assert not ok and "src/A.tsx" in message and "'./B'" in message
+    ok, result = crew._diagnostic_guardrail(second)
+    assert ok and crew._analyst_files == [] and "src/A.tsx" in crew._not_extracted
+
+
+def test_dropping_an_edited_existing_file_breaks_its_importers_for_the_names_it_added():
+    crew = new_crew()
+    store = "export const old = 1;\nexport const keep = 2;\nexport const more = 3;\n"
+    crew._base_readers = (lambda path: (store, None) if path == "src/store.ts" else (None, "ABSENT"), lambda directory: {"store.ts"})
+    answer = output(
+        _edit_block("src/store.ts", "export const old = 1;", "import { nope } from './absent';\nexport const old = 1;\nexport const newThing = nope;")
+        + _file_block("src/use.ts", "import { newThing } from './store';\nexport const used = newThing;\nexport const extra = 1;")
+    )
+    assert crew._diagnostic_guardrail(answer)[0] is False
+    ok, _ = crew._diagnostic_guardrail(answer)
+    assert ok and crew._analyst_files == [] and set(crew._not_extracted) == {"src/store.ts", "src/use.ts"}
+    assert "'newThing'" in crew._not_extracted["src/use.ts"] and "retiré du commit" in crew._not_extracted["src/use.ts"]
+
+
+def test_an_importer_of_names_the_original_file_already_exports_is_kept_when_the_edit_is_dropped():
+    crew = new_crew()
+    store = "export const old = 1;\nexport const keep = 2;\nexport const more = 3;\n"
+    crew._base_readers = (lambda path: (store, None) if path == "src/store.ts" else (None, "ABSENT"), lambda directory: {"store.ts"})
+    answer = output(
+        _edit_block("src/store.ts", "export const old = 1;", "import { nope } from './absent';\nexport const old = 1;")
+        + _file_block("src/use.ts", "import { keep } from './store';\nexport const used = keep;\nexport const extra = 1;")
+    )
+    crew._diagnostic_guardrail(answer)
+    ok, _ = crew._diagnostic_guardrail(answer)
+    assert ok and [f["path"] for f in crew._analyst_files] == ["src/use.ts"]
+
+
+def test_a_stale_edit_scope_never_hides_a_broken_import_of_a_file_later_delivered_in_full():
+    crew = _crew_with_empty_repo()
+    crew._edit_scope = {"src/a.ts": "export const a = 2;"}                              # reste d'une tentative où a.ts n'était qu'une modification
+    answer = output(_file_block("src/a.ts", "import { x } from './nowhere';\nexport const a = x;\nexport const b = 1;"))
+    ok, message = crew._diagnostic_guardrail(answer)
+    assert not ok and "'./nowhere'" in message and "src/a.ts" not in crew._edit_scope
+    crew._edit_scope = {"src/a.ts": "stale"}
+    crew._reset_for_replay({"diagnostic"})
+    assert crew._edit_scope == {}
+
+
+def test_the_reason_lists_every_missing_import_and_the_plan_gap_is_recomputed_after_the_drop():
+    crew = _crew_with_empty_repo()
+    crew._architecture_task_ref = type("T", (), {"output": type("O", (), {"raw": (
+        "## Fichiers à créer ou modifier\n\n- MODIFIER src/App.tsx : racine\n- CRÉER src/A.tsx : a\n- CRÉER src/B.tsx : b\n- CRÉER src/C.tsx : c\n")})()})()
+    app = "import { A } from './A';\nimport { B } from './B';\nimport { C } from './C';\nexport default function App() { return A + B + C; }"
+    a = "export const A = 1;\nexport const a2 = 2;\nexport const a3 = 3;"
+    answer = output(_file_block("src/App.tsx", app) + _file_block("src/A.tsx", a))
+    assert crew._diagnostic_guardrail(answer)[0] is False                              # 2 fichiers sur 4 livrés : le plan n'est pas en cause, les imports si
+    ok, result = crew._diagnostic_guardrail(answer)
+    reason = crew._not_extracted["src/App.tsx"]
+    assert ok and "'./B'" in reason and "'./C'" in reason and "src/App.tsx :" not in reason
+    assert [f["path"] for f in crew._analyst_files] == ["src/A.tsx"]
+    assert "1 fichier(s) du plan de l'Architecte sur 4" in result                      # écart dit APRÈS le retrait d'App.tsx
+
+
+def test_directories_are_listed_only_once_across_the_cascade_passes():
+    calls = []
+
+    def lister(directory):
+        calls.append(directory)
+        return set()
+    import analyst_import_drop
+    merged = {                                                                              # tour 1 : F1 (cible absente) ; tour 2 : G (import PAR DÉFAUT de F1, retiré)
+        "src/F1.tsx": {"path": "src/F1.tsx", "content": "import { n } from './Missing';\nexport default n;\nexport const y = 2;"},
+        "src/G.tsx": {"path": "src/G.tsx", "content": "import F1 from './F1';\nexport const G = F1;\nexport const z = 3;"},
+    }
+    analyst_import_drop.drop_files_with_broken_imports(merged, {}, lister, lambda path: (None, "ABSENT"), {})
+    assert merged == {} and len(calls) > 0 and len(calls) == len(set(calls))

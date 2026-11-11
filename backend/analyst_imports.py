@@ -25,9 +25,14 @@ _EXPORT_LIST = re.compile(r"export\s*(?:type\s*)?\{([^}]*)\}")
 
 _EXPORT_DESTRUCTURED = re.compile(r"export\s+(?:const|let|var)\s*[{\[]([^}\]]*)[}\]]")
 
-_RESOLVE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".json", ".css")
+# Les 4 premiers servent aussi aux « index » de dossier. Liste large exprès : un import mal reconnu n'est plus seulement signalé, il FAIT RETIRER le fichier
+# du commit (voir analyst_import_drop) ; dans le doute, un import n'est jamais déclaré cassé.
+_RESOLVE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".scss", ".sass", ".less", ".mts", ".cts", ".mjs", ".cjs", ".vue", ".svelte")
 
-_ASSET_EXTENSIONS = {"css", "scss", "json", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico"}
+_ASSET_EXTENSIONS = {
+    "css", "scss", "sass", "less", "json", "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "woff", "woff2", "ttf", "otf", "eot",
+    "mp3", "wav", "ogg", "mp4", "webm", "pdf", "txt", "md", "yml", "yaml", "wasm", "glb", "gltf", "mjs", "cjs", "mts", "cts", "vue", "svelte",
+}
 
 def _exports_of(content: str) -> tuple[set[str], bool, bool]:
     """(noms exportés, export par défaut ?, `export *` présent ?)."""
@@ -49,7 +54,31 @@ def _exports_of(content: str) -> tuple[set[str], bool, bool]:
                 names.add(exported)
     return names, has_default, bool(re.search(r"export\s*\*", content))
 
+def _named_imports(named: str | None) -> list[str]:
+    """Noms importés d'un bloc `{ a, type b, c as d }` (le nom d'origine, pas l'alias)."""
+    names = (item.replace("type ", "", 1).strip().split(" as ")[0].strip() for item in (named or "").split(","))
+    return [name for name in names if name]
+
+
+def exported_names(content: str) -> set[str]:
+    return _exports_of(content)[0]
+
+
+def memoized(list_dir: Callable[[str], set[str] | None] | None) -> Callable[[str], set[str] | None] | None:
+    """`list_dir` qui ne relit pas deux fois le même dossier (chaque lecture est un appel réseau) ; None reste None."""
+    if list_dir is None:
+        return None
+    cache: dict[str, set[str] | None] = {}
+
+    def lister(directory: str) -> set[str] | None:
+        if directory not in cache:
+            cache[directory] = list_dir(directory)
+        return cache[directory]
+    return lister
+
+
 def _import_candidates(importer: str, spec: str) -> list[str]:
+    spec = re.split(r"[?#]", spec, maxsplit=1)[0]                      # « ./icon.svg?react » : la requête n'est pas un nom de fichier
     target = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
     if target.startswith(".."):
         return []
@@ -103,9 +132,8 @@ def _export_problems(
     problems = []
     if default_name and not has_default:
         problems.append(f"{path} : import par défaut depuis '{spec}', mais {resolved} n'a pas d'export par défaut.")
-    for item in (named or "").split(","):
-        name = item.replace("type ", "", 1).strip().split(" as ")[0].strip()
-        if name and name not in exported:
+    for name in _named_imports(named):
+        if name not in exported:
             problems.append(f"{path} : '{name}' est importé depuis '{spec}', mais {resolved} ne l'exporte pas.")
     return problems
 
@@ -115,27 +143,20 @@ def _problems_by_path(
     list_dir: Callable[[str], set[str] | None] | None = None,
     context_files: list[dict] | None = None,
     import_scope: dict[str, str] | None = None,
+    withdrawn_exports: dict[str, set[str]] | None = None,
 ) -> list[tuple[str, str]]:
-    """[(fichier fautif, message)] — voir find_import_problems. Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un
-    fichier existant, et import nommé (ou par défaut) absent des exports d'un fichier LIVRÉ.
+    """[(fichier fautif, message)]. Incohérences entre fichiers : import relatif qui ne mène ni à un fichier livré ni à un fichier existant, et
+    import nommé (ou par défaut) absent des exports d'un fichier LIVRÉ.
 
-    list_dir(dossier) -> noms des entrées, ou None si inconnu (erreur réseau, dossier absent) :
-    dans le doute, un import n'est jamais signalé (pas de faux positif sur une panne GitHub).
-    context_files : fichiers livrés à une tentative PRÉCÉDENTE : ils servent à résoudre les imports
-    de `files` mais ne sont pas contrôlés eux-mêmes.
-    import_scope : {chemin: texte} — pour ces fichiers, seuls les imports de CE texte sont contrôlés
-    (le texte ajouté par une modification ciblée), pas ceux déjà présents dans le fichier d'origine."""
+    list_dir(dossier) -> noms des entrées, ou None si inconnu (erreur réseau, dossier absent) : dans le doute, un import n'est jamais signalé.
+    context_files : fichiers livrés à une tentative PRÉCÉDENTE : ils servent à résoudre les imports de `files` mais ne sont pas contrôlés eux-mêmes.
+    import_scope : {chemin: texte} — pour ces fichiers, seuls les imports de CE texte sont contrôlés (le texte ajouté par une modification ciblée),
+    pas ceux déjà présents dans le fichier d'origine.
+    withdrawn_exports : {chemin: noms NOUVELLEMENT exportés} des fichiers retirés du commit : un import de l'un de ces noms n'a plus de cible, même
+    si le fichier existe encore dans le dépôt (dans sa version d'origine, sans ces noms)."""
     delivered = {f["path"]: f["content"] for f in (context_files or [])}
     delivered.update({f["path"]: f["content"] for f in files})
-    dir_cache: dict[str, set[str] | None] = {}
-
-    def entries(directory: str) -> set[str] | None:
-        if list_dir is None:
-            return None
-        if directory not in dir_cache:
-            dir_cache[directory] = list_dir(directory)
-        return dir_cache[directory]
-
+    entries = memoized(list_dir) or (lambda directory: None)
     problems: list[tuple[str, str]] = []
     scanned = {f["path"]: f["content"] for f in files}
     scanned.update({p: t for p, t in (import_scope or {}).items() if p in scanned})
@@ -146,7 +167,10 @@ def _problems_by_path(
             candidates = _import_candidates(path, spec)
             resolved = next((c for c in candidates if c in delivered), None)
             if resolved is None:
-                missing = _missing_import_problem(path, spec, candidates, entries)
+                gone = next((c for c in candidates if c in (withdrawn_exports or {})), None)
+                lost = sorted(set(_named_imports(named)) & (withdrawn_exports or {}).get(gone or "", set()))
+                problems += [(path, f"{path} : '{name}' est importé depuis '{spec}', mais {gone} a été retiré du commit.") for name in lost]
+                missing = None if lost else _missing_import_problem(path, spec, candidates, entries)
                 if missing:
                     problems.append((path, missing))
                 continue
@@ -162,15 +186,16 @@ def find_import_problems(
     context_files: list[dict] | None = None,
     import_scope: dict[str, str] | None = None,
 ) -> list[str]:
-    """Messages des incohérences d'imports entre fichiers (voir _problems_by_path pour les paramètres et les cas signalés)."""
+    """Messages des incohérences d'imports entre `files` (paramètres : voir _problems_by_path)."""
     return list(dict.fromkeys(message for _, message in _problems_by_path(files, list_dir, context_files, import_scope)))
 
 
 def files_with_import_problems(
     files: list[dict], list_dir: Callable[[str], set[str] | None] | None = None, import_scope: dict[str, str] | None = None,
+    withdrawn_exports: dict[str, set[str]] | None = None,
 ) -> dict[str, list[str]]:
-    """{fichier fautif: messages} : les fichiers livrés dont un import ne mène à rien (ils ne compileraient pas)."""
+    """{fichier fautif: messages} sur l'ENSEMBLE `files` (pas de contexte d'une tentative précédente : à appeler avec tous les fichiers livrés)."""
     grouped: dict[str, list[str]] = {}
-    for path, message in _problems_by_path(files, list_dir, None, import_scope):
+    for path, message in _problems_by_path(files, list_dir, None, import_scope, withdrawn_exports):
         grouped.setdefault(path, []).append(message)
     return grouped

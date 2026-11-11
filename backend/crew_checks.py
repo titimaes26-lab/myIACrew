@@ -7,6 +7,7 @@ import crew_plan
 import crew_workspace
 from crew_state import CrewExecutionState
 import analyst_imports
+from analyst_import_drop import drop_files_with_broken_imports
 from analyst_output import review_diagnostic_output
 from analyst_edits import parse_edit_sections
 from delivery import extract_user_request, render_delivery_block, unconfirmed_pr_urls
@@ -28,6 +29,11 @@ def _ambiguity_clarification(ambiguous: list[str]) -> str:
         + ". Retire leurs balises s'ils ne sont vraiment pas réalisés, ou reformule la ligne "
         "du plan qui les mentionne."
     )
+
+
+def _join_issues(issue: str | None, extra: str | None) -> str | None:
+    """Ajoute `extra` (s'il y en a un) à `issue` : un défaut par paragraphe."""
+    return (f"{issue}\n\n{extra}" if issue else extra) if extra else issue
 
 
 class CrewChecksMixin(CrewExecutionState):
@@ -78,7 +84,7 @@ class CrewChecksMixin(CrewExecutionState):
             self._design_guardrail_failures = 0
         if "diagnostic" in remaining_keys:
             self._diagnostic_guardrail_failures = 0
-            self._analyst_files, self._not_extracted = [], {}
+            self._analyst_files, self._not_extracted, self._edit_scope = [], {}, {}
 
     def _design_guardrail(self, task_output):
         """Refuse UNE fois des specs dont un défaut BLOQUANT est vérifiable en Python (titre manquant, « Must » sans critère, identifiant en double,
@@ -145,15 +151,17 @@ class CrewChecksMixin(CrewExecutionState):
             raw, read_base=self._read_base_file, list_dir=self._list_base_dir,
             context_files=list(getattr(self, "_analyst_files", []) or []),
         )
+        edited = parse_edit_sections(raw)[0]
+        for f in files:
+            if f["path"] not in edited:
+                self._edit_scope.pop(f["path"], None)             # fichier livré EN ENTIER : plus jugé sur un ancien texte ajouté
         merged, not_extracted, ambiguous = self._merge_analyst_attempt(raw, files, faulty_paths, broken)
-        if ambiguous:
-            clarification = _ambiguity_clarification(ambiguous)
-            issue = f"{issue}\n\n{clarification}" if issue else clarification
+        issue = _join_issues(issue, _ambiguity_clarification(ambiguous) if ambiguous else None)
         self._analyst_files = list(merged.values())
         self._not_extracted = not_extracted
-        mismatch = self._plan_mismatch(merged)
-        if mismatch:
-            issue = f"{issue}\n\n{mismatch}" if issue else mismatch
+        lister = analyst_imports.memoized(self._list_base_dir)
+        issue = _join_issues(issue, self._merged_import_issue(merged, issue, lister))
+        issue = _join_issues(issue, self._plan_mismatch(merged))
         if issue is None:
             return True, task_output
         self._diagnostic_guardrail_failures = getattr(self, "_diagnostic_guardrail_failures", 0) + 1
@@ -165,23 +173,21 @@ class CrewChecksMixin(CrewExecutionState):
         for path in ambiguous:
             merged.pop(path, None)
             not_extracted[path] = "livré mais déclaré NON réalisé, ambiguïté non levée"
-        self._drop_files_with_broken_imports(merged, not_extracted)
+        drop_files_with_broken_imports(merged, not_extracted, lister, self._read_base_file, dict(self._edit_scope))
+        late_plan = self._plan_mismatch(merged)                   # recalculé APRÈS les retraits : un fichier prévu puis retiré compte comme manquant
+        issue = _join_issues(issue, late_plan if late_plan and late_plan not in issue else None)
         self._analyst_files = list(merged.values())
         self._not_extracted = not_extracted
         excluded = "".join(f"\n- {p} : NON réalisé ({reason}, exclu du commit)" for p, reason in sorted(not_extracted.items()))
         return True, f"{raw}\n\n> ⚠️ Contrôle automatique (non corrigé par l'Analyste) : {issue}{excluded}"
 
-    def _drop_files_with_broken_imports(self, merged: dict[str, dict], not_extracted: dict[str, str]) -> None:
-        """Sortie ACCEPTÉE malgré des imports qui ne mènent à rien (exécution 139 : App.tsx importait deux composants jamais livrés, le build de
-        PlatformGame a échoué) : ces fichiers ne sont PAS committés, ils sont listés NON LIVRÉS. Répété jusqu'à stabilité : retirer un fichier
-        peut en priver un autre de sa cible."""
-        while True:
-            broken = analyst_imports.files_with_import_problems(list(merged.values()), self._list_base_dir, dict(self._edit_scope))
-            if not broken:
-                return
-            for path, messages in broken.items():
-                merged.pop(path, None)
-                not_extracted[path] = f"imports cassés : {messages[0]}"[:240]
+    def _merged_import_issue(self, merged: dict[str, dict], issue: str | None, lister) -> str | None:
+        """Imports cassés dans l'ENSEMBLE des fichiers fusionnés, pas seulement ceux de cette tentative : un fichier retiré ("NON réalisé") peut
+        priver un fichier d'une tentative précédente de sa cible. Ne renvoie que les problèmes pas déjà dans `issue`."""
+        problems = analyst_imports.find_import_problems(list(merged.values()), lister, None, dict(self._edit_scope))
+        new = [problem for problem in problems if problem not in (issue or "")]
+        return ("Incohérences entre fichiers (imports) :\n" + "\n".join(f"- {p}" for p in new[:10])
+                + "\nCorrige-les (les fichiers concernés restent à fournir EN ENTIER ou par modification).") if new else None
 
     def _merge_analyst_attempt(
         self, raw: str, files: list[dict], faulty_paths: set[str], broken: dict[str, str],
